@@ -78,7 +78,7 @@ static const handler statusHandler[] =
 		&CLogicSocket::HandleReadType,		  // READTYPE
 		&CLogicSocket::HandleCreateItem,	  // CREATEITEM
 		&CLogicSocket::noop,				  // CREATETABLE
-		&CLogicSocket::noop,				  // DELETEITEM
+		&CLogicSocket::HandleDeleteItem,	  // DELETEITEM
 		&CLogicSocket::noop,				  // DELETETABLE
 		&CLogicSocket::noop,				  // READHEADB
 		&CLogicSocket::noop,				  // READHEADDB
@@ -91,7 +91,7 @@ static const handler statusHandler[] =
 		&CLogicSocket::noop,				  // POST
 		&CLogicSocket::HandlePostWait,		  // POSTWAIT
 		&CLogicSocket::noop,				  // PASSTOSERVER
-		&CLogicSocket::noop,				  // CLEARB
+		&CLogicSocket::HandleClearB,		  // CLEARB
 		&CLogicSocket::noop,				  // CLEARDB
 		&CLogicSocket::HandleRegisterPlcServer, // REGISTERPLCSERVER
 		&CLogicSocket::HandleWriteBPlc,		  // WRITEBPLC
@@ -469,6 +469,34 @@ bool CLogicSocket::HandleWriteBString(lpngx_connection_t pConn, LPSTRUC_MSG_HEAD
 	return true;
 }
 
+bool CLogicSocket::HandleClearB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
+{
+	if (pPkgHeader == NULL)
+	{
+		return false;
+	}
+	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
+	bool ret;
+	if (ret = ClearB(pPkgHead->qname))
+	{
+		pPkgHead->error = 0;
+	}
+	else
+	{
+		pPkgHead->error = GetLastErrorQ();
+	}
+	pPkgHead->bodysize = 0;
+	CMemory *p_memory = CMemory::GetInstance();
+	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader, false); // 准备发送的格式，这里是消息头+包头+包体
+	// 填充消息头
+	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
+	// 填充包头
+	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
+	// 发送数据包
+	msgSend(p_sendbuf);
+	return true;
+}
+
 // 这个函数和windows平台的区别是不返回TAG类型的大小
 bool CLogicSocket::HandleSubscribe(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
@@ -793,6 +821,36 @@ bool CLogicSocket::HandleCreateItem(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER
 	// f)发送数据包
 	msgSend(p_sendbuf);
 
+	return true;
+}
+
+bool CLogicSocket::HandleDeleteItem(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
+{
+	if (pPkgHeader == NULL)
+	{
+		return false;
+	}
+	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
+	bool ret;
+	if (ret = DeleteItem(pPkgHead->qname, pPkgHead->itemname))
+	{
+		pPkgHead->error = 0;
+	}
+	else
+	{
+		pPkgHead->error = GetLastErrorQ();
+	}
+	pPkgHead->bodysize = 0;
+	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	int iLenPkgBody = 0;
+	CMemory *p_memory = CMemory::GetInstance();
+	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
+	// b)填充消息头
+	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
+	// c)填充包头
+	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
+	// f)发送数据包
+	msgSend(p_sendbuf);
 	return true;
 }
 

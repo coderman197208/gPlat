@@ -991,7 +991,7 @@ extern "C" bool writeb_string(int sockfd, const char* tagname, const char* value
 	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
 
 	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0 ||
-		send_all(sockfd, value, strlength) <= 0) {
+		(strlength > 0 && send_all(sockfd, value, strlength) <= 0)) {
 		*error = errno;
 		close(sockfd);
 		return false;
@@ -1015,7 +1015,7 @@ extern "C" bool writeb_string(int sockfd, const char* tagname, const char* value
 	return (*error == 0);
 }
 
-extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string& value, unsigned int* error)
+extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string value, unsigned int* error)
 {
 	// 确保字符串以 null 结尾
 	if (value.length() >= MAXMSGLEN) {
@@ -1071,6 +1071,42 @@ extern "C" bool subscribe(int sockfd, const char* tagname, unsigned int* error)
 		return false;
 	}
 
+	*error = msg.head.error;
+	return (*error == 0);
+}
+
+extern "C" bool clearb(int sockfd, unsigned int* error)
+{
+	// 参数校验
+	if (!error) {
+		*error = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+	// 初始化消息结构体
+	MSGSTRUCT msg{};
+	msg.head.id = CLEARB;
+	msg.head.bodysize = 0;
+	// 安全拷贝字符串
+	strncpy(msg.head.qname, "BOARD", sizeof(msg.head.qname) - 1);
+	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
+	// 发送请求
+	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	// 读取响应
+	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	// 验证响应
+	if (msg.head.bodysize > 0) {
+		*error = ERROR_INVALID_RESPONSE;
+		close(sockfd);
+		return false;
+	}
 	*error = msg.head.error;
 	return (*error == 0);
 }
@@ -1176,6 +1212,44 @@ extern "C" bool createtag(int sockfd, const char* tagname, int tagsize, void* ty
 		return false;
 	}
 
+	*error = msg.head.error;
+	return (*error == 0);
+}
+
+extern "C" bool deletetag(int sockfd, const char* tagname, unsigned int* error)
+{
+	// 参数校验
+	if (!tagname || !error) {
+		*error = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+	// 初始化消息结构体
+	MSGSTRUCT msg{};
+	msg.head.id = DELETEITEM;
+	msg.head.bodysize = 0;
+	// 安全拷贝字符串（防止缓冲区溢出）
+	strncpy(msg.head.qname, "BOARD", sizeof(msg.head.qname) - 1);
+	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
+	strncpy(msg.head.itemname, tagname, sizeof(msg.head.itemname) - 1);
+	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
+	// 发送请求
+	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	// 读取响应
+	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	// 验证响应
+	if (msg.head.bodysize > 0) {
+		*error = ERROR_INVALID_RESPONSE;
+		close(sockfd);
+		return false;
+	}
 	*error = msg.head.error;
 	return (*error == 0);
 }
@@ -4102,7 +4176,7 @@ extern "C" bool registertag(int sockfd, const char* tagname, unsigned int* error
 	return (*error == 0);
 }
 
-extern "C" bool write_plc_string(int sockfd, const char* tagname, std::string& str, unsigned int* error)
+extern "C" bool write_plc_string(int sockfd, const char* tagname, std::string str, unsigned int* error)
 {
 	return writeb_string_plc(sockfd, tagname, str.c_str(), error);
 }

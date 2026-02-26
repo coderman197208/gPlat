@@ -31,9 +31,9 @@ void threadFunction1() {
 	while (g_running) {  // 检查全局运行标志 {
 		char value[4096] = { 0 };
 		waitpostdata(conngplat, eventname, value, 4096, -1, &error); // 等待数据到达
-		//if (eventname != "int1") {
+
 		printf("eventname=%s, error=%d\n", eventname.c_str(), error);
-		//}
+
 		if (eventname == "bool1") {
 			bool a = *((bool*)value);
 			printf("bool1=%d\n", a);
@@ -93,10 +93,10 @@ void threadFunction2() {
 	std::string eventname;
 	while (g_running) {  // 检查全局运行标志 {
 		a++;
-		//ret = writeb(conngplat, "int1", &a, sizeof(a), &error); // 接收数据;
-  //      if (!ret) {
-  //          printf("writeb failed, error=%d\n", error);
-		//}
+		ret = writeb(conngplat, "int1", &a, sizeof(a), &error); // 接收数据;
+        if (!ret) {
+            printf("writeb failed, error=%d\n", error);
+		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 	}
 
@@ -113,9 +113,10 @@ void threadFunction3() {
 	std::string eventname;
 	while (g_running) {
 		std::string suffix = std::to_string(a++);
-		char str1[200] = "hello world, gyb 777777777777777777777777777777777777777777777777777777777777777777777777777778 loop=";
+		char str1[200] = "hello world, gyb 1234567890 loop=";
 		strcat(str1, suffix.c_str()); // 将数字转换为字符串并复制到 str1
-		//ret = writeb_string(conngplat, "string1", str1, &error); // 发送数据
+		ret = writeb_string(conngplat, "string1", str1, &error); // 发送数据
+		ret = write_plc_string(conngplat, "s7str1", str1, &error); // 发送数据
 
 		//char str2[1000] = { 0 };
 		//ret = readb_string(conngplat, "string1", str2, sizeof(str2), &error); // 接收数据
@@ -126,8 +127,8 @@ void threadFunction3() {
 		//    printf("writeb_string failed, error=%d\n", error);
 		//}
 
-		std::string str2;
-		ret = readb_string2(conngplat, "string1", str2, &error); // 接收数据
+		//std::string str2;
+		//ret = readb_string2(conngplat, "string1", str2, &error); // 接收数据
 		//if (ret) {
 		//    printf("readb_string2 str2=%s error=%d\n", str2.c_str(), error);
 		//}

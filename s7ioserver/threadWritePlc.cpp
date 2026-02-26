@@ -106,10 +106,10 @@ void threadWritePlc(AppConfig* config) {
         S7Object client = Cli_Create();
         int res = Cli_ConnectTo(client, plc.ip.c_str(), plc.rack, plc.slot);
         if (res != 0) {
-            printf("[write] snap7 connect to %s (%s) failed (err=%d), will retry on write.\n",
+            printf("[write thread] snap7 connect to %s (%s) failed (err=%d), will retry on write.\n",
                    plc.name.c_str(), plc.ip.c_str(), res);
         } else {
-            printf("[write] snap7 connected to %s (%s)\n", plc.name.c_str(), plc.ip.c_str());
+            printf("[write thread] snap7 connected to %s (%s)\n", plc.name.c_str(), plc.ip.c_str());
         }
         plcClients[plc.name] = client;
     }

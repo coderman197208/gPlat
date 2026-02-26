@@ -1,8 +1,8 @@
-﻿#include <cstdio>  
-//This must come first!
-//这是readline库头文件的问题。这个问题在CentOS/RedHat系统上比较常见，主要原因是C++编译器对C代码的兼容性问题。
-//如果没有#include <cstdio>，readline库中的某些函数声明可能会因为缺少C标准库的头文件而导致编译错误。
-//通过先包含<cstdio>，可以确保C标准库的函数声明被正确引入，从而解决编译问题。
+﻿#include <cstdio>
+// This must come first!
+// 这是readline库头文件的问题。这个问题在CentOS/RedHat系统上比较常见，主要原因是C++编译器对C代码的兼容性问题。
+// 如果没有#include <cstdio>，readline库中的某些函数声明可能会因为缺少C标准库的头文件而导致编译错误。
+// 通过先包含<cstdio>，可以确保C标准库的函数声明被正确引入，从而解决编译问题。
 #include <readline/readline.h>
 #include <readline/history.h>
 #include <iostream>
@@ -11,13 +11,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib> // for strtol
+#include <fstream>
 #include <unistd.h>
 #include <string.h>
 #include "..//include//higplat.h"
 
-
 //-1代表复合类型
-enum TypeCode {
+enum TypeCode
+{
 	Empty = 0,
 	Boolean,
 	Char,
@@ -33,7 +34,8 @@ enum TypeCode {
 
 int GetSizeOf(TypeCode typecode)
 {
-	switch (typecode) {
+	switch (typecode)
+	{
 	case TypeCode::Boolean:
 		return sizeof(bool);
 	case TypeCode::Char:
@@ -69,7 +71,8 @@ QBDType g_qbdtype;
 
 int g_hConn;
 
-struct GlobalObj {
+struct GlobalObj
+{
 	static std::string prefix;
 	static std::string nodename;
 	static std::string qbdname;
@@ -83,41 +86,51 @@ std::string GlobalObj::qbdname = "";
 
 void Analyse(const std::vector<std::string>& words);
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[])
+{
 	// 设置 readline 的自动补全（可选）
 	rl_bind_key('\t', rl_complete); // 启用 Tab 补全
 
 	char* line;
 	std::vector<std::string> words;
 
-	while ((line = readline(GlobalObj::prefix.c_str()))) { // 使用 readline 替代 std::getline
-		if (!line) break; // 处理 Ctrl+D
+	while ((line = readline(GlobalObj::prefix.c_str())))
+	{ // 使用 readline 替代 std::getline
+		if (!line)
+			break; // 处理 Ctrl+D
 
 		// 添加到历史记录（非空行）
-		if (*line) add_history(line);
+		if (*line)
+			add_history(line);
 
 		// 转换为 std::string 方便处理
 		std::string input(line);
 		free(line); // readline 返回的指针需要手动释放
 
-		if (input.empty()) continue;
+		if (input.empty())
+			continue;
 
 		// 分割单词逻辑（保持不变）
 		size_t start = 0, end = 0;
-		while ((end = input.find(' ', start)) != std::string::npos) {
-			if (end != start) {
+		while ((end = input.find(' ', start)) != std::string::npos)
+		{
+			if (end != start)
+			{
 				words.push_back(input.substr(start, end - start));
 			}
 			start = end + 1;
 		}
-		if (start < input.length()) {
+		if (start < input.length())
+		{
 			words.push_back(input.substr(start));
 		}
 
-		if (!words.empty()) {
+		if (!words.empty())
+		{
 			std::string firstWord = words[0];
 			std::transform(firstWord.begin(), firstWord.end(), firstWord.begin(),
-				[](unsigned char c) { return std::tolower(c); });
+				[](unsigned char c)
+				{ return std::tolower(c); });
 
 			if (firstWord == "exit" || firstWord == "q")
 				break;
@@ -163,17 +176,20 @@ void HandleOpenBoard()
 	GlobalObj::prefix = GlobalObj::nodename + ".BOARD>";
 }
 
-//para  复合类型名$负荷类型大小 或者 简单类型名
-//para2 数组大小
+// para  复合类型名$负荷类型大小 或者 简单类型名
+// para2 数组大小
 bool CreateItem(const std::string& itemName, const std::string& para, const std::string& para2)
 {
 	int arraysize = 0;
 
-	if (!para2.empty()) {
-		try {
+	if (!para2.empty())
+	{
+		try
+		{
 			arraysize = std::stoi(para2);
 		}
-		catch (...) {
+		catch (...)
+		{
 			arraysize = 0;
 		}
 	}
@@ -181,15 +197,18 @@ bool CreateItem(const std::string& itemName, const std::string& para, const std:
 	// Split para by '$'
 	std::vector<std::string> split;
 	size_t start = 0, end = para.find('$');
-	while (end != std::string::npos) {
+	while (end != std::string::npos)
+	{
 		split.push_back(para.substr(start, end - start));
 		start = end + 1;
 		end = para.find('$', start);
 	}
 	split.push_back(para.substr(start));
 
-	if (split.size() > 1) {
-		if (arraysize == 0 || arraysize == 1) {
+	if (split.size() > 1)
+	{
+		if (arraysize == 0 || arraysize == 1)
+		{
 			// 复合类型 - 需要实现
 			char buff[100];
 			int* ptypecode = (int*)buff;
@@ -199,10 +218,11 @@ bool CreateItem(const std::string& itemName, const std::string& para, const std:
 			int itemsize = std::stoi(split[1]);
 			char* classname = buff + 8;
 			strcpy(classname, split[0].c_str());
-			int typesize = 8 + split[0].length() + 1; //类型代码，数组大小，类型名，0结束符
+			int typesize = 8 + split[0].length() + 1; // 类型代码，数组大小，类型名，0结束符
 
 			// 检查大小限制
-			if (itemsize > 16000) {
+			if (itemsize > 16000)
+			{
 				std::cout << "TAG的大小超过了16000，无法创建" << std::endl;
 				return false;
 			}
@@ -210,17 +230,20 @@ bool CreateItem(const std::string& itemName, const std::string& para, const std:
 			unsigned int err;
 			bool res = createtag(g_hConn, itemName.c_str(), itemsize, buff, typesize, &err);
 
-			if (res) {
+			if (res)
+			{
 				std::cout << "Tag '" << itemName << "' created successfully, Record size="
 					<< itemsize << ", Type size=" << typesize << std::endl;
 			}
-			else {
+			else
+			{
 				std::cout << "Create Tag '" << itemName << "' fail with error code " << err << std::endl;
 			}
 
 			return res;
 		}
-		else if (arraysize > 1) {
+		else if (arraysize > 1)
+		{
 			// 复合类型数组 - 需要实现
 			char buff[100];
 			int* ptypecode = (int*)buff;
@@ -230,10 +253,11 @@ bool CreateItem(const std::string& itemName, const std::string& para, const std:
 			int itemsize = std::stoi(split[1]) * arraysize;
 			char* classname = buff + 8;
 			strcpy(classname, split[0].c_str());
-			int typesize = 8 + split[0].length() + 1; //类型代码，数组大小，类型名，0结束符
+			int typesize = 8 + split[0].length() + 1; // 类型代码，数组大小，类型名，0结束符
 
 			// 检查大小限制
-			if (itemsize > 16000) {
+			if (itemsize > 16000)
+			{
 				std::cout << "TAG的大小超过了16000，无法创建" << std::endl;
 				return false;
 			}
@@ -241,71 +265,86 @@ bool CreateItem(const std::string& itemName, const std::string& para, const std:
 			unsigned int err;
 			bool res = createtag(g_hConn, itemName.c_str(), itemsize, buff, typesize, &err);
 
-			if (res) {
+			if (res)
+			{
 				std::cout << "Tag '" << itemName << "' created successfully, Record size="
 					<< itemsize << ", Type size=" << typesize << std::endl;
 			}
-			else {
+			else
+			{
 				std::cout << "Create Tag '" << itemName << "' fail with error code " << err << std::endl;
 			}
 
 			return res;
 		}
 	}
-	else if (arraysize == 0 || arraysize == 1) {
+	else if (arraysize == 0 || arraysize == 1)
+	{
 		// 简单类型
 		std::string typeName = para;
 		TypeCode typecode = Empty;
 		size_t itemsize = 0;
 
 		// 确定类型和大小
-		if (typeName == "Boolean") {
+		if (typeName == "Boolean")
+		{
 			typecode = Boolean;
 			itemsize = sizeof(bool);
 		}
-		else if (typeName == "Char") {
+		else if (typeName == "Char")
+		{
 			typecode = Char;
 			itemsize = sizeof(char);
 		}
-		else if (typeName == "Double") {
+		else if (typeName == "Double")
+		{
 			typecode = Double;
 			itemsize = sizeof(double);
 		}
-		else if (typeName == "Int16") {
+		else if (typeName == "Int16")
+		{
 			typecode = Int16;
 			itemsize = sizeof(int16_t);
 		}
-		else if (typeName == "Int32") {
+		else if (typeName == "Int32")
+		{
 			typecode = Int32;
 			itemsize = sizeof(int32_t);
 		}
-		else if (typeName == "Int64") {
+		else if (typeName == "Int64")
+		{
 			typecode = Int64;
 			itemsize = sizeof(int64_t);
 		}
-		else if (typeName == "Single") {
+		else if (typeName == "Single")
+		{
 			typecode = Single;
 			itemsize = sizeof(float);
 		}
-		else if (typeName == "UInt16") {
+		else if (typeName == "UInt16")
+		{
 			typecode = UInt16;
 			itemsize = sizeof(uint16_t);
 		}
-		else if (typeName == "UInt32") {
+		else if (typeName == "UInt32")
+		{
 			typecode = UInt32;
 			itemsize = sizeof(uint32_t);
 		}
-		else if (typeName == "UInt64") {
+		else if (typeName == "UInt64")
+		{
 			typecode = UInt64;
 			itemsize = sizeof(uint64_t);
 		}
-		else {
+		else
+		{
 			std::cout << "Type definition error!" << std::endl;
 			return false;
 		}
 
 		// 检查大小限制
-		if (itemsize > 16000) {
+		if (itemsize > 16000)
+		{
 			std::cout << "TAG的大小超过了16000，无法创建" << std::endl;
 			return false;
 		}
@@ -319,72 +358,88 @@ bool CreateItem(const std::string& itemName, const std::string& para, const std:
 		unsigned int err;
 		bool res = createtag(g_hConn, itemName.c_str(), (int)itemsize, buff, sizeof(buff), &err);
 
-		if (res) {
+		if (res)
+		{
 			std::cout << "Tag '" << itemName << "' created successfully, Record size="
 				<< itemsize << ", Type size=" << sizeof(typecode) << std::endl;
 		}
-		else {
+		else
+		{
 			std::cout << "Create Tag '" << itemName << "' fail with error code " << err << std::endl;
 		}
 		return res;
 	}
-	else if (arraysize > 1) {
+	else if (arraysize > 1)
+	{
 		// 简单类型数组
 		std::string typeName = para;
 		TypeCode typecode = Empty;
 		size_t itemsize = 0;
 
-		if (typeName == "String" || typeName == "string" || typeName == "STRING") {
+		if (typeName == "String" || typeName == "string" || typeName == "STRING")
+		{
 			typecode = Char;
 			itemsize = sizeof(char) * arraysize;
 		}
-		else if (typeName == "Boolean") {
+		else if (typeName == "Boolean")
+		{
 			typecode = Boolean;
 			itemsize = sizeof(bool) * arraysize;
 		}
-		else if (typeName == "Char") {
+		else if (typeName == "Char")
+		{
 			typecode = Char;
 			itemsize = sizeof(char) * arraysize;
 		}
-		else if (typeName == "Double") {
+		else if (typeName == "Double")
+		{
 			typecode = Double;
 			itemsize = sizeof(double) * arraysize;
 		}
-		else if (typeName == "Int16") {
+		else if (typeName == "Int16")
+		{
 			typecode = Int16;
 			itemsize = sizeof(int16_t) * arraysize;
 		}
-		else if (typeName == "Int32") {
+		else if (typeName == "Int32")
+		{
 			typecode = Int32;
 			itemsize = sizeof(int32_t) * arraysize;
 		}
-		else if (typeName == "Int64") {
+		else if (typeName == "Int64")
+		{
 			typecode = Int64;
 			itemsize = sizeof(int64_t) * arraysize;
 		}
-		else if (typeName == "Single") {
+		else if (typeName == "Single")
+		{
 			typecode = Single;
 			itemsize = sizeof(float) * arraysize;
 		}
-		else if (typeName == "UInt16") {
+		else if (typeName == "UInt16")
+		{
 			typecode = UInt16;
 			itemsize = sizeof(uint16_t) * arraysize;
 		}
-		else if (typeName == "UInt32") {
+		else if (typeName == "UInt32")
+		{
 			typecode = UInt32;
 			itemsize = sizeof(uint32_t) * arraysize;
 		}
-		else if (typeName == "UInt64") {
+		else if (typeName == "UInt64")
+		{
 			typecode = UInt64;
 			itemsize = sizeof(uint64_t) * arraysize;
 		}
-		else {
+		else
+		{
 			std::cout << "Type definition error!" << std::endl;
 			return false;
 		}
 
 		// 检查大小限制
-		if (itemsize > 16000) {
+		if (itemsize > 16000)
+		{
 			std::cout << "TAG的大小超过了16000，无法创建" << std::endl;
 			return false;
 		}
@@ -398,17 +453,184 @@ bool CreateItem(const std::string& itemName, const std::string& para, const std:
 		unsigned int err;
 		bool res = createtag(g_hConn, itemName.c_str(), (int)itemsize, buff, sizeof(buff), &err);
 
-		if (res) {
+		if (res)
+		{
 			std::cout << "Array Tag '" << itemName << "' created successfully, Record size="
 				<< itemsize << ", Type size=" << sizeof(buff) << std::endl;
 		}
-		else {
+		else
+		{
 			std::cout << "Create Array Tag '" << itemName << "' fail with error code " << err << std::endl;
 		}
 		return res;
 	}
 
 	return true;
+}
+
+void CreateItemFromFile(std::string fileName)
+{
+	std::ifstream file(fileName);
+	if (!file.is_open())
+	{
+		std::cout << "无法打开文件: " << fileName << std::endl;
+		return;
+	}
+
+	// S7数据类型 -> CreateItem类型名 的映射
+	auto mapType = [](const std::string& s7type) -> std::string
+		{
+			if (s7type == "BOOL")
+				return "Boolean";
+			if (s7type == "INT")
+				return "Int16";
+			if (s7type == "DINT")
+				return "Int32";
+			if (s7type == "WORD")
+				return "UInt16";
+			if (s7type == "DWORD")
+				return "UInt32";
+			if (s7type == "REAL")
+				return "Single";
+			if (s7type == "STRING")
+				return "Char";
+			return "";
+		};
+
+	bool inPlcSection = false;
+	std::string line;
+
+	while (std::getline(file, line))
+	{
+		// 去除首尾空白
+		size_t s = line.find_first_not_of(" \t\r\n");
+		if (s == std::string::npos)
+			continue;
+		line = line.substr(s);
+		size_t e = line.find_last_not_of(" \t\r\n");
+		if (e != std::string::npos)
+			line = line.substr(0, e + 1);
+
+		// 跳过注释行
+		if (line[0] == '#' || line[0] == ';')
+			continue;
+
+		// 处理 section 头
+		if (line[0] == '[')
+		{
+			size_t end = line.find(']');
+			if (end != std::string::npos)
+			{
+				std::string section = line.substr(1, end - 1);
+				inPlcSection = (section != "general");
+			}
+			continue;
+		}
+
+		if (!inPlcSection)
+			continue;
+
+		// 解析 key = value
+		size_t eqPos = line.find('=');
+		if (eqPos == std::string::npos)
+			continue;
+
+		std::string key = line.substr(0, eqPos);
+		std::string value = line.substr(eqPos + 1);
+
+		// 去除 key 首尾空白
+		size_t ks = key.find_first_not_of(" \t");
+		size_t ke = key.find_last_not_of(" \t");
+		if (ks == std::string::npos)
+			continue;
+		key = key.substr(ks, ke - ks + 1);
+
+		// 去除 value 首尾空白
+		size_t vs = value.find_first_not_of(" \t");
+		if (vs == std::string::npos)
+			continue;
+		value = value.substr(vs);
+
+		// 跳过PLC的连接参数行
+		if (key == "ip" || key == "rack" || key == "slot" || key == "poll_interval")
+			continue;
+
+		// 按逗号分割: area, db号, 偏移, 数据类型 [, 最大长度]
+		std::vector<std::string> parts;
+		size_t pos = 0;
+		while (pos <= value.size())
+		{
+			size_t commaPos = value.find(',', pos);
+			std::string part;
+			if (commaPos == std::string::npos)
+			{
+				part = value.substr(pos);
+				pos = value.size() + 1;
+			}
+			else
+			{
+				part = value.substr(pos, commaPos - pos);
+				pos = commaPos + 1;
+			}
+			size_t ps = part.find_first_not_of(" \t");
+			size_t pe = part.find_last_not_of(" \t");
+			if (ps != std::string::npos)
+				parts.push_back(part.substr(ps, pe - ps + 1));
+			else
+				parts.push_back("");
+		}
+
+		// 至少需要: 区域, DB号, 偏移, 数据类型
+		if (parts.size() < 4)
+			continue;
+
+		std::string s7type = parts[3];
+		std::transform(s7type.begin(), s7type.end(), s7type.begin(),
+			[](unsigned char c)
+			{ return std::toupper(c); });
+
+		std::string createType = mapType(s7type);
+		if (createType.empty())
+		{
+			std::cout << "未知数据类型 '" << s7type << "' (tag: " << key << ")，跳过" << std::endl;
+			continue;
+		}
+
+		// STRING类型：第三个参数为最大长度，其余为 ""
+		std::string maxLen = "";
+		if (s7type == "STRING" && parts.size() >= 5 && !parts[4].empty())
+		{
+			if (parts.size() >= 5 && !parts[4].empty())
+			{
+				maxLen = parts[4];
+			}
+			else
+			{
+				std::cout << "STRING类型 '" << key << "' 缺少最大长度参数，跳过" << std::endl;
+				continue;
+			}
+		}
+
+		CreateItem(key, createType, maxLen);
+	}
+}
+
+void HandleClearBoard(std::string qbdName)
+{
+	unsigned int error;
+
+	if (qbdName != "BOARD")
+	{
+		std::cout << "Only BOARD can be cleared." << std::endl;
+		return;
+	}
+
+	if (g_qbdtype != board) return;
+
+	if (clearb(g_hConn, &error))
+	{
+		std::cout << "Board: " << qbdName << " cleared." << std::endl;
+	}
 }
 
 void HandleCreate(const std::vector<std::string>& words)
@@ -421,17 +643,18 @@ void HandleCreate(const std::vector<std::string>& words)
 
 	if (g_qbdtype == database && words.size() == 4)
 	{
-		//CreateTable(words[1], words[2], words[3]);
+		// CreateTable(words[1], words[2], words[3]);
 	}
 	else if (g_qbdtype == board && words.size() == 3)
 	{
 		std::string firstWord = words[1];
 		std::transform(firstWord.begin(), firstWord.end(), firstWord.begin(),
-			[](unsigned char c) { return std::tolower(c); });
+			[](unsigned char c)
+			{ return std::tolower(c); });
 
 		if (firstWord == "from")
 		{
-			//CreateItemFromFile(words[2]);
+			CreateItemFromFile(words[2]);
 		}
 		else
 		{
@@ -444,10 +667,20 @@ void HandleCreate(const std::vector<std::string>& words)
 	}
 }
 
+void DeleteItem(std::string itemName)
+{
+	unsigned int err;
+
+	if (deletetag(g_hConn, iname, &err))
+	{
+		std::cout << "Tag " << itemName <<" deleted";
+	}
+}
+
 void SelectItem(std::string itemName)
 {
-	//获取记录类型
-	int  typesize;
+	// 获取记录类型
+	int typesize;
 	unsigned int err;
 
 	char buffer[2048];
@@ -455,19 +688,19 @@ void SelectItem(std::string itemName)
 	if (readtype(g_hConn, "BOARD", itemName.c_str(), buffer, 2048, &typesize, &err))
 	{
 		char* buff = (char*)buffer;
-		int  typecode = *(int*)buff;
+		int typecode = *(int*)buff;
 		int* parraysize = (int*)(buff + 4);
-		int  arraysize = *parraysize;
+		int arraysize = *parraysize;
 
 		if (typecode > 0)
 		{
-			//简单类型或简单数组类型
+			// 简单类型或简单数组类型
 			TypeCode* ptypecode = (TypeCode*)buff;
 			TypeCode typecode = *ptypecode;
 
 			if (arraysize == 0)
 			{
-				//简单类型
+				// 简单类型
 				int itemsize = GetSizeOf(typecode);
 				char value[128];
 				timespec timestamp;
@@ -475,7 +708,7 @@ void SelectItem(std::string itemName)
 				if (readb(g_hConn, itemName.c_str(), value, itemsize, &err, &timestamp))
 				{
 					std::cout << "value: ";
-					//根据typecode输出value的值
+					// 根据typecode输出value的值
 					switch (typecode)
 					{
 					case Boolean:
@@ -519,7 +752,7 @@ void SelectItem(std::string itemName)
 			}
 			else
 			{
-				//简单类型数组
+				// 简单类型数组
 				timespec timestamp;
 
 				if (typecode == TypeCode::Char)
@@ -556,44 +789,52 @@ void HandleSelect(std::string itemName)
 	}
 }
 
+void HandleDelete(std::string itemName)
+{
+	if (GlobalObj::qbdname.empty())
+	{
+		std::cout << "No db or board opened." << std::endl;
+		return;
+	}
+
+	if (g_qbdtype == database)
+	{
+		//DeleteTable(itemName);
+	}
+	else if (g_qbdtype == board)
+	{
+		DeleteItem(itemName);
+	}
+}
+
 void Analyse(const std::vector<std::string>& words)
 {
-	if (words.empty()) return;
+	if (words.empty())
+		return;
 
 	std::string cmd = words[0];
 	// 转换为小写
 	std::transform(cmd.begin(), cmd.end(), cmd.begin(),
-		[](unsigned char c) { return std::tolower(c); });
+		[](unsigned char c)
+		{ return std::tolower(c); });
 
-	//   if (cmd == "clear")
-	//   {
-	//       if (words.size() > 1)
-	//       {
-	//           if (g_qbdtype == database)
-	//           {
-	//               HandleClearDB(GlobalObj::qbdname);
-	//           }
-	//           else if (g_qbdtype == board)
-	//           {
-	//               HandleClearBoard(GlobalObj::qbdname);
-	//           }
-	//       }
-	//       return;
-	//   }
-
-	if (cmd == "openb")
+	if (cmd == "clear")
 	{
-		HandleOpenBoard();
+		if (words.size() > 1)
+		{
+			if (g_qbdtype == database)
+			{
+				//HandleClearDB(GlobalObj::qbdname);
+			}
+			else if (g_qbdtype == board)
+			{
+				HandleClearBoard(GlobalObj::qbdname);
+			}
+		}
 		return;
 	}
 
-	//   if (words.size() < 2)
-	//   {
-	//       std::cout << "Syntax error." << std::endl;
-	//       return;
-	//   }
-
-	if (cmd == "connect")
+	if (cmd == "conn" || cmd == "connect")
 	{
 		if (words.size() < 2)
 		{
@@ -606,19 +847,17 @@ void Analyse(const std::vector<std::string>& words)
 		return;
 	}
 
-	//   if (cmd == "open")
-	//   {
-	//       HandleOpen(words[1]);
-	//       return;
-	//   }
+	if (cmd == "openb")
+	{
+		HandleOpenBoard();
+		return;
+	}
 
-
-
-	//   if (cmd == "opendb")
-	//   {
-	//       HandleOpenDB(words[1]);
-	//       return;
-	//   }
+	//if (cmd == "opendb")
+	//{
+	//   HandleOpenDB(words[1]);
+	//   return;
+	//}
 
 	if (cmd == "select")
 	{
@@ -632,11 +871,11 @@ void Analyse(const std::vector<std::string>& words)
 		return;
 	}
 
-	//   if (cmd == "delete")
-	//   {
-	//       HandleDelete(words[1]);
-	//       return;
-	//   }
+	if (cmd == "delete")
+	{
+		HandleDelete(words[1]);
+		return;
+	}
 
 	std::cout << "Unknown command." << std::endl;
 }

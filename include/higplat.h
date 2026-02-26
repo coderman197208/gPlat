@@ -157,14 +157,16 @@ extern "C" bool writeb(int sockfd, const char* tagname, void* value, int actsize
 extern "C" bool subscribe(int sockfd, const char* tagname, unsigned int* error);
 extern "C" bool subscribedelaypost(int sockfd, const char* tagname, const char* eventname, int delaytime, unsigned int* error);
 extern "C" bool createtag(int sockfd, const char* tagname, int tagsize, void* type, int typesize, unsigned int* error);
+extern "C" bool deletetag(int sockfd, const char* tagname, unsigned int* error);
 extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int buffersize, int timeout, unsigned int* error);
 extern "C" bool readb_string(int sockfd, const char* tagname, char* value, int buffersize, unsigned int* error, timespec*timestamp=0);
 extern "C" bool writeb_string(int sockfd, const char* tagname, const char* value, unsigned int* error);
 extern "C" bool readb_string2(int sockfd, const char* tagname, std::string& value, unsigned int* error, timespec* timestamp = 0);
-extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string& value, unsigned int* error);
+extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string value, unsigned int* error);
 extern "C" bool readtype(int sockfd, const char* qbdname, const char* tagname, void* inbuff, int buffsize, int* ptypesize, unsigned int* error);
+extern "C" bool clearb(int sockfd, unsigned int* error);
 
-extern "C" bool write_plc_string(int sockfd, const char* tagname, std::string& str, unsigned int* error);
+extern "C" bool write_plc_string(int sockfd, const char* tagname, std::string str, unsigned int* error);
 extern "C" bool write_plc_bool(int sockfd, const char* tagname, bool value, unsigned int* error);
 extern "C" bool write_plc_short(int sockfd, const char* tagname, short value, unsigned int* error);
 extern "C" bool write_plc_ushort(int sockfd, const char* tagname, unsigned short value, unsigned int* error);
@@ -175,6 +177,7 @@ extern "C" bool registertag(int sockfd, const char* tagname, unsigned int* error
 
 extern "C" bool CreateB(const char* lpFileName, int size);
 extern "C" bool CreateItem(const char* lpBoardName, const char* lpItemName, int itemSize, void* pType = 0, int typeSize = 0);
+extern "C" bool DeleteItem(const char* lpBoardName, const char* lpItemName);
 extern "C" bool CreateQ(const char* lpFileName, int recordSize, int recordNum, int dateType, int operateMode, void* pType = 0, int typeSize = 0);
 extern "C" bool LoadQ(const char* lpDqName );
 extern "C" bool ReadQ(const char* lpDqName, void  *lpRecord, int actSize, char* remoteIp=0 );
@@ -185,6 +188,7 @@ extern "C" bool ReadB_String(const char* lpBulletinName, const char* lpItemName,
 extern "C" bool ReadB_String2(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, int& strLength, timespec* timestamp);
 extern "C" bool WriteB(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, void* lpSubItem = 0, int actSubSize = 0);
 extern "C" bool WriteB_String(const char* lpBulletinName, const char* lpItemName, void *lpItem, int actSize, void *lpSubItem = 0, int actSubSize = 0);
+extern "C" bool ClearB(const char* lpBoardName);
 extern "C" bool GetLastErrorQ();
 extern "C" bool ReadType(const char* lpDqName, const char* lpItemName, void* inBuff, int buffSize, int* pTypeSize);
 #endif

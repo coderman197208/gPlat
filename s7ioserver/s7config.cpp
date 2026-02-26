@@ -280,13 +280,13 @@ bool LoadConfig(const std::string& filename, AppConfig& config) {
             else fprintf(stderr, "Line %d: unknown general key: %s\n", lineNum, key.c_str());
         } else if (currentPlc) {
             // PLC参数或tag定义
-            if (key.substr(0, 4) == "tag.") {
-                // tag定义
-                std::string tagname = key.substr(4);
-                if (tagname.empty()) {
-                    fprintf(stderr, "Line %d: empty tag name\n", lineNum);
-                    return false;
-                }
+            if (key == "ip")             currentPlc->ip = value;
+            else if (key == "rack")             currentPlc->rack = std::stoi(value);
+            else if (key == "slot")             currentPlc->slot = std::stoi(value);
+            else if (key == "poll_interval")    currentPlc->poll_interval = std::stoi(value);
+            else {
+                // 其余键视为tag定义
+                std::string tagname = key;
 
                 // 全局唯一性检查
                 if (allTagNames.count(tagname)) {
@@ -303,11 +303,7 @@ bool LoadConfig(const std::string& filename, AppConfig& config) {
 
                 allTagNames.insert(tagname);
                 currentPlc->tags.push_back(std::move(tag));
-            } else if (key == "ip")             currentPlc->ip = value;
-            else if (key == "rack")             currentPlc->rack = std::stoi(value);
-            else if (key == "slot")             currentPlc->slot = std::stoi(value);
-            else if (key == "poll_interval")    currentPlc->poll_interval = std::stoi(value);
-            else fprintf(stderr, "Line %d: unknown PLC key: %s\n", lineNum, key.c_str());
+            }
         }
     }
 

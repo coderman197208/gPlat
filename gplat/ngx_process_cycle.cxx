@@ -217,35 +217,35 @@ static void ngx_worker_process_init(int inum)
 
 		//启动0.5秒定时器
 		g_tm.add_periodic(500, [](void* user) {
-			std::cout << "500毫秒定时器时间到" << std::endl;
+			//std::cout << "500毫秒定时器时间到" << std::endl;
 			g_socket.NotifyTimerSubscriber("timer_500ms", NULL,0); //通知定时器到达了
 			},
 			nullptr);
 
 		//启动1秒定时器
 		g_tm.add_periodic(1000, [](void* user) {
-			std::cout << "1秒定时器时间到" << std::endl;
+			//std::cout << "1秒定时器时间到" << std::endl;
 			g_socket.NotifyTimerSubscriber("timer_1s", NULL, 0); //通知定时器到达了
 			},
 			nullptr);
 
 		//启动2秒定时器
 		g_tm.add_periodic(2000, [](void* user) {
-			std::cout << "2秒定时器时间到" << std::endl;
+			//std::cout << "2秒定时器时间到" << std::endl;
 			g_socket.NotifyTimerSubscriber("timer_2s", NULL, 0); //通知定时器到达了
 			},
 			nullptr);
 
 		//启动3秒定时器
 		g_tm.add_periodic(3000, [](void* user) {
-			std::cout << "3秒定时器时间到" << std::endl;
+			//std::cout << "3秒定时器时间到" << std::endl;
 			g_socket.NotifyTimerSubscriber("timer_3s", NULL, 0); //通知定时器到达了
 			},
 			nullptr);
 
 		//启动5秒定时器
 		g_tm.add_periodic(5000, [](void* user) {
-			std::cout << "-5秒定时器时间到" << std::endl;
+			std::cout << "5秒定时器时间到" << std::endl;
 			g_socket.NotifyTimerSubscriber("timer_5s", NULL, 0); //通知定时器到达了
 			},
 			nullptr);
