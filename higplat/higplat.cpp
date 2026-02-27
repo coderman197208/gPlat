@@ -537,6 +537,14 @@ extern "C" int connectgplat(const char* server, int port)
 	return sockfd;
 }
 
+extern "C" void disconnectgplat(int sockfd)
+{
+	if (sockfd >= 0) {
+		close(sockfd);
+		printf("[INFO] Disconnected from gplat server (fd=%d)\n", sockfd);
+	}
+}
+
 extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error)
 {
 	// 参数校验

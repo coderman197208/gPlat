@@ -210,7 +210,7 @@ bool CreateItem(const std::string& itemName, const std::string& para, const std:
 		if (arraysize == 0 || arraysize == 1)
 		{
 			// 复合类型 - 需要实现
-			char buff[100];
+			char buff[2048];
 			int* ptypecode = (int*)buff;
 			int* parraysize = (int*)(buff + 4);
 			*ptypecode = -1;
@@ -468,7 +468,60 @@ bool CreateItem(const std::string& itemName, const std::string& para, const std:
 	return true;
 }
 
-void CreateItemFromFile(std::string fileName)
+void CreateItemFromScriptFile(std::string fileName)
+{
+	std::ifstream file(fileName);
+	if (!file.is_open())
+	{
+		std::cout << "无法打开文件: " << fileName << std::endl;
+		return;
+	}
+
+	std::string line;
+	int successCount = 0;
+	int failCount = 0;
+
+	while (std::getline(file, line))
+	{
+		// 去除首尾空白
+		size_t s = line.find_first_not_of(" \t\r\n");
+		if (s == std::string::npos)
+			continue;
+		line = line.substr(s);
+		size_t e = line.find_last_not_of(" \t\r\n");
+		if (e != std::string::npos)
+			line = line.substr(0, e + 1);
+		// 跳过注释行
+		if (line[0] == '#' || line[0] == ';')
+			continue;
+		// 按空格分割
+		std::vector<std::string> parts;
+		size_t pos = 0;
+		while ((pos = line.find(' ')) != std::string::npos)
+		{
+			std::string part = line.substr(0, pos);
+			if (!part.empty())
+				parts.push_back(part);
+			line.erase(0, pos + 1);
+		}
+		if (!line.empty())
+			parts.push_back(line);
+		if (parts.size() >= 3 && parts[0] == "create")
+		{
+			std::string itemName = parts[1];
+			std::string typeName = parts[2];
+			std::string arraySize = (parts.size() >= 4) ? parts[3] : "";
+			if (CreateItem(itemName, typeName, arraySize))
+				successCount++;
+			else
+				failCount++;
+		}
+	}
+
+	std::cout << "CreateItemFromScriptFile 完成: 成功 " << successCount << " 个, 失败 " << failCount << " 个" << std::endl;
+}
+
+void CreateItemFromConfigFile(std::string fileName)
 {
 	std::ifstream file(fileName);
 	if (!file.is_open())
@@ -499,6 +552,8 @@ void CreateItemFromFile(std::string fileName)
 
 	bool inPlcSection = false;
 	std::string line;
+	int successCount = 0;
+	int failCount = 0;
 
 	while (std::getline(file, line))
 	{
@@ -611,8 +666,13 @@ void CreateItemFromFile(std::string fileName)
 			}
 		}
 
-		CreateItem(key, createType, maxLen);
+		if (CreateItem(key, createType, maxLen))
+			successCount++;
+		else
+			failCount++;
 	}
+
+	std::cout << "CreateItemFromConfigFile 完成: 成功 " << successCount << " 个, 失败 " << failCount << " 个" << std::endl;
 }
 
 void HandleClearBoard(std::string qbdName)
@@ -641,27 +701,33 @@ void HandleCreate(const std::vector<std::string>& words)
 		return;
 	}
 
-	if (g_qbdtype == database && words.size() == 4)
+	if (g_qbdtype != board)
 	{
-		// CreateTable(words[1], words[2], words[3]);
+		std::cout << "Create command is only supported for board." << std::endl;
+		return;
 	}
-	else if (g_qbdtype == board && words.size() == 3)
+
+	if (words.size() == 6)
 	{
-		std::string firstWord = words[1];
+		std::string firstWord = words[3];
 		std::transform(firstWord.begin(), firstWord.end(), firstWord.begin(),
 			[](unsigned char c)
 			{ return std::tolower(c); });
 
-		if (firstWord == "from")
+		if (firstWord == "config")
 		{
-			CreateItemFromFile(words[2]);
+			CreateItemFromConfigFile(words[5]);
 		}
-		else
+		else if (firstWord == "script")
 		{
-			CreateItem(words[1], words[2], "");
+			CreateItemFromScriptFile(words[5]);
 		}
 	}
-	else if (g_qbdtype == board && words.size() == 4)
+	else if (words.size() == 3)
+	{
+		CreateItem(words[1], words[2], "");
+	}
+	else if (words.size() == 4)
 	{
 		CreateItem(words[1], words[2], words[3]);
 	}
@@ -671,9 +737,9 @@ void DeleteItem(std::string itemName)
 {
 	unsigned int err;
 
-	if (deletetag(g_hConn, iname, &err))
+	if (deletetag(g_hConn, itemName.c_str(), &err))
 	{
-		std::cout << "Tag " << itemName <<" deleted";
+		std::cout << "Tag " << itemName <<" deleted" << std::endl;
 	}
 }
 

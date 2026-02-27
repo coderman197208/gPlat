@@ -149,6 +149,7 @@ struct DB_HEAD
 #define RECORDHEADSIZE  sizeof(RECORD_HEAD)
 
 extern "C" int  connectgplat(const char* server, int port);
+extern "C" void disconnectgplat(int sockfd);
 extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error);
 extern "C" bool writeq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error);
 extern "C" bool clearq(int sockfd, const char* qname, unsigned int* error);
