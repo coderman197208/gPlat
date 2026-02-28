@@ -39,7 +39,7 @@ struct MotorStatus {
 	float         current;
 	int32_t       error_code;
 	uint32_t      run_count;
-	PodString<16> motor_name;
+	PodString<16> motor_name[3];
 };
 
 #pragma pack(pop)
@@ -49,7 +49,7 @@ REGISTER_STRUCT(MotorStatus,
 	FIELD_DESC(Single,  MotorStatus, current),
 	FIELD_DESC(Int32,   MotorStatus, error_code),
 	FIELD_DESC(UInt32,  MotorStatus, run_count),
-	FIELD_DESC_STRING(MotorStatus, motor_name)
+	FIELD_DESC_STRING_ARRAY(MotorStatus, motor_name, 3)
 )
 
 #endif // USER_TYPES_H_

@@ -649,10 +649,9 @@ void SelectTag(std::string tagName)
 						const TypeInfo* ti = FindTypeByCode((int)fi.type);
 						if (ti && ti->print)
 						{
-							// 检查是否是数组（数组的 size 会大于单个元素的 size）
-							// 注意：String 类型的 ti->size 为 0，直接使用 fi.size
-							int element_size = ti->size;
-							int array_count = (element_size > 0) ? (fi.size / element_size) : 1;
+							// 使用 element_count 判断是否为数组
+							int array_count = fi.element_count;
+							int element_size = (array_count > 1) ? (fi.size / array_count) : fi.size;
 
 							if (array_count > 1)
 							{

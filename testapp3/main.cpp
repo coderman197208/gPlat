@@ -49,7 +49,9 @@ int main()
 	motorStatus.speed[0] = 1000.0f;
 	motorStatus.speed[1] = 1500.0f;
 	motorStatus.speed[2] = 2000.0f;
-	motorStatus.motor_name = "主电机";
+	motorStatus.motor_name[0] = "主电机";
+	motorStatus.motor_name[1] = "副电机A";
+	motorStatus.motor_name[2] = "副电机B";
 
 
 	ret = writeb(h, "motorstatus", &motorStatus, sizeof(motorStatus), &err);
