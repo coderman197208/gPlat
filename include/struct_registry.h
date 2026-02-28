@@ -14,6 +14,8 @@ inline const std::unordered_map<std::string, const StructInfo*>& GetStructRegist
 	static const std::unordered_map<std::string, const StructInfo*> table = {
 		REG(SensorData),
 		REG(MotorStatus),
+		REG(GPSPosition),
+		REG(Vehicle),
 		// 新增类型在此添加一行
 	};
 	return table;

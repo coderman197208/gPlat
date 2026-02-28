@@ -16,6 +16,7 @@ enum TypeCode
 	Single,     // 9
 	Double,     // 10
 	String,     // 11  PodString<N>, 具体容量由 FieldInfo.size 区分
+	Struct,     // 12  嵌套 struct（限一层），具体布局由 FieldInfo.struct_info 指向
 };
 
 #endif // TYPE_CODE_H_

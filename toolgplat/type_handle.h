@@ -61,6 +61,7 @@ inline const std::unordered_map<std::string, TypeInfo>& GetTypeByName()
 		{"Single",  {Single,  (int)sizeof(float),    PrintValue<float>}},
 		{"Double",  {Double,  (int)sizeof(double),   PrintValue<double>}},
 		{"String",  {String,  0,                      PrintString}},  // size=0: 实际大小由 FieldInfo.size 提供
+		{"Struct",  {Struct,  0,                      nullptr}},     // 嵌套 struct，由 FieldInfo.struct_info 处理
 	};
 	return table;
 }
@@ -80,6 +81,7 @@ inline const std::unordered_map<int, TypeInfo>& GetTypeByCode()
 		{Single,  {Single,  (int)sizeof(float),    PrintValue<float>}},
 		{Double,  {Double,  (int)sizeof(double),   PrintValue<double>}},
 		{String,  {String,  0,                      PrintString}},  // size=0: 实际大小由 FieldInfo.size 提供
+		{Struct,  {Struct,  0,                      nullptr}},     // 嵌套 struct，由 FieldInfo.struct_info 处理
 	};
 	return table;
 }

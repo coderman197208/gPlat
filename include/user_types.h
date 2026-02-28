@@ -52,4 +52,38 @@ REGISTER_STRUCT(MotorStatus,
 	FIELD_DESC_STRING_ARRAY(MotorStatus, motor_name, 3)
 )
 
+// 嵌套 struct 示例（内层：仅含基本类型，供外层引用）
+
+#pragma pack(push, 8)
+
+struct GPSPosition {
+	double latitude;
+	double longitude;
+};
+
+#pragma pack(pop)
+
+REGISTER_STRUCT(GPSPosition,
+	FIELD_DESC(Double, GPSPosition, latitude),
+	FIELD_DESC(Double, GPSPosition, longitude)
+)
+
+#pragma pack(push, 8)
+
+struct Vehicle {
+	int32_t       id;
+	GPSPosition   pos;
+	GPSPosition   history[3];
+	PodString<16> plate;
+};
+
+#pragma pack(pop)
+
+REGISTER_STRUCT(Vehicle,
+	FIELD_DESC(Int32, Vehicle, id),
+	FIELD_DESC_STRUCT(Vehicle, pos, GPSPosition),
+	FIELD_DESC_STRUCT_ARRAY(Vehicle, history, GPSPosition, 3),
+	FIELD_DESC_STRING(Vehicle, plate)
+)
+
 #endif // USER_TYPES_H_

@@ -646,33 +646,76 @@ void SelectTag(std::string tagName)
 					{
 						const FieldInfo& fi = si->fields[f];
 						std::cout << "  " << fi.name << ": ";
-						const TypeInfo* ti = FindTypeByCode((int)fi.type);
-						if (ti && ti->print)
-						{
-							// 使用 element_count 判断是否为数组
-							int array_count = fi.element_count;
-							int element_size = (array_count > 1) ? (fi.size / array_count) : fi.size;
 
-							if (array_count > 1)
+						if (fi.type == Struct && fi.struct_info)
+						{
+							// 嵌套 struct（限一层）
+							int elem_size = fi.struct_info->total_size;
+							std::cout << std::endl;
+							for (int a = 0; a < fi.element_count; a++)
 							{
-								// 数组字段，打印所有元素
-								std::cout << "[";
-								for (int a = 0; a < array_count; a++)
+								if (fi.element_count > 1)
+									std::cout << "    [" << a << "]" << std::endl;
+								char* sbase = base + fi.offset + a * elem_size;
+								for (int sf = 0; sf < fi.struct_info->field_count; sf++)
 								{
-									if (a > 0) std::cout << ", ";
-									ti->print(std::cout, base + fi.offset + a * element_size);
+									const FieldInfo& sfi = fi.struct_info->fields[sf];
+									const char* indent = (fi.element_count > 1) ? "      " : "    ";
+									std::cout << indent << sfi.name << ": ";
+									const TypeInfo* sti = FindTypeByCode((int)sfi.type);
+									if (sti && sti->print)
+									{
+										int sa_count = sfi.element_count;
+										int sa_size = (sa_count > 1) ? (sfi.size / sa_count) : sfi.size;
+										if (sa_count > 1)
+										{
+											std::cout << "[";
+											for (int sa = 0; sa < sa_count; sa++)
+											{
+												if (sa > 0) std::cout << ", ";
+												sti->print(std::cout, sbase + sfi.offset + sa * sa_size);
+											}
+											std::cout << "]";
+										}
+										else
+											sti->print(std::cout, sbase + sfi.offset);
+									}
+									else
+										PrintHex(std::cout, sbase + sfi.offset, sfi.size);
+									std::cout << std::endl;
 								}
-								std::cout << "]";
-							}
-							else
-							{
-								// 标量字段（包括 String 类型）
-								ti->print(std::cout, base + fi.offset);
 							}
 						}
 						else
-							PrintHex(std::cout, base + fi.offset, fi.size);
-						std::cout << std::endl;
+						{
+							const TypeInfo* ti = FindTypeByCode((int)fi.type);
+							if (ti && ti->print)
+							{
+								// 使用 element_count 判断是否为数组
+								int array_count = fi.element_count;
+								int element_size = (array_count > 1) ? (fi.size / array_count) : fi.size;
+
+								if (array_count > 1)
+								{
+									// 数组字段，打印所有元素
+									std::cout << "[";
+									for (int a = 0; a < array_count; a++)
+									{
+										if (a > 0) std::cout << ", ";
+										ti->print(std::cout, base + fi.offset + a * element_size);
+									}
+									std::cout << "]";
+								}
+								else
+								{
+									// 标量字段（包括 String 类型）
+									ti->print(std::cout, base + fi.offset);
+								}
+							}
+							else
+								PrintHex(std::cout, base + fi.offset, fi.size);
+							std::cout << std::endl;
+						}
 					}
 				}
 				std::cout << "-------------------------------------" << std::endl;
@@ -786,7 +829,12 @@ void Analyse(const std::vector<std::string>& words)
 			{
 				const FieldInfo& f = info->fields[i];
 				std::cout << "    +" << f.offset << "  " << f.name << "  ("
-					<< f.size << " bytes)" << std::endl;
+					<< f.size << " bytes)";
+				if (f.type == Struct && f.struct_info)
+					std::cout << "  -> " << f.struct_info->name;
+				if (f.element_count > 1)
+					std::cout << "  [" << f.element_count << "]";
+				std::cout << std::endl;
 			}
 		}
 		return;
