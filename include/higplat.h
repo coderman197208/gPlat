@@ -169,11 +169,17 @@ extern "C" bool clearb(int sockfd, unsigned int* error);
 
 extern "C" bool write_plc_string(int sockfd, const char* tagname, std::string str, unsigned int* error);
 extern "C" bool write_plc_bool(int sockfd, const char* tagname, bool value, unsigned int* error);
+template<typename T> bool write_plc_bool(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
 extern "C" bool write_plc_short(int sockfd, const char* tagname, short value, unsigned int* error);
+template<typename T> bool write_plc_short(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
 extern "C" bool write_plc_ushort(int sockfd, const char* tagname, unsigned short value, unsigned int* error);
+template<typename T> bool write_plc_ushort(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
 extern "C" bool write_plc_int(int sockfd, const char* tagname, int value, unsigned int* error);
+template<typename T> bool write_plc_int(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
 extern "C" bool write_plc_uint(int sockfd, const char* tagname, unsigned int value, unsigned int* error);
+template<typename T> bool write_plc_uint(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
 extern "C" bool write_plc_float(int sockfd, const char* tagname, float value, unsigned int* error);
+template<typename T> bool write_plc_float(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
 extern "C" bool registertag(int sockfd, const char* tagname, unsigned int* error);
 
 extern "C" bool CreateB(const char* lpFileName, int size);
