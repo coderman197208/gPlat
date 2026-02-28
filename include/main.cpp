@@ -1,10 +1,10 @@
 ﻿#include <cstdio>
-//#include "hello.h"
-//#include "ngx_func.h"
-//#include "ngx_c_conf.h"
+#include "podstring.h"
 
 int main()
 {
-    printf("%s 向你问好!\n", "include");
+	PodString10 podstr("include123");
+	std::string str = podstr.to_string();
+    printf("%s 向你问好!\n", str.c_str());
     return 0;
 }

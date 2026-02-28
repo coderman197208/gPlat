@@ -75,6 +75,10 @@
   <ImportGroup Label="Shared" />
   <ImportGroup Label="PropertySheets" />
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <RemoteOutRelDir>$(Platform)/$(Configuration)</RemoteOutRelDir>
+    <OutDir>$(ProjectDir)..\$(Platform)\$(Configuration)\</OutDir>
+  </PropertyGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
   </ItemGroup>
@@ -82,11 +86,16 @@
     <ClInclude Include="hello.h" />
     <ClInclude Include="higplat.h" />
     <ClInclude Include="msg.h" />
+    <ClInclude Include="podstring.h" />
     <ClInclude Include="qbdtype.h" />
     <ClInclude Include="snap7.h" />
     <ClInclude Include="timer_manager.h" />
   </ItemGroup>
-  <ItemDefinitionGroup />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <CppLanguageStandard>c++17</CppLanguageStandard>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>
