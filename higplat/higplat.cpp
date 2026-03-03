@@ -21,7 +21,6 @@
 #include <string.h>
 #include <netinet/tcp.h>  //TCP_NODELAY
 
-
 #include "../include/msg.h"
 #include "qbd.h"
 
@@ -1117,6 +1116,55 @@ extern "C" bool clearb(int sockfd, unsigned int* error)
 	}
 	*error = msg.head.error;
 	return (*error == 0);
+}
+
+extern "C" bool readboardinfo(int sockfd, const void* info, int infosize, unsigned int* error)
+{
+	// 参数校验
+	if (!info || infosize <= 0 || !error) {
+		*error = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+	// 初始化消息结构体
+	MSGSTRUCT msg{};
+	msg.head.id = READBOARDINFO;
+	msg.head.datasize = infosize;
+	msg.head.bodysize = 0;
+	// 安全拷贝字符串
+	strncpy(msg.head.qname, "BOARD", sizeof(msg.head.qname) - 1);
+	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
+	// 发送请求
+	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	// 读取响应头
+	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	// 检查错误码
+	*error = msg.head.error;
+	if (*error != 0) {
+		return false;
+	}
+	// 验证数据大小
+	if (msg.head.bodysize > infosize) {
+		*error = ERROR_BUFFER_TOO_SMALL;
+		close(sockfd);
+		return false;
+	}
+	// 读取数据体（如果有）
+	if (msg.head.bodysize > 0) {
+		if (readn(sockfd, const_cast<void*>(info), msg.head.bodysize) < 0) {
+			*error = errno;
+			close(sockfd);
+			return false;
+		}
+	}
+	return true;
 }
 
 extern "C" bool subscribedelaypost(int sockfd, const char* tagname, const char* eventname, int delaytime, unsigned int* error)
@@ -3950,6 +3998,36 @@ extern "C" bool ReadType(const char* lpDqName, const char* lpItemName, void* inB
 		memcpy(inBuff, (char*)lpMapAddress + pHead->totalsize + pIndex[loc].typeaddr, pIndex[loc].typesize);
 		*pTypeSize = pIndex[loc].typesize;
 	}
+	return true;
+}
+
+extern "C" bool ReadBoardInfo(const char* lpBoardName, BOARD_INFO* boardinfo)
+{
+	// 从哈希表中查找该数据队列。
+	struct TABLE_MSG tabmsg;
+	if (!fetchtab(lpBoardName, tabmsg))
+	{
+		return false;
+	}
+	void* lpMapAddress;
+	lpMapAddress = tabmsg.lpMapAddress;
+	BOARD_HEAD* pHead;
+	pHead = (BOARD_HEAD*)lpMapAddress;
+	boardinfo->tagcount_head = pHead->indexcount;
+	boardinfo->totalsize = pHead->totalsize - sizeof(BOARD_HEAD);
+	boardinfo->remainsize = pHead->remain;
+
+	int j = 0;
+	for (int i = 0; i < INDEXSIZE; i++)
+	{
+		if (strcmp(pHead->index[i].itemname, "\0") != 0 && pHead->index[i].erased == false)
+		{
+			j++;
+		}
+	}
+
+	boardinfo->tagcount_act = j;
+
 	return true;
 }
 

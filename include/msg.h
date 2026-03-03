@@ -40,19 +40,20 @@ enum MSGID
 	READHEADB,
 	READHEADDB,
 	ACK,
-	POPARECORDQ,		//mark
-	WRITEBSTRING,		//mark
-	WRITETOL1,			//mark
-	SUBSCRIBE,			//mark
-	CANCELSUBSCRIBE,	//mark
-	POST,				//mark
-	POSTWAIT,			//mark
+	POPARECORDQ,
+	WRITEBSTRING,
+	WRITETOL1,
+	SUBSCRIBE,
+	CANCELSUBSCRIBE,
+	POST,
+	POSTWAIT,
 	PASSTOSERVER,		//mark 内部使用
-	CLEARB,				//mark
-	CLEARDB,			//mark
-	REGISTERPLCSERVER,	//mark
-	WRITEBPLC,			//mark
-	WRITEBSTRINGPLC,	//mark
+	CLEARB,
+	CLEARDB,
+	REGISTERPLCSERVER,
+	WRITEBPLC,
+	WRITEBSTRINGPLC,
+	READBOARDINFO,
 };
 
 #pragma pack( push, enter_MSG_H_, 1)
@@ -88,11 +89,6 @@ typedef struct {
 	MSGHEAD head;
 	char    body[MAXMSGLEN];
 } MSGSTRUCT, *PMSGSTRUCT;
-
-//struct BODY_WATCHDOG
-//{
-//    int      a;
-//};
 
 #pragma pack( pop, enter_MSG_H_ )
 

@@ -1,5 +1,12 @@
-create string1 string 10000
+create int1 Int32
+create int2 Int32
+create sensor1 SensorData
+create sensorarray SensorData 3
+create motorstatus MotorStatus
+create vehicle1 Vehicle
 
+create string1 string 10000
+create TagBigData1 TagBigData$15992
 create tagint00_00 Int32
 create tagint01_00 Int32
 create tagint02_00 Int32

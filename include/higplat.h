@@ -1,10 +1,7 @@
 ﻿#if !defined(HIGPLAT_H_INCLUDED_)
 #define HIGPLAT_H_INCLUDED_
 
-#include <mutex>
 #include <string>
-
-#define DllImport   __declspec( dllimport )
 
 #define ERROR_DQFILE_NOT_FOUND			1
 #define ERROR_DQ_NOT_OPEN				2
@@ -48,13 +45,7 @@
 #define ERROR_INVALID_RESPONSE			40
 #define ERROR_BUFFER_TOO_SMALL			41
 
-#define MAXDQNAMELENTH 40
-
-#define INDEXSIZE     7177 	// 必须为质数，必须和dq.h中的定义一致
-
-#define MUTEXSIZE	  64	// 一个BOARD或DB中读写锁的数量，必须是2的n次幂，必须和dq.h中的定义一致
-
-#pragma pack( push, enter_dataqueue_h_, 8)
+#pragma pack( push, enter_qbdtype_h_, 8)
 
 struct QUEUE_HEAD
 {
@@ -79,74 +70,20 @@ struct RECORD_HEAD
 	int  reserve;			// 预留
 };
 
-//clock_gettime(CLOCK_REALTIME, &ts);
-//printf("秒: %ld, 纳秒: %ld\n", ts.tv_sec, ts.tv_nsec);
-struct BOARD_INDEX_STRUCT
+struct BOARD_INFO
 {
-	char  itemname[MAXDQNAMELENTH];
-	int    startpos;		// reference to the beginning of date part.
-	int    itemsize;
-	int    strlenth;		// 字符串长度(不包括'\0')
-	bool   erased;			// 表删除标志
-	timespec timestamp;		// write time
-	int	   typeaddr;		// 类型起始地址
-	int	   typesize;		// 类型序列化长度
+	int    totalsize;
+	int    remainsize;
+	int    tagcount_head;
+	int    tagcount_act;
 };
 
-struct BOARD_HEAD
-{
-	int qbdtype;
-	int counter;
-	int totalsize;		// BOARD_HEAD和后面数据区大小的和，不包括最后面的类型区
-	int typesize;		// 最后面的类型区的大小	mark
-	int nextpos;		// reference to the beginning of unused date part.
-	int nexttypepos;	// reference to the beginning of unused type part. mark
-	int remain;
-	int typeremain;		// 类型区剩余大小 mark
-	int indexcount;
-	std::mutex mutex_rw;
-	std::mutex mutex_rw_tag[MUTEXSIZE];
-	BOARD_INDEX_STRUCT index[INDEXSIZE];
-};
-
-struct DB_INDEX_STRUCT
-{
-	char  tablename[MAXDQNAMELENTH];
-	int    startpos;		// reference to the beginning of data.
-	int    recordsize;		// 记录大小
-	int    maxcount;		// 最大记录数
-	int    currcount;		// 当前记录数
-	long   mutexaccess;     // 控制互斥访问的变量 //mark 未使用
-	bool   erased;			// 表删除标志
-	timespec timestamp;	// last write time
-	int	   typeaddr;		// 类型起始地址 mark
-	int	   typesize;		// 类型序列化长度
-};
-
-struct DB_HEAD
-{
-	int qbdtype;
-	int counter;
-	int totalsize;
-	int typesize;		// 最后面的类型区的大小	mark
-	int nextpos;		// reference to the beginning of unused data part.
-	int nexttypepos;	// reference to the beginning of unused type part. mark
-	int remain;
-	int typeremain;		// 类型区剩余大小 mark
-	int indexcount;
-	std::mutex mutex_rw;
-	std::mutex mutex_rw_tag[MUTEXSIZE];	//mark 尚未实现
-	DB_INDEX_STRUCT index[INDEXSIZE];
-};
-
-#pragma pack( pop, enter_dataqueue_h_ )
+#pragma pack( pop, enter_qbdtype_h_ )
 
 #define SHIFT_MODE		1
 #define NORMAL_MODE		0
 #define ASCII_TYPE		1
 #define BINARY_TYPE		0
-#define QUEUEHEADSIZE   sizeof(QUEUE_HEAD)
-#define RECORDHEADSIZE  sizeof(RECORD_HEAD)
 
 extern "C" int  connectgplat(const char* server, int port);
 extern "C" void disconnectgplat(int sockfd);
@@ -166,6 +103,7 @@ extern "C" bool readb_string2(int sockfd, const char* tagname, std::string& valu
 extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string value, unsigned int* error);
 extern "C" bool readtype(int sockfd, const char* qbdname, const char* tagname, void* inbuff, int buffsize, int* ptypesize, unsigned int* error);
 extern "C" bool clearb(int sockfd, unsigned int* error);
+extern "C" bool readboardinfo(int sockfd, const void* info, int infosize, unsigned int* error);
 
 extern "C" bool write_plc_string(int sockfd, const char* tagname, std::string str, unsigned int* error);
 extern "C" bool write_plc_bool(int sockfd, const char* tagname, bool value, unsigned int* error);
@@ -198,4 +136,6 @@ extern "C" bool WriteB_String(const char* lpBulletinName, const char* lpItemName
 extern "C" bool ClearB(const char* lpBoardName);
 extern "C" bool GetLastErrorQ();
 extern "C" bool ReadType(const char* lpDqName, const char* lpItemName, void* inBuff, int buffSize, int* pTypeSize);
-#endif
+extern "C" bool ReadBoardInfo(const char* lpBoardName, BOARD_INFO* boardinfo);
+
+#endif // HIGPLAT_H_INCLUDED_

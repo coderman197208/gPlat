@@ -726,6 +726,23 @@ void SelectTag(std::string tagName)
 	}
 }
 
+void DescB()
+{
+	BOARD_INFO info;
+	unsigned int err;
+	if (readboardinfo(g_hConn, &info, sizeof(info), &err))
+	{
+		std::cout << "Total  size: " << info.totalsize << std::endl;
+		std::cout << "Remain size: " << info.remainsize << std::endl;
+		std::cout << "tag count: " << info.tagcount_head << std::endl;
+		std::cout << "tag count: " << info.tagcount_act << std::endl;
+	}
+	else
+	{
+		std::cout << "Failed to describe board. Error code: " << err << std::endl;
+	}
+}
+
 void HandleSelect(std::string tagName)
 {
 	if (GlobalObj::qbdname.empty())
@@ -754,6 +771,11 @@ void HandleDelete(std::string tagName)
 	}
 }
 
+void HandleDesc()
+{
+	DescB();
+}
+
 void Analyse(const std::vector<std::string>& words)
 {
 	if (words.empty())
@@ -767,7 +789,7 @@ void Analyse(const std::vector<std::string>& words)
 
 	if (cmd == "clear")
 	{
-		if (words.size() > 1)
+		if (words.size() > 1 && words[1]=="all")
 		{
 			if (g_qbdtype == board)
 			{
@@ -811,6 +833,12 @@ void Analyse(const std::vector<std::string>& words)
 	if (cmd == "delete")
 	{
 		HandleDelete(words[1]);
+		return;
+	}
+
+	if (cmd == "desc")
+	{
+		HandleDesc();
 		return;
 	}
 

@@ -96,6 +96,7 @@ static const handler statusHandler[] =
 		&CLogicSocket::HandleRegisterPlcServer, // REGISTERPLCSERVER
 		&CLogicSocket::HandleWriteBPlc,		  // WRITEBPLC
 		&CLogicSocket::HandleWriteBStringPlc, // WRITEBSTRINGPLC
+		&CLogicSocket::HandleReadBoardInfo,   // READBOARDINFO
 };
 
 #define AUTH_TOTAL_COMMANDS sizeof(statusHandler) / sizeof(handler) // 整个数组有多少个命令
@@ -1029,4 +1030,44 @@ void CLogicSocket::NotifyPlcIoSever(std::string tagName, char *pPkgBody, unsigne
 	{
 		ngx_log_stderr(0, "ERROR:没有PLCIO服务器订阅这个TAG，请检查应用程序,%s这个TAG没有PLCIO服务器订阅了", tagName.c_str());
 	}
+}
+
+bool CLogicSocket::HandleReadBoardInfo(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
+{
+	if (pPkgHeader == NULL)
+	{
+		return false;
+	}
+	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
+	bool ret;
+	int iLenPkgBody = pPkgHead->datasize;
+	CMemory* p_memory = CMemory::GetInstance();
+	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
+	if (pPkgHead->datasize == sizeof(BOARD_INFO))
+	{
+		if (ret = ReadBoardInfo(pPkgHead->qname, (BOARD_INFO*)(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader)))
+		{
+			pPkgHead->error = 0;
+			pPkgHead->bodysize = iLenPkgBody;
+		}
+		else
+		{
+			pPkgHead->error = GetLastErrorQ();
+			pPkgHead->bodysize = 0;
+		}
+	}
+	else
+	{
+		pPkgHead->error = ERROR_RECORDSIZE;
+		pPkgHead->bodysize = 0;
+	}
+	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	// 填充消息头
+	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
+	// 填充包头
+	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
+	// 发送数据包
+	msgSend(p_sendbuf);
+
+	return true;
 }

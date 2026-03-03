@@ -1,3 +1,6 @@
+#if !defined(QBD_H_INCLUDED_)
+#define QBD_H_INCLUDED_
+
 #include <chrono>
 #include <mutex>
 
@@ -63,36 +66,7 @@ enum{
 #define TYPEMAXSIZE   2048  // 数据类型的最大序列化长度   必须与msg.h中的MAXMSGLEN一致	//mark 与QbdServer项目中MyIOCP::HandleSUBSCRIBE里的缓冲区大小有矛盾，似乎没必要那么大
 #define TYPEAVGSIZE	  32	// 数据类型的平均序列化长度	mark
 
-#pragma pack( push, enter_dq_h_, 8)
-
-/*
-struct TABLE_MSG
-{
-	char dqname[MAXDQNAMELENTH];
-	union
-	{
-		HANDLE hFile;
-		LPVOID lpMapAddress;
-	};
-	HANDLE hMapFile;
-	HANDLE hMutex;
-	BOOL erased;
-	int count;
-};
-*/
-
-
-//为将内存文件映射数据定期写回文件而修改
-//struct TABLE_MSG
-//{
-//	char dqname[MAXDQNAMELENTH];
-//	HANDLE hFile;
-//	LPVOID lpMapAddress;
-//	HANDLE hMapFile;
-//	HANDLE hMutex;
-//	BOOL erased;
-//	int count;
-//};
+#pragma pack( push, enter_qbd_h_, 8)
 
 struct TABLE_MSG
 {
@@ -190,6 +164,14 @@ struct DB_HEAD
 	DB_INDEX_STRUCT index[INDEXSIZE];
 };
 
+struct BOARD_INFO
+{
+	int    totalsize;
+	int    remainsize;
+	int    tagcount_head;
+	int    tagcount_act;
+};
+
 bool inserttab(const struct TABLE_MSG &tabmsg);
 bool fetchtab(const char* dqname, struct TABLE_MSG &tabmsg);
 bool fetchtab1(const char* dqname, struct TABLE_MSG &tabmsg);
@@ -198,4 +180,6 @@ inline int  hash1(const char* s);
 inline int  hash2(const char* s);
 inline void gettime(const char* timebuf);
 
-#pragma pack( pop, enter_dq_h_ )
+#pragma pack( pop, enter_qbd_h_ )
+
+#endif // !defined(QBD_H_INCLUDED_)
