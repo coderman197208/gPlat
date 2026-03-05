@@ -195,7 +195,38 @@ void threadWritePlc(AppConfig* config) {
                                    tag->byte_offset, 1, S7WLByte, &currentByte);
                 if (res != 0) {
                     printf("[write] BOOL read-modify-write: ReadArea failed (err=%d)\n", res);
-                    break;
+
+                    //尝试再读一次，可能是断线了
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    int connected = 0;
+                    Cli_GetConnected(client, &connected);
+                    if (!connected) {
+                        if (!reconnectSnap7Write(client, *lookup.plc, config->reconnect_interval)) {
+                            printf("[write] snap7 reconnect failed for %s, skipping write.\n",
+                                lookup.plc->name.c_str());
+                            break;
+                        }
+                        else
+                        {
+                            printf("[write] snap7 reconnected for %s, retrying BOOL read-modify-write...\n", lookup.plc->name.c_str());
+                        }
+                    }
+                    else
+                    {
+                        printf("[write] snap7 still connected for %s, retrying ReadArea...\n", lookup.plc->name.c_str());
+                    }
+                    res = Cli_ReadArea(client, area, tag->dbnumber,
+                        tag->byte_offset, 1, S7WLByte, &currentByte);
+                    if (res != 0) {
+                        printf("[write] BOOL read-modify-write: ReadArea failed again after reconnect (err=%d), skipping write.\n", res);
+                        break;
+                    }
+                    else
+                    {
+                        printf("[write] BOOL read-modify-write: ReadArea succeeded after reconnect for %s.\n", lookup.plc->name.c_str());
+                    }
+
+                    //break;
                 }
                 if (bval)
                     currentByte |= (1 << tag->bit_offset);

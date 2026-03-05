@@ -24,7 +24,7 @@ void threadFunction1() {
 	//   subscribe(conngplat, "timer_3s", &error);
 	//   subscribe(conngplat, "timer_5s", &error);
 	subscribe(conngplat, "D1", &error);
-	subscribe(conngplat, "bool1", &error);
+	subscribe(conngplat, "bool8", &error);
 
 	int a = 0;
 	std::string eventname;
@@ -34,10 +34,10 @@ void threadFunction1() {
 
 		printf("eventname=%s, error=%d\n", eventname.c_str(), error);
 
-		if (eventname == "bool1") {
+		if (eventname == "bool8") {
 			bool a = *((bool*)value);
 			printf("bool1=%d\n", a);
-			write_plc_bool(conngplat, "bool1", !a, &error); // 写数据
+			write_plc_bool(conngplat, "bool8", !a, &error); // 写数据
 		}
 		if (eventname == "D1") {
 			int a = *((int*)value);
