@@ -362,3 +362,15 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 /include - 副本/hello.h
+
+# dev container files
+.devcontainer/
+.dockerignore
+
+# macOS files
+.DS_Store
+
+# makefile build outputs
+build/
+lib/
+bin/
