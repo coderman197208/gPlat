@@ -55,6 +55,9 @@ int main(int argc, char* argv[])
         readThreads.emplace_back(threadReadPlc, &plc, &config);
     }
 
+	// 不要让读线程和写线程同时尝试连接PLC，先让读线程启动并连接成功，否则可能出现竞争条件导致连接失败。
+    sleep(1);
+
     // 启动一个共享写线程
     std::thread writeThread(threadWritePlc, &config);
 

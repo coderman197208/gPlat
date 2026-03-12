@@ -304,6 +304,11 @@ void CreateItemFromScriptFile(std::string fileName)
 
 	while (std::getline(file, line))
 	{
+		// 去除行内注释（# 或 ;）
+		size_t commentPos = line.find('#');
+		if (commentPos != std::string::npos)
+			line = line.substr(0, commentPos);
+
 		// 去除首尾空白
 		size_t s = line.find_first_not_of(" \t\r\n");
 		if (s == std::string::npos)
@@ -358,6 +363,11 @@ void CreateItemFromConfigFile(std::string fileName)
 
 	while (std::getline(file, line))
 	{
+		// 去除行内注释（# 或 ;）
+		size_t commentPos = line.find('#');
+		if (commentPos != std::string::npos)
+			line = line.substr(0, commentPos);
+
 		// 去除首尾空白
 		size_t s = line.find_first_not_of(" \t\r\n");
 		if (s == std::string::npos)
@@ -366,10 +376,6 @@ void CreateItemFromConfigFile(std::string fileName)
 		size_t e = line.find_last_not_of(" \t\r\n");
 		if (e != std::string::npos)
 			line = line.substr(0, e + 1);
-
-		// 跳过注释行
-		if (line[0] == '#' || line[0] == ';')
-			continue;
 
 		// 处理 section 头
 		if (line[0] == '[')

@@ -233,10 +233,16 @@ bool LoadConfig(const std::string& filename, AppConfig& config) {
 
     while (std::getline(file, line)) {
         lineNum++;
+
+        // 去除行内注释（#）
+        size_t commentPos = line.find('#');
+        if (commentPos != std::string::npos)
+            line = line.substr(0, commentPos);
+
         line = trim(line);
 
-        // 跳过空行和注释
-        if (line.empty() || line[0] == '#' || line[0] == ';')
+        // 跳过空行
+        if (line.empty())
             continue;
 
         // section头
