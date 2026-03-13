@@ -78,7 +78,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <OutDir>$(ProjectDir)..\$(Platform)\$(Configuration)\</OutDir>
     <TargetExt />
-    <RemoteOutRelDir>$(Platform)/$(Configuration)</RemoteOutRelDir>
+    <RemoteOutRelDir>Bin</RemoteOutRelDir>
   </PropertyGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />

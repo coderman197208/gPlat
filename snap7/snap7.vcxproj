@@ -84,7 +84,7 @@
   <ImportGroup Label="PropertySheets" />
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <RemoteOutRelDir>$(Platform)/$(Configuration)</RemoteOutRelDir>
+    <RemoteOutRelDir>Bin</RemoteOutRelDir>
   </PropertyGroup>
   <ItemGroup>
     <ClCompile Include="src\core\s7_client.cpp" />

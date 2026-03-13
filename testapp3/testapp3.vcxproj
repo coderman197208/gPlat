@@ -80,7 +80,7 @@
     <CopyAdditionalIncludes>false</CopyAdditionalIncludes>
     <LibraryPath>
     </LibraryPath>
-    <RemoteOutRelDir>$(Platform)/$(Configuration)</RemoteOutRelDir>
+    <RemoteOutRelDir>Bin</RemoteOutRelDir>
     <OutDir>$(ProjectDir)..\$(Platform)\$(Configuration)\</OutDir>
     <TargetExt />
   </PropertyGroup>
