@@ -1,7 +1,8 @@
 ﻿#ifndef __NGX_GBLDEF_H__
 #define __NGX_GBLDEF_H__
 
-#include <signal.h> 
+#include <signal.h>
+#include <pthread.h>
 
 #include "ngx_c_slogic.h"
 #include "ngx_c_threadpool.h"
@@ -18,12 +19,15 @@ typedef struct _CConfItem
 	char ItemContent[500];
 }CConfItem,*LPCConfItem;
 
-//和运行日志相关 
+//和运行日志相关
 typedef struct
 {
-	int    log_level;   //日志级别 或者日志类型，ngx_macro.h里分0-8共9个级别
-	int    fd;          //日志文件描述符
-
+	int                log_level;           //日志级别 或者日志类型，ngx_macro.h里分0-8共9个级别
+	int                fd;                  //日志文件描述符
+	char               log_path[256];       //日志文件路径，轮转时需要用到
+	int                log_rotate_count;    //保留的备份文件数量，0=不轮转
+	off_t              log_rotate_size;     //单个日志文件最大字节数，超过则轮转
+	pthread_mutex_t    log_mutex;           //日志写入互斥量，保护轮转+写入
 }ngx_log_t;
 
 //外部全局量声明

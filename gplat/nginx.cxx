@@ -181,8 +181,9 @@ void freeresource()
 	if (ngx_log.fd != STDERR_FILENO && ngx_log.fd != -1)
 	{
 		close(ngx_log.fd); //不用判断结果了
-		ngx_log.fd = -1; //标记下，防止被再次close吧        
+		ngx_log.fd = -1; //标记下，防止被再次close吧
 	}
+	pthread_mutex_destroy(&ngx_log.log_mutex); //销毁日志互斥量
 }
 
 //gyb

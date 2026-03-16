@@ -27,7 +27,11 @@
 #define NGX_LOG_DEBUG             8    //调试 【debug】：最低级别
 
 //#define NGX_ERROR_LOG_PATH       "logs/error1.log"   //定义日志存放的路径和文件名 
-#define NGX_ERROR_LOG_PATH       "error.log"   //定义日志存放的路径和文件名 
+#define NGX_ERROR_LOG_PATH       "error.log"   //定义日志存放的路径和文件名
+
+//日志轮转相关--------------------
+#define NGX_LOG_ROTATE_COUNT_DEFAULT   3                  //默认保留3个备份文件
+#define NGX_LOG_ROTATE_SIZE_DEFAULT    (5 * 1024 * 1024)  //默认单个日志文件最大5MB
 
 //进程相关----------------------
 //标记当前进程类型

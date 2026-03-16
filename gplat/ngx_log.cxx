@@ -10,11 +10,13 @@
 #include <time.h>      //localtime_r
 #include <fcntl.h>     //open
 #include <errno.h>     //errno
+#include <sys/stat.h>  //fstat
 
 #include "ngx_global.h"
 #include "ngx_macro.h"
 #include "ngx_func.h"
 #include "ngx_c_conf.h"
+#include "ngx_c_lockmutex.h"  //CLock RAII锁
 
 //全局量---------------------
 //错误等级，和ngx_macro.h里定义的日志等级宏是一一对应关系
@@ -109,6 +111,51 @@ u_char* ngx_log_errno(u_char* buf, u_char* last, int err)
 }
 
 //----------------------------------------------------------------------------------------------------------------------
+//描述：日志轮转，当日志文件大小超过阈值时，执行轮转操作
+//      error.log -> error.log.1 -> error.log.2 -> ... -> error.log.N (N个备份)
+//      最老的备份文件被删除，当前日志文件变成.1，然后打开新的空日志文件
+//      调用前必须持有 ngx_log.log_mutex
+static void ngx_log_rotate()
+{
+	if (ngx_log.log_rotate_count <= 0)
+		return;
+
+	struct stat st;
+	if (fstat(ngx_log.fd, &st) == -1)
+		return;
+
+	if (st.st_size < ngx_log.log_rotate_size)
+		return;
+
+	char oldpath[300];
+	char newpath[300];
+
+	//删除最老的备份 .N
+	snprintf(oldpath, sizeof(oldpath), "%s.%d", ngx_log.log_path, ngx_log.log_rotate_count);
+	unlink(oldpath);
+
+	//依次重命名 .N-1 -> .N, ... .1 -> .2
+	for (int i = ngx_log.log_rotate_count - 1; i >= 1; i--)
+	{
+		snprintf(oldpath, sizeof(oldpath), "%s.%d", ngx_log.log_path, i);
+		snprintf(newpath, sizeof(newpath), "%s.%d", ngx_log.log_path, i + 1);
+		rename(oldpath, newpath);
+	}
+
+	//当前日志文件 -> .1
+	snprintf(newpath, sizeof(newpath), "%s.1", ngx_log.log_path);
+	rename(ngx_log.log_path, newpath);
+
+	//关闭旧fd，打开新的日志文件
+	close(ngx_log.fd);
+	ngx_log.fd = open(ngx_log.log_path, O_WRONLY | O_APPEND | O_CREAT, 0644);
+	if (ngx_log.fd == -1)
+	{
+		ngx_log.fd = STDERR_FILENO;
+	}
+}
+
+//----------------------------------------------------------------------------------------------------------------------
 //往日志文件中写日志，代码中有自动加换行符，所以调用时字符串不用刻意加\n；
 //日过定向为标准错误，则直接往屏幕上写日志【比如日志文件打不开，则会直接定位到标准错误，此时日志就打印到屏幕上，参考ngx_log_init()】
 //level:一个等级数字，我们把日志分成一些等级，以方便管理、显示、过滤等等，如果这个等级数字比配置文件中的等级数字"LogLevel"大，那么该条信息不被写到日志文件中
@@ -176,18 +223,25 @@ void ngx_log_error_core(int level, int err, const char* fmt, ...)
 			//这种日志就不打印了
 			break;
 		}
-		//磁盘是否满了的判断，先算了吧，还是由管理员保证这个事情吧； 
 
-		//写日志文件        
-		n = write(ngx_log.fd, errstr, p - errstr);  //文件写入成功后，如果中途
+		//加锁：保护轮转检查+写入的原子性
+		{
+			CLock lock(&ngx_log.log_mutex);
+
+			//检查是否需要轮转
+			ngx_log_rotate();
+
+			//写日志文件
+			n = write(ngx_log.fd, errstr, p - errstr);
+		}
+		//锁已释放
+
 		if (n == -1)
 		{
 			//写失败有问题
 			if (errno == ENOSPC) //写失败，且原因是磁盘没空间了
 			{
-				//磁盘没空间了
-				//没空间还写个毛线啊
-				//先do nothing吧；
+				//磁盘没空间了，do nothing
 			}
 			else
 			{
@@ -208,7 +262,6 @@ void ngx_log_error_core(int level, int err, const char* fmt, ...)
 void ngx_log_init()
 {
 	u_char* plogname = NULL;
-	size_t nlen;
 
 	//从配置文件中读取和日志相关的配置信息
 	CConfig* p_config = CConfig::GetInstance();
@@ -216,19 +269,28 @@ void ngx_log_init()
 	if (plogname == NULL)
 	{
 		//没读到，就要给个缺省的路径文件名了
-		plogname = (u_char*)NGX_ERROR_LOG_PATH; //"logs/error.log" ,logs目录需要提前建立出来
+		plogname = (u_char*)NGX_ERROR_LOG_PATH; //"error.log"
 	}
-	ngx_log.log_level = p_config->GetIntDefault("LogLevel", NGX_LOG_NOTICE);//缺省日志等级为6【注意】 ，如果读失败，就给缺省日志等级
-	//nlen = strlen((const char *)plogname);
+	ngx_log.log_level = p_config->GetIntDefault("LogLevel", NGX_LOG_NOTICE); //缺省日志等级为6
 
-	//只写打开|追加到末尾|文件不存在则创建【这个需要跟第三参数指定文件访问权限】
-	//mode = 0644：文件访问权限， 6: 110    , 4: 100：     【用户：读写， 用户所在组：读，其他：读】 老师在第三章第一节介绍过
-	//ngx_log.fd = open((const char *)plogname,O_WRONLY|O_APPEND|O_CREAT|O_DIRECT,0644);   //绕过内和缓冲区，write()成功则写磁盘必然成功，但效率可能会比较低；
+	//保存日志文件路径，供轮转时使用
+	memset(ngx_log.log_path, 0, sizeof(ngx_log.log_path));
+	strncpy(ngx_log.log_path, (const char*)plogname, sizeof(ngx_log.log_path) - 1);
+
+	//读取轮转配置
+	ngx_log.log_rotate_count = p_config->GetIntDefault("LogRotateFileCount", NGX_LOG_ROTATE_COUNT_DEFAULT);
+	int rotate_size_mb = p_config->GetIntDefault("LogRotateFileSize", 5); //单位：MB，默认5
+	ngx_log.log_rotate_size = (off_t)rotate_size_mb * 1024 * 1024;
+
+	//初始化日志互斥量
+	pthread_mutex_init(&ngx_log.log_mutex, NULL);
+
+	//只写打开|追加到末尾|文件不存在则创建
 	ngx_log.fd = open((const char*)plogname, O_WRONLY | O_APPEND | O_CREAT, 0644);
-	if (ngx_log.fd == -1)  //如果有错误，则直接定位到 标准错误上去 
+	if (ngx_log.fd == -1)  //如果有错误，则直接定位到 标准错误上去
 	{
 		ngx_log_stderr(errno, "[alert] could not open error log file: open() \"%s\" failed", plogname);
-		ngx_log.fd = STDERR_FILENO; //直接定位到标准错误去了        
+		ngx_log.fd = STDERR_FILENO; //直接定位到标准错误去了
 	}
 	return;
 }
