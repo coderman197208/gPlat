@@ -99,7 +99,8 @@
       <CppLanguageStandard>c++17</CppLanguageStandard>
     </ClCompile>
     <RemotePostBuildEvent>
-      <Command>sudo cp $(RemoteRootDir)/bin/lib$(ProjectName).so $(RemoteRootDir)/lib</Command>
+      <Command>sudo cp $(RemoteRootDir)/bin/lib$(ProjectName).so /usr/local/lib/
+sudo ldconfig</Command>
     </RemotePostBuildEvent>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

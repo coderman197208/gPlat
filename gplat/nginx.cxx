@@ -97,10 +97,10 @@ int main(int argc, char* const* argv)
 	//(2)初始化失败，就要直接退出的
 	//配置文件必须最先要，后边初始化啥的都用，所以先把配置读出来，供后续使用 
 	CConfig* p_config = CConfig::GetInstance(); //单例类
-	if (p_config->Load("nginx.conf") == false)	//把配置文件内容载入到内存            
+	if (p_config->Load("gplat.conf") == false)	//把配置文件内容载入到内存            
 	{
 		ngx_log_init();    //初始化日志
-		ngx_log_stderr(0, "配置文件[%s]载入失败，退出!", "nginx.conf");
+		ngx_log_stderr(0, "配置文件[%s]载入失败，退出!", "gplat.conf");
 		//exit(1);终止进程，在main中出现和return效果一样 ,exit(0)表示程序正常, exit(1)/exit(-1)表示程序异常退出，exit(2)表示表示系统找不到指定的文件
 		exitcode = 2; //标记找不到文件
 		goto lblexit;

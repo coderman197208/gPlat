@@ -86,21 +86,24 @@
   </PropertyGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="s7log.cpp" />
     <ClCompile Include="threadReadPlc.cpp" />
     <ClCompile Include="threadWritePlc.cpp" />
     <ClCompile Include="s7config.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="s7config.h" />
+    <ClInclude Include="s7log.h" />
   </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile />
     <Link>
       <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>D:\Program\Linux\gPlat\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <SharedLibrarySearchPath>%(SharedLibrarySearchPath)</SharedLibrarySearchPath>
+      <SharedLibrarySearchPath>%(Link.SharedLibrarySearchPath)</SharedLibrarySearchPath>
       <LibraryDependencies>higplat;snap7</LibraryDependencies>
-      <AdditionalOptions>-Wl,-rpath,/home/gyb/projects/gPlature/bin/x64/Debug</AdditionalOptions>
+      <AdditionalOptions>
+      </AdditionalOptions>
     </Link>
     <ClCompile>
       <CppLanguageStandard>c++17</CppLanguageStandard>

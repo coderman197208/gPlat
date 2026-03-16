@@ -10,6 +10,7 @@
 #include "../include/higplat.h"
 #include "../include/snap7.h"
 #include "s7config.h"
+#include "s7log.h"
 
 extern "C" bool writeb_notpost(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error);
 extern "C" bool writeb_string_notpost(int sockfd, const char* tagname, const char* value, unsigned int* error);
@@ -31,10 +32,10 @@ static uint32_t swap32(uint32_t val) {
 static bool reconnectSnap7(S7Object client, const PlcConfig& plc, int interval) {
     Cli_Disconnect(client);
     while (g_running) {
-        printf("[%s] snap7 reconnecting to %s...\n", plc.name.c_str(), plc.ip.c_str());
+        s7log_warn("[%s] snap7 reconnecting to %s...", plc.name.c_str(), plc.ip.c_str());
         int res = Cli_ConnectTo(client, plc.ip.c_str(), plc.rack, plc.slot);
         if (res == 0) {
-            printf("[%s] snap7 reconnected.\n", plc.name.c_str());
+            s7log_info("[%s] snap7 reconnected.", plc.name.c_str());
             return true;
         }
         for (int i = 0; i < interval / 100 && g_running; i++)
@@ -47,11 +48,11 @@ static bool reconnectSnap7(S7Object client, const PlcConfig& plc, int interval) 
 
 static int reconnectGplat(const AppConfig& config) {
     while (g_running) {
-        printf("gPlat reconnecting to %s:%d...\n",
+        s7log_warn("gPlat reconnecting to %s:%d...",
                config.gplat_server.c_str(), config.gplat_port);
         int conn = connectgplat(config.gplat_server.c_str(), config.gplat_port);
         if (conn > 0) {
-            printf("gPlat reconnected (fd=%d).\n", conn);
+            s7log_info("gPlat reconnected (fd=%d).", conn);
             return conn;
         }
         for (int i = 0; i < config.reconnect_interval / 100 && g_running; i++)
@@ -63,32 +64,32 @@ static int reconnectGplat(const AppConfig& config) {
 // ---- 读PLC线程 ----
 
 void threadReadPlc(PlcConfig* plc, AppConfig* config) {
-    printf("[%s] Read thread started for %s\n", plc->name.c_str(), plc->ip.c_str());
+    s7log_info("[%s] Read thread started for %s", plc->name.c_str(), plc->ip.c_str());
 
     // 1. 连接gPlat
     int conn = connectgplat(config->gplat_server.c_str(), config->gplat_port);
     if (conn <= 0) {
         conn = reconnectGplat(*config);
         if (conn <= 0) {
-            printf("[%s] Read thread exiting: cannot connect to gPlat.\n", plc->name.c_str());
+            s7log_error("[%s] Read thread exiting: cannot connect to gPlat.", plc->name.c_str());
             return;
         }
     }
-    printf("[%s] Connected to gPlat (fd=%d)\n", plc->name.c_str(), conn);
+    s7log_info("[%s] Connected to gPlat (fd=%d)", plc->name.c_str(), conn);
 
     // 2. 创建snap7客户端，连接PLC
     S7Object client = Cli_Create();
     int res = Cli_ConnectTo(client, plc->ip.c_str(), plc->rack, plc->slot);
     if (res != 0) {
-        printf("[%s] Initial snap7 connect failed (err=%d), entering reconnect loop.\n",
+        s7log_warn("[%s] Initial snap7 connect failed (err=%d), entering reconnect loop.",
                plc->name.c_str(), res);
         if (!reconnectSnap7(client, *plc, config->reconnect_interval)) {
             Cli_Destroy(&client);
-            printf("[%s] Read thread exiting.\n", plc->name.c_str());
+            s7log_error("[%s] Read thread exiting.", plc->name.c_str());
             return;
         }
     }
-    printf("[%s] Connected to PLC %s\n", plc->name.c_str(), plc->ip.c_str());
+    s7log_info("[%s] Connected to PLC %s", plc->name.c_str(), plc->ip.c_str());
 
     // 3. 初始化变化检测
     for (auto& tag : plc->tags) {
@@ -107,7 +108,7 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
                                group.start_byte, group.total_bytes, S7WLByte,
                                group.buffer.data());
             if (res != 0) {
-                printf("[%s] Cli_ReadArea failed: area=%s%d start=%d bytes=%d err=%d\n",
+                s7log_error("[%s] Cli_ReadArea failed: area=%s%d start=%d bytes=%d err=%d",
                        plc->name.c_str(), AreaName(group.area), group.dbnumber,
                        group.start_byte, group.total_bytes, res);
 
@@ -247,11 +248,11 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
                 tag->first_read = false;
 
                 if (!write_ok) {
-                    printf("[%s] writeb failed for tag '%s', error = %d, reconnecting gPlat...\n",
+                    s7log_error("[%s] writeb failed for tag '%s', error = %d, reconnecting gPlat...",
                            plc->name.c_str(), tag->tagname.c_str(), gplat_error);
                     conn = reconnectGplat(*config);
                     if (conn <= 0) {
-                        printf("[%s] Read thread exiting: gPlat reconnect failed.\n", plc->name.c_str());
+                        s7log_error("[%s] Read thread exiting: gPlat reconnect failed.", plc->name.c_str());
                         Cli_Disconnect(client);
                         Cli_Destroy(&client);
                         return;
@@ -263,7 +264,7 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
         // snap7断开，重连
         if (!snap7_ok) {
             if (!reconnectSnap7(client, *plc, config->reconnect_interval)) {
-                printf("[%s] Read thread exiting: snap7 reconnect failed.\n", plc->name.c_str());
+                s7log_error("[%s] Read thread exiting: snap7 reconnect failed.", plc->name.c_str());
                 break;
             }
             // 重连后标记所有tag需要首次读取
@@ -281,5 +282,5 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
     // 清理
     Cli_Disconnect(client);
     Cli_Destroy(&client);
-    printf("[%s] Read thread exited.\n", plc->name.c_str());
+    s7log_info("[%s] Read thread exited.", plc->name.c_str());
 }

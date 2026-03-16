@@ -11,6 +11,7 @@
 #include "../include/higplat.h"
 #include "../include/snap7.h"
 #include "s7config.h"
+#include "s7log.h"
 
 extern std::atomic<bool> g_running;
 
@@ -26,10 +27,10 @@ struct TagLookup {
 static bool reconnectSnap7Write(S7Object client, const PlcConfig& plc, int interval) {
     Cli_Disconnect(client);
     while (g_running) {
-        printf("[%s/write] snap7 reconnecting to %s...\n", plc.name.c_str(), plc.ip.c_str());
+        s7log_warn("[%s/write] snap7 reconnecting to %s...", plc.name.c_str(), plc.ip.c_str());
         int res = Cli_ConnectTo(client, plc.ip.c_str(), plc.rack, plc.slot);
         if (res == 0) {
-            printf("[%s/write] snap7 reconnected.\n", plc.name.c_str());
+            s7log_info("[%s/write] snap7 reconnected.", plc.name.c_str());
             return true;
         }
         for (int i = 0; i < interval / 100 && g_running; i++)
@@ -42,11 +43,11 @@ static bool reconnectSnap7Write(S7Object client, const PlcConfig& plc, int inter
 
 static int reconnectGplatWrite(AppConfig* config, std::map<std::string, TagLookup>& tagMap) {
     while (g_running) {
-        printf("[write] gPlat reconnecting to %s:%d...\n",
+        s7log_warn("[write] gPlat reconnecting to %s:%d...",
                config->gplat_server.c_str(), config->gplat_port);
         int conn = connectgplat(config->gplat_server.c_str(), config->gplat_port);
         if (conn > 0) {
-            printf("[write] gPlat reconnected (fd=%d), re-registering...\n", conn);
+            s7log_info("[write] gPlat reconnected (fd=%d), re-registering...", conn);
             unsigned int err;
 
             // 重新订阅timer
@@ -57,7 +58,7 @@ static int reconnectGplatWrite(AppConfig* config, std::map<std::string, TagLooku
                 registertag(conn, kv.first.c_str(), &err);
             }
 
-            printf("[write] Re-registered %zu tags.\n", tagMap.size());
+            s7log_info("[write] Re-registered %zu tags.", tagMap.size());
             return conn;
         }
         for (int i = 0; i < config->reconnect_interval / 100 && g_running; i++)
@@ -79,22 +80,22 @@ static uint32_t swap32(uint32_t val) {
 // ---- 写PLC线程 ----
 
 void threadWritePlc(AppConfig* config) {
-    printf("[write] Write thread started.\n");
+    s7log_info("[write] Write thread started.");
 
     // 1. 连接gPlat
     int conn = connectgplat(config->gplat_server.c_str(), config->gplat_port);
     if (conn <= 0) {
-        printf("[write] Cannot connect to gPlat, retrying...\n");
+        s7log_warn("[write] Cannot connect to gPlat, retrying...");
         while (g_running && conn <= 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(config->reconnect_interval));
             conn = connectgplat(config->gplat_server.c_str(), config->gplat_port);
         }
         if (conn <= 0) {
-            printf("[write] Write thread exiting: cannot connect to gPlat.\n");
+            s7log_error("[write] Write thread exiting: cannot connect to gPlat.");
             return;
         }
     }
-    printf("[write] Connected to gPlat (fd=%d)\n", conn);
+    s7log_info("[write] Connected to gPlat (fd=%d)", conn);
 
     unsigned int err;
     // 订阅timer用于退出检测
@@ -106,10 +107,10 @@ void threadWritePlc(AppConfig* config) {
         S7Object client = Cli_Create();
         int res = Cli_ConnectTo(client, plc.ip.c_str(), plc.rack, plc.slot);
         if (res != 0) {
-            printf("[write thread] snap7 connect to %s (%s) failed (err=%d), will retry on write.\n",
+            s7log_warn("[write thread] snap7 connect to %s (%s) failed (err=%d), will retry on write.",
                    plc.name.c_str(), plc.ip.c_str(), res);
         } else {
-            printf("[write thread] snap7 connected to %s (%s)\n", plc.name.c_str(), plc.ip.c_str());
+            s7log_info("[write thread] snap7 connected to %s (%s)", plc.name.c_str(), plc.ip.c_str());
         }
         plcClients[plc.name] = client;
     }
@@ -130,7 +131,7 @@ void threadWritePlc(AppConfig* config) {
     for (auto& kv : tagMap) {
         registertag(conn, kv.first.c_str(), &err);
     }
-    printf("[write] Registered %zu tags.\n", tagMap.size());
+    s7log_info("[write] Registered %zu tags.", tagMap.size());
 
     // 5. 主循环
     while (g_running) {
@@ -140,10 +141,10 @@ void threadWritePlc(AppConfig* config) {
         bool ret = waitpostdata(conn, tagname, value, 1024, -1, &err);
 
         if (!ret) {
-            printf("[write] waitpostdata failed, reconnecting gPlat...\n");
+            s7log_warn("[write] waitpostdata failed, reconnecting gPlat...");
             conn = reconnectGplatWrite(config, tagMap);
             if (conn <= 0) {
-                printf("[write] Write thread exiting: gPlat reconnect failed.\n");
+                s7log_error("[write] Write thread exiting: gPlat reconnect failed.");
                 break;
             }
             continue;
@@ -161,7 +162,7 @@ void threadWritePlc(AppConfig* config) {
         // 查找tag
         auto it = tagMap.find(tagname);
         if (it == tagMap.end()) {
-            printf("[write] Unknown tag: '%s', skipping.\n", tagname.c_str());
+            s7log_warn("[write] Unknown tag: '%s', skipping.", tagname.c_str());
             continue;
         }
 
@@ -175,7 +176,7 @@ void threadWritePlc(AppConfig* config) {
         Cli_GetConnected(client, &connected);
         if (!connected) {
             if (!reconnectSnap7Write(client, *lookup.plc, config->reconnect_interval)) {
-                printf("[write] snap7 reconnect failed for %s, skipping write.\n",
+                s7log_warn("[write] snap7 reconnect failed for %s, skipping write.",
                        lookup.plc->name.c_str());
                 continue;
             }
@@ -194,7 +195,7 @@ void threadWritePlc(AppConfig* config) {
                 res = Cli_ReadArea(client, area, tag->dbnumber,
                                    tag->byte_offset, 1, S7WLByte, &currentByte);
                 if (res != 0) {
-                    printf("[write] BOOL read-modify-write: ReadArea failed (err=%d)\n", res);
+                    s7log_error("[write] BOOL read-modify-write: ReadArea failed (err=%d)", res);
 
                     //尝试再读一次，可能是断线了
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -202,28 +203,28 @@ void threadWritePlc(AppConfig* config) {
                     Cli_GetConnected(client, &connected);
                     if (!connected) {
                         if (!reconnectSnap7Write(client, *lookup.plc, config->reconnect_interval)) {
-                            printf("[write] snap7 reconnect failed for %s, skipping write.\n",
+                            s7log_warn("[write] snap7 reconnect failed for %s, skipping write.",
                                 lookup.plc->name.c_str());
                             break;
                         }
                         else
                         {
-                            printf("[write] snap7 reconnected for %s, retrying BOOL read-modify-write...\n", lookup.plc->name.c_str());
+                            s7log_info("[write] snap7 reconnected for %s, retrying BOOL read-modify-write...", lookup.plc->name.c_str());
                         }
                     }
                     else
                     {
-                        printf("[write] snap7 still connected for %s, retrying ReadArea...\n", lookup.plc->name.c_str());
+                        s7log_info("[write] snap7 still connected for %s, retrying ReadArea...", lookup.plc->name.c_str());
                     }
                     res = Cli_ReadArea(client, area, tag->dbnumber,
                         tag->byte_offset, 1, S7WLByte, &currentByte);
                     if (res != 0) {
-                        printf("[write] BOOL read-modify-write: ReadArea failed again after reconnect (err=%d), skipping write.\n", res);
+                        s7log_error("[write] BOOL read-modify-write: ReadArea failed again after reconnect (err=%d), skipping write.", res);
                         break;
                     }
                     else
                     {
-                        printf("[write] BOOL read-modify-write: ReadArea succeeded after reconnect for %s.\n", lookup.plc->name.c_str());
+                        s7log_info("[write] BOOL read-modify-write: ReadArea succeeded after reconnect for %s.", lookup.plc->name.c_str());
                     }
 
                     //break;
@@ -302,7 +303,7 @@ void threadWritePlc(AppConfig* config) {
         }
 
         if (res != 0) {
-            printf("[write] Cli_WriteArea failed for tag '%s' (err=%d)\n",
+            s7log_error("[write] Cli_WriteArea failed for tag '%s' (err=%d)",
                    tag->tagname.c_str(), res);
 
             // 检查是否断开
@@ -320,5 +321,5 @@ void threadWritePlc(AppConfig* config) {
         Cli_Destroy(&kv.second);
     }
 
-    printf("[write] Write thread exited.\n");
+    s7log_info("[write] Write thread exited.");
 }

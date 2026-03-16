@@ -1,4 +1,5 @@
 #include "s7config.h"
+#include "s7log.h"
 #include "../include/snap7.h"
 
 #include <fstream>
@@ -224,6 +225,12 @@ bool LoadConfig(const std::string& filename, AppConfig& config) {
     config.gplat_port = 8777;
     config.board_name = "BOARD";
     config.reconnect_interval = 3000;
+    config.daemon_mode = false;
+    config.pid_file = "/var/run/s7ioserver.pid";
+    config.log_file = "s7ioserver.log";
+    config.log_level = S7LOG_INFO;
+    config.log_rotate_count = 3;
+    config.log_rotate_size = 5;
 
     std::string line;
     std::string currentSection;
@@ -283,6 +290,12 @@ bool LoadConfig(const std::string& filename, AppConfig& config) {
             else if (key == "gplat_port")    config.gplat_port = std::stoi(value);
             else if (key == "board_name")    config.board_name = value;
             else if (key == "reconnect_interval") config.reconnect_interval = std::stoi(value);
+            else if (key == "daemon")                config.daemon_mode = (std::stoi(value) != 0);
+            else if (key == "pid_file")              config.pid_file = value;
+            else if (key == "log_file")          config.log_file = value;
+            else if (key == "log_level")         config.log_level = std::stoi(value);
+            else if (key == "log_rotate_count")  config.log_rotate_count = std::stoi(value);
+            else if (key == "log_rotate_size")   config.log_rotate_size = std::stoi(value);
             else fprintf(stderr, "Line %d: unknown general key: %s\n", lineNum, key.c_str());
         } else if (currentPlc) {
             // PLC参数或tag定义
@@ -339,44 +352,50 @@ static const char* DataTypeName(S7DataType dt) {
 }
 
 void PrintConfig(const AppConfig& config) {
-    printf("=== s7ioserver Configuration ===\n");
-    printf("gPlat server: %s:%d\n", config.gplat_server.c_str(), config.gplat_port);
-    printf("Board name: %s\n", config.board_name.c_str());
-    printf("Reconnect interval: %d ms\n", config.reconnect_interval);
-    printf("PLC count: %zu\n", config.plcs.size());
+    s7log_info("=== s7ioserver Configuration ===");
+    s7log_info("gPlat server: %s:%d", config.gplat_server.c_str(), config.gplat_port);
+    s7log_info("Board name: %s", config.board_name.c_str());
+    s7log_info("Reconnect interval: %d ms", config.reconnect_interval);
+    s7log_info("Daemon mode: %s", config.daemon_mode ? "YES" : "NO");
+    if (config.daemon_mode)
+        s7log_info("PID file: %s", config.pid_file.c_str());
+    s7log_info("Log file: %s, level: %d, rotate: %d x %dMB",
+               config.log_file.c_str(), config.log_level,
+               config.log_rotate_count, config.log_rotate_size);
+    s7log_info("PLC count: %zu", config.plcs.size());
 
     for (const auto& plc : config.plcs) {
-        printf("\n[%s]\n", plc.name.c_str());
-        printf("  IP: %s, Rack: %d, Slot: %d\n", plc.ip.c_str(), plc.rack, plc.slot);
-        printf("  Poll interval: %d ms\n", plc.poll_interval);
-        printf("  Tags (%zu):\n", plc.tags.size());
+        s7log_info("[%s]", plc.name.c_str());
+        s7log_info("  IP: %s, Rack: %d, Slot: %d", plc.ip.c_str(), plc.rack, plc.slot);
+        s7log_info("  Poll interval: %d ms", plc.poll_interval);
+        s7log_info("  Tags (%zu):", plc.tags.size());
 
         for (const auto& tag : plc.tags) {
             if (tag.datatype == S7DataType::BOOL) {
-                printf("    %-20s %s%d byte %d.%d  %s  (%d bytes)\n",
+                s7log_info("    %-20s %s%d byte %d.%d  %s  (%d bytes)",
                        tag.tagname.c_str(), AreaName(tag.area), tag.dbnumber,
                        tag.byte_offset, tag.bit_offset,
                        DataTypeName(tag.datatype), tag.byte_size);
             } else if (tag.datatype == S7DataType::STRING) {
-                printf("    %-20s %s%d byte %d     %s[%d]  (%d bytes)\n",
+                s7log_info("    %-20s %s%d byte %d     %s[%d]  (%d bytes)",
                        tag.tagname.c_str(), AreaName(tag.area), tag.dbnumber,
                        tag.byte_offset,
                        DataTypeName(tag.datatype), tag.maxlen, tag.byte_size);
             } else {
-                printf("    %-20s %s%d byte %d     %s  (%d bytes)\n",
+                s7log_info("    %-20s %s%d byte %d     %s  (%d bytes)",
                        tag.tagname.c_str(), AreaName(tag.area), tag.dbnumber,
                        tag.byte_offset,
                        DataTypeName(tag.datatype), tag.byte_size);
             }
         }
 
-        printf("  Read groups (%zu):\n", plc.read_groups.size());
+        s7log_info("  Read groups (%zu):", plc.read_groups.size());
         for (const auto& group : plc.read_groups) {
-            printf("    %s%d [%d..%d] (%d bytes, %zu tags)\n",
+            s7log_info("    %s%d [%d..%d] (%d bytes, %zu tags)",
                    AreaName(group.area), group.dbnumber,
                    group.start_byte, group.start_byte + group.total_bytes - 1,
                    group.total_bytes, group.tags.size());
         }
     }
-    printf("================================\n");
+    s7log_info("================================");
 }

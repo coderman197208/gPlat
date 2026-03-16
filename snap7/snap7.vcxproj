@@ -126,7 +126,8 @@
       <AdditionalIncludeDirectories>D:\Program\Linux\gPlat\snap7\src\sys;D:\Program\Linux\gPlat\snap7\src\lib;D:\Program\Linux\gPlat\snap7\src\core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <RemotePostBuildEvent>
-      <Command>sudo cp $(RemoteRootDir)/bin/lib$(ProjectName).so $(RemoteRootDir)/lib
+      <Command>sudo cp $(RemoteRootDir)/bin/lib$(ProjectName).so /usr/local/lib/
+sudo ldconfig
 </Command>
     </RemotePostBuildEvent>
   </ItemDefinitionGroup>

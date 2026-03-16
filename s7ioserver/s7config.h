@@ -50,6 +50,16 @@ struct AppConfig {
     std::string board_name;
     int         reconnect_interval; // ms
     std::vector<PlcConfig> plcs;
+
+    // 守护进程配置
+    bool        daemon_mode;        // 是否以守护进程运行，默认false
+    std::string pid_file;           // PID文件路径，默认 "/var/run/s7ioserver.pid"
+
+    // 日志配置
+    std::string log_file;           // 日志文件路径，默认 "s7ioserver.log"
+    int         log_level;          // 日志等级 0=ERROR,1=WARN,2=INFO,3=DEBUG，默认2
+    int         log_rotate_count;   // 轮转备份文件数量，默认3
+    int         log_rotate_size;    // 单个日志文件最大MB，默认5
 };
 
 // ---- 函数声明 ----
