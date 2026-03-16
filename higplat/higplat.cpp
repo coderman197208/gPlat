@@ -37,6 +37,37 @@ enum EVENTID
 thread_local char g_buffer[MAXMSGLEN] = { 0 };
 thread_local unsigned int errorCode = 0;
 char dataQuePath[100] = ".//qbdfile//";
+
+//从环境变量GPLAT_QBD_PATH初始化dataQuePath，共享库加载时自动执行
+__attribute__((constructor))
+static void init_dataQuePath() {
+	const char* env = getenv("GPLAT_QBD_PATH");
+	if (env && env[0] != '\0') {
+		strncpy(dataQuePath, env, sizeof(dataQuePath) - 2);
+		dataQuePath[sizeof(dataQuePath) - 2] = '\0';
+		//确保以 / 结尾
+		size_t len = strlen(dataQuePath);
+		if (len > 0 && dataQuePath[len - 1] != '/') {
+			dataQuePath[len] = '/';
+			dataQuePath[len + 1] = '\0';
+		}
+	}
+}
+
+//设置QBD文件目录路径
+extern "C" void SetQbdPath(const char* path) {
+	if (path && path[0] != '\0') {
+		strncpy(dataQuePath, path, sizeof(dataQuePath) - 2);
+		dataQuePath[sizeof(dataQuePath) - 2] = '\0';
+		//确保以 / 结尾
+		size_t len = strlen(dataQuePath);
+		if (len > 0 && dataQuePath[len - 1] != '/') {
+			dataQuePath[len] = '/';
+			dataQuePath[len + 1] = '\0';
+		}
+	}
+}
+
 struct TABLE_MSG table[TABLESIZE];
 int tabCounter = 0;
 std::mutex mutex_rw;

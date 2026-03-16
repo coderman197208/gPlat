@@ -126,6 +126,7 @@ extern "C" bool CreateItem(const char* lpBoardName, const char* lpItemName, int 
 extern "C" bool DeleteItem(const char* lpBoardName, const char* lpItemName);
 extern "C" bool CreateQ(const char* lpFileName, int recordSize, int recordNum, int dateType, int operateMode, void* pType = 0, int typeSize = 0);
 extern "C" bool LoadQ(const char* lpDqName );
+extern "C" void SetQbdPath(const char* path);
 extern "C" bool ReadQ(const char* lpDqName, void  *lpRecord, int actSize, char* remoteIp=0 );
 extern "C" bool WriteQ(const char* lpDqName, void  *lpRecord, int actSize=0, const char* remoteIp=0 );
 extern "C" bool ClearQ(const char* lpDqName );

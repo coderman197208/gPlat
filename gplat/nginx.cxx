@@ -67,13 +67,6 @@ int main(int argc, char* const* argv)
 		return 1;
 	}
 
-	//gyb加载qbd
-	if (gplat_load_qbd() == false) //加载qbd
-	{
-		printf("加载qbd失败，退出!\n");
-		return 1;
-	}
-
 	//(0)先初始化的变量
 	g_stopEventChild = 0;			//标记子进程是否退出，0不退出
 	g_stopEventMain = 0;            //标记主进程是否退出，0不退出
@@ -118,7 +111,15 @@ int main(int argc, char* const* argv)
 	CCRC32::GetInstance();
 
 	//(3)一些必须事先准备好的资源，先初始化
-	ngx_log_init();					//日志初始化(创建/打开日志文件)，这个需要配置项，所以必须放配置文件载入的后边；     
+	ngx_log_init();					//日志初始化(创建/打开日志文件)，这个需要配置项，所以必须放配置文件载入的后边；
+
+	//(3.1)gyb加载qbd，需要在配置文件和日志初始化之后
+	if (gplat_load_qbd() == false)
+	{
+		ngx_log_stderr(0, "加载qbd失败，退出!");
+		exitcode = 1;
+		goto lblexit;
+	}
 
 	//(4)一些初始化函数，准备放这里        
 	if (ngx_init_signals() != 0)	//信号初始化
@@ -216,7 +217,19 @@ std::vector<std::string> getFilesInDirectory(const std::string& directoryPath) {
 //gyb
 bool gplat_load_qbd()
 {
-	std::string directoryPath = "./qbdfile";
+	//从配置文件读取QBD文件目录路径，默认./qbdfile
+	CConfig* p_config = CConfig::GetInstance();
+	const char* confPath = p_config->GetString("QbdFilePath");
+	std::string directoryPath = confPath ? confPath : "./qbdfile";
+
+	//检查目录是否存在
+	if (!fs::is_directory(directoryPath)) {
+		ngx_log_stderr(0, "QBD目录[%s]不存在，退出!", directoryPath.c_str());
+		return false;
+	}
+
+	//通过API设置higplat的QBD文件路径
+	SetQbdPath(directoryPath.c_str());
 
 	auto files = getFilesInDirectory(directoryPath);
 
@@ -229,6 +242,8 @@ bool gplat_load_qbd()
 			ngx_log_stderr(0, "文件[%s]载入失败，退出!", file.c_str());
 			return false;
 		}
+
+		std::cout << file << " loaded" << std::endl;
 	}
 	return true;
 }
