@@ -364,9 +364,9 @@ bool CLogicSocket::HandleWriteB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
 
 	// 发布订阅
-	if (ret)
+	if (ret && pPkgHead->start == 1)	// 1表示触发发布，0表示不触发发布
 	{
-		NotifySubscriber(pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize);
+		NotifySubscriber(pPkgHead->itemname, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize);
 	}
 
 	return true;
@@ -462,7 +462,7 @@ bool CLogicSocket::HandleWriteBString(lpngx_connection_t pConn, LPSTRUC_MSG_HEAD
 	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
 
 	// 发布订阅
-	if (ret)
+	if (ret && pPkgHead->start == 1)	// 1表示触发发布，0表示不触发发布
 	{
 		NotifySubscriber(pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize);
 	}
