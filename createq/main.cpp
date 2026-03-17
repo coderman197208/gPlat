@@ -70,16 +70,17 @@ int main(int argc, char* argv[])
 
 void Usage(char* pszProgramName)
 {
-	fprintf(stderr, "Usage:  createq queue-name -n record-number -l record-size [-b] [-s]\n");
+	//fprintf(stderr, "Usage:  createq queue-name -n record-number -l record-size [-b] [-s]\n");
+	fprintf(stderr, "Usage:  createq queue-name -n record-number -l record-size [-s]\n");
 	fprintf(stderr, "Arguments:\n");
 	fprintf(stderr,
-		"\tqueue-name\tname of the queue(max 15 characters)\n");
+		"\tqueue-name\tname of the queue(max 39 characters)\n");
 	fprintf(stderr,
 		"\trecord-number\trecord number\n");
 	fprintf(stderr,
 		"\trecord-size\trecord size(in bytes)\n");
-	fprintf(stderr,
-		"\t-b\t\tbinary type with this switch, ascii type without it\n");
+	//fprintf(stderr,
+	//	"\t-b\t\tbinary type with this switch, ascii type without it\n");
 	fprintf(stderr,
 		"\t-s\t\tshift mode with this switch, normal mode without it\n");
 	fprintf(stderr,
