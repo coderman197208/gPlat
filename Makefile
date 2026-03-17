@@ -1,6 +1,7 @@
 # gPlat Project Makefile
 # Supports Linux only (g++ compiler)
 # Features: Incremental build, Automatic dependency tracking
+# Third party libraries (e.g. snap7) are built via their own makefiles and copied to $(LIB_DIR)
 # Note: 如果需要添加新的模块，请按照以下步骤：
 # 1. 按模板在 3 中定义 XXX_DIR/SRCS/OBJS/BIN/INCLUDES/LDFLAGS
 # 2. 在 4 中添加编译和链接规则
@@ -22,7 +23,7 @@ else ifneq ($(UNAME_S),Linux)
     $(error Unsupported OS: $(UNAME_S). Only Linux is supported.)
 endif
 
-CXX := g++
+CXX ?= g++
 CXXFLAGS_PLATFORM :=
 LDFLAGS_PLATFORM :=
 
@@ -57,7 +58,6 @@ HIGPLAT_CXXFLAGS := -fPIC
 
 # --- Module: createq (Tool) ---
 CREATEQ_DIR := createq
-CREATEQ_SRCS := $(wildcard $(CREATEQ_DIR)/*.main.cpp) # Avoid duplicate mains if any? No, just *.cpp
 CREATEQ_SRCS := $(wildcard $(CREATEQ_DIR)/*.cpp)
 CREATEQ_OBJS := $(patsubst $(CREATEQ_DIR)/%.cpp, $(BUILD_DIR)/$(CREATEQ_DIR)/%.o, $(CREATEQ_SRCS))
 CREATEQ_BIN := $(BIN_DIR)/createq
@@ -81,13 +81,49 @@ TOOLGPLAT_BIN := $(BIN_DIR)/toolgplat
 TOOLGPLAT_INCLUDES := -Iinclude
 TOOLGPLAT_LDFLAGS := -lreadline -L$(LIB_DIR) -lhigplat -Wl,-rpath,'$$ORIGIN/../lib'
 
+# --- Module: snap7 (Third-party Shared Library) ---
+SNAP7_BUILD_DIR := snap7/build/linux
+SNAP7_UPSTREAM_LIB := snap7/build/bin/linux/libsnap7.so
+SNAP7_LIB := $(LIB_DIR)/libsnap7.so
+
+# --- Module: s7ioserver (Tool) ---
+S7IOSERVER_DIR := s7ioserver
+S7IOSERVER_SRCS := $(wildcard $(S7IOSERVER_DIR)/*.cpp)
+S7IOSERVER_OBJS := $(patsubst $(S7IOSERVER_DIR)/%.cpp, $(BUILD_DIR)/$(S7IOSERVER_DIR)/%.o, $(S7IOSERVER_SRCS))
+S7IOSERVER_BIN := $(BIN_DIR)/s7ioserver
+S7IOSERVER_INCLUDES := -Iinclude -I$(S7IOSERVER_DIR)
+S7IOSERVER_LDFLAGS := -lpthread -L$(LIB_DIR) -lhigplat -lsnap7 -Wl,-rpath,'$$ORIGIN/../lib'
+
 # ==========================================
 # 4. Targets
 # ==========================================
 
-.PHONY: all clean directories help
+.PHONY: all clean directories help \
+	gplat higplat createq createb toolgplat snap7 s7ioserver \
+	clean-gplat clean-higplat clean-createq clean-createb clean-toolgplat clean-snap7 clean-s7ioserver
 
-all: directories $(GPLAT_BIN) $(HIGPLAT_LIB) $(CREATEQ_BIN) $(CREATEB_BIN) $(TOOLGPLAT_BIN)
+all: directories $(HIGPLAT_LIB) $(SNAP7_LIB) $(GPLAT_BIN) $(CREATEQ_BIN) $(CREATEB_BIN) $(TOOLGPLAT_BIN) $(S7IOSERVER_BIN)
+	@echo "OK"
+
+gplat: directories $(HIGPLAT_LIB) $(GPLAT_BIN)
+	@echo "OK"
+
+higplat: directories $(HIGPLAT_LIB)
+	@echo "OK"
+
+createq: directories $(HIGPLAT_LIB) $(CREATEQ_BIN)
+	@echo "OK"
+
+createb: directories $(HIGPLAT_LIB) $(CREATEB_BIN)
+	@echo "OK"
+
+toolgplat: directories $(HIGPLAT_LIB) $(TOOLGPLAT_BIN)
+	@echo "OK"
+
+snap7: directories $(SNAP7_LIB)
+	@echo "OK"
+
+s7ioserver: directories $(HIGPLAT_LIB) $(SNAP7_LIB) $(S7IOSERVER_BIN)
 	@echo "OK"
 
 directories:
@@ -143,16 +179,77 @@ $(BUILD_DIR)/$(TOOLGPLAT_DIR)/%.o: $(TOOLGPLAT_DIR)/%.cpp
 	@echo "Compiling $<"
 	@$(CXX) $(CXXFLAGS) $(TOOLGPLAT_INCLUDES) -c $< -o $@
 
+# --- Rules for snap7 third-party ---
+$(SNAP7_LIB):
+	@echo "Building third-party snap7 via upstream makefile"
+	@$(MAKE) -C $(SNAP7_BUILD_DIR) all
+	@cp -f $(SNAP7_UPSTREAM_LIB) $@
+
+# --- Rules for s7ioserver ---
+$(S7IOSERVER_BIN): $(S7IOSERVER_OBJS) $(HIGPLAT_LIB) $(SNAP7_LIB)
+	@echo "Linking $@"
+	@$(CXX) $(LDFLAGS) $(S7IOSERVER_OBJS) $(S7IOSERVER_LDFLAGS) -o $@
+
+$(BUILD_DIR)/$(S7IOSERVER_DIR)/%.o: $(S7IOSERVER_DIR)/%.cpp
+	@mkdir -p $(@D)
+	@echo "Compiling $<"
+	@$(CXX) $(CXXFLAGS) $(S7IOSERVER_INCLUDES) -c $< -o $@
+
+# --- Clean rules ---
+clean-gplat:
+	@echo "Cleaning gplat artifacts..."
+	@rm -f $(GPLAT_BIN)
+	@rm -rf $(BUILD_DIR)/$(GPLAT_DIR)
+	@echo "OK"
+
+clean-higplat:
+	@echo "Cleaning higplat artifacts..."
+	@rm -f $(HIGPLAT_LIB)
+	@rm -rf $(BUILD_DIR)/$(HIGPLAT_DIR)
+	@echo "OK"
+
+clean-createq:
+	@echo "Cleaning createq artifacts..."
+	@rm -f $(CREATEQ_BIN)
+	@rm -rf $(BUILD_DIR)/$(CREATEQ_DIR)
+	@echo "OK"
+
+clean-createb:
+	@echo "Cleaning createb artifacts..."
+	@rm -f $(CREATEB_BIN)
+	@rm -rf $(BUILD_DIR)/$(CREATEB_DIR)
+	@echo "OK"
+
+clean-toolgplat:
+	@echo "Cleaning toolgplat artifacts..."
+	@rm -f $(TOOLGPLAT_BIN)
+	@rm -rf $(BUILD_DIR)/$(TOOLGPLAT_DIR)
+	@echo "OK"
+
+clean-snap7:
+	@echo "Cleaning snap7 artifacts via upstream makefile"
+	@$(MAKE) -C $(SNAP7_BUILD_DIR) clean >/dev/null 2>&1 || true
+	@rm -f $(SNAP7_LIB)
+	@echo "OK"
+
+clean-s7ioserver:
+	@echo "Cleaning s7ioserver artifacts..."
+	@rm -f $(S7IOSERVER_BIN)
+	@rm -rf $(BUILD_DIR)/$(S7IOSERVER_DIR)
+	@echo "OK"
 
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR) $(BIN_DIR) $(LIB_DIR)
 	@echo "OK"
 
+# --- Help ---
 help:
 	@echo "Available targets:"
-	@echo "  all      : Build all modules (gplat, higplat, createq, createb, toolgplat)"
-	@echo "  clean    : Remove build directories and binaries"
+	@echo "  all                    : Build all modules (higplat, snap7, gplat, createq, createb, toolgplat, s7ioserver)"
+	@echo "  gplat||s7ioserver|...  : Build a single target"
+	@echo "  clean                  : Remove build directories and binaries"
+	@echo "  clean-<target>         : clean one target (e.g. clean-gplat)"
 
 # Include dependency files
 -include $(GPLAT_OBJS:.o=.d)
@@ -160,3 +257,4 @@ help:
 -include $(CREATEQ_OBJS:.o=.d)
 -include $(CREATEB_OBJS:.o=.d)
 -include $(TOOLGPLAT_OBJS:.o=.d)
+-include $(S7IOSERVER_OBJS:.o=.d)
