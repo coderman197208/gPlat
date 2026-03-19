@@ -107,6 +107,7 @@ extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string valu
 extern "C" bool readtype(int sockfd, const char* qbdname, const char* tagname, void* inbuff, int buffsize, int* ptypesize, unsigned int* error);
 extern "C" bool clearb(int sockfd, unsigned int* error);
 extern "C" bool readboardinfo(int sockfd, const void* info, int infosize, unsigned int* error);
+extern "C" bool createqueue(int sockfd, const char* queuename, int recordsize, int recordnum, int operatemode, void* type, int typesize, unsigned int* error);
 
 extern "C" bool write_plc_string(int sockfd, const char* tagname, std::string str, unsigned int* error);
 extern "C" bool write_plc_bool(int sockfd, const char* tagname, bool value, unsigned int* error);

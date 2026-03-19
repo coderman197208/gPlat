@@ -1417,6 +1417,64 @@ extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int 
 	return true;
 }
 
+extern "C" bool createqueue(int sockfd, const char* queuename, int recordsize, int recordnum, int operatemode, void* type, int typesize, unsigned int* error)
+{
+	// 参数校验
+	if (recordsize <= 0 || recordnum <= 0 || type == nullptr || typesize <= 0) {
+		*error = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+
+	if (recordsize > 2048 || typesize > 100)
+	{
+		errorCode = ERROR_PARAMETER_SIZE;
+		return false;
+	}
+
+	// 初始化消息结构体
+	MSGSTRUCT msg{};
+	msg.head.id = CREATEQUEUE;
+	msg.head.recsize = recordsize;
+	msg.head.count = recordnum;
+	msg.head.start = operatemode;
+	msg.head.bodysize = typesize;
+
+	// 安全拷贝字符串（防止缓冲区溢出）
+	strncpy(msg.head.qname, queuename, sizeof(msg.head.qname) - 1);
+	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
+
+	// 发送消息头
+	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+
+	// 发送类型数据
+	if (send_all(sockfd, type, typesize) <= 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+
+	// 读取响应
+	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+
+	// 验证响应
+	if (msg.head.bodysize > 0) {
+		*error = ERROR_INVALID_RESPONSE;
+		close(sockfd);
+		return false;
+	}
+
+	*error = msg.head.error;
+	return (*error == 0);
+}
+
 /*F+F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F
 Function: CreateQ
 

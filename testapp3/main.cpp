@@ -31,6 +31,8 @@ int main()
 	sensorData.pressure = 1013.25;
 	sensorData.temperature = 25;
 	sensorData.location = "车间1-区域A";
+	ret = writeb(h, "sensor1", &sensorData, sizeof(sensorData), &err);
+	assert(ret);
 
 	SensorData sensorarr[3];
 	sensorarr[0] = sensorData;
@@ -38,8 +40,6 @@ int main()
 	sensorarr[2] = sensorData;
 	sensorarr[1].location = "车间1-区域B";
 	sensorarr[2].location = "车间1-区域C";
-	ret = writeb(h, "sensor1", &sensorData, sizeof(sensorData), &err);
-	assert(ret);
 
 	MotorStatus motorStatus;
 	motorStatus.current = 12.5f;
@@ -67,6 +67,14 @@ int main()
 	vehicle.history[2].longitude = 116.4074;
 	ret = writeb(h, "vehicle1", &vehicle, sizeof(vehicle), &err);
 	assert(ret);
+
+	ret = writeq(h, "MotorStatusQueue", &motorStatus, sizeof(motorStatus), &err);
+	assert(ret);
+
+	MotorStatus motorStatus1;
+	ret = readq(h, "MotorStatusQueue", &motorStatus1, sizeof(motorStatus1), &err);
+	assert(ret);
+	printf("motorStatus1.motor_name[0]=%s\n", motorStatus1.motor_name[0].c_str());
 
 	printf("exit\n");
 

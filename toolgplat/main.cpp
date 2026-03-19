@@ -782,6 +782,88 @@ void HandleDesc()
 	DescB();
 }
 
+void HandleCreateQueue(const std::vector<std::string>& words)
+{
+	int operatemode = 0;
+
+	if (words.size() == 6)
+	{
+		if (words[5] != "shift")
+		{
+			std::cout << "Usage: create queue <queue name> <queue type> <queue size> <queue mode>" << std::endl;
+			return;
+		}
+		operatemode = 1;	// shift mode
+	}
+	else if (words.size() != 5)
+	{
+		std::cout << "Usage: create queue <queue name> <queue type> <queue size> <queue mode>" << std::endl;
+		return;
+	}
+
+	//判断words[4]是否是数字
+	try
+	{
+		std::stoi(words[4]);
+	}
+	catch (...)
+	{
+		std::cout << "Queue size must be a number." << std::endl;
+		return;
+	}
+
+	std::string queueName = words[2];
+	std::string typeName = words[3];
+	int recordnum = std::stoi(words[4]);
+	unsigned int err;
+
+	const TypeInfo* ti = FindTypeByName(typeName);
+	if (!ti)
+	{
+		// 查找已注册的自定义 struct
+		const StructInfo* si = FindStructByName(typeName);
+		if (si)
+		{
+			size_t recordsize = si->total_size;
+
+			if (recordsize > 16000)
+			{
+				std::cout << "记录的大小超过了16000，无法创建" << std::endl;
+				return;
+			}
+
+			// 构建类型元数据 buffer: [typecode=-1][arraysize][classname\0]
+			char buff[128];
+			int* ptypecode = (int*)buff;
+			int* parraysize_p = (int*)(buff + 4);
+			*ptypecode = -1;
+			*parraysize_p = 0;	// 队列不支持数组类型，arraysize固定为0
+			char* classname = buff + 8;
+			strcpy(classname, typeName.c_str());
+			int typesize = 8 + typeName.length() + 1;
+
+			unsigned int err;
+			//createqueue(int sockfd, const char* queuename, int recordsize, int recordnum, int operatemode, void* type, int typesize, unsigned int* error);
+			bool res = createqueue(g_hConn, queueName.c_str(), recordsize, recordnum, operatemode, buff, typesize, &err);
+
+			if (res)
+				std::cout << "Queue '" << queueName << "' created (struct " << typeName
+				<< ", " << recordsize << " bytes)" << std::endl;
+			else
+				std::cout << "Create Queue '" << queueName << "' fail with error code " << err << std::endl;
+
+			return;
+		}
+
+		std::cout << "Type definition error!" << std::endl;
+		return;
+	}
+	else
+	{
+		std::cout << "不支持创建简单和字符串类型的队列，请定义队列的数据结构！" << std::endl;
+	}
+}
+
 void HandleHelp(const std::vector<std::string>& words)
 {
 	if (words.size() == 1)
@@ -904,7 +986,14 @@ void Analyse(const std::vector<std::string>& words)
 
 	if (cmd == "create")
 	{
-		HandleCreate(words);
+		if (words.size() > 1 && words[1] == "queue")
+		{
+			HandleCreateQueue(words);
+		}
+		else
+		{
+			HandleCreate(words);
+		}
 		return;
 	}
 

@@ -30,6 +30,7 @@ public:
 	bool HandleDeleteItem(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
 	bool HandlePostWait(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
 	bool HandleReadBoardInfo(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
+	bool HandleCreateQueue(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
 
 	void NotifySubscriber(std::string tagName, char* pPkgBody, unsigned short iBodyLength);
 	void NotifyTimerSubscriber(std::string timerName, char* pPkgBody, unsigned short iBodyLength);

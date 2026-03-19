@@ -43,7 +43,7 @@ int main()
     // 如果需要等待线程完成（虽然这个线程是无限循环）
     worker1.join();
 	//worker2.join();
- //   worker3.join();
+    //worker3.join();
 
     std::cout << "main thread exit" << std::endl;
 

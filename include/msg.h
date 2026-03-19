@@ -6,7 +6,7 @@
 //必须和ngx_c_slogic.cxx中statusHandler[]的下标对应上
 enum MSGID
 {
-	SUCCEED=5,
+	SUCCEED = 5,
 	FAIL,
 	CONNECT,
 	RECONNECT,
@@ -54,6 +54,7 @@ enum MSGID
 	WRITEBPLC,
 	WRITEBSTRINGPLC,
 	READBOARDINFO,
+	CREATEQUEUE,
 };
 
 #pragma pack( push, enter_MSG_H_, 1)

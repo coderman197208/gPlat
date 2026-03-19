@@ -12,8 +12,6 @@
 //   3. 在 struct_registry.h 的 GetStructRegistry() 中添加 REG(XXX)
 // ============================================================
 
-#pragma pack(push, 8)
-
 struct SensorData {
 	int32_t       temperature;
 	int32_t       humidity;
@@ -21,8 +19,6 @@ struct SensorData {
 	bool          alarm;
 	PodString<20> location;
 };
-
-#pragma pack(pop)
 
 REGISTER_STRUCT(SensorData,
 	FIELD_DESC(Int32,   SensorData, temperature),
@@ -32,8 +28,6 @@ REGISTER_STRUCT(SensorData,
 	FIELD_DESC_STRING(SensorData, location)
 )
 
-#pragma pack(push, 8)
-
 struct MotorStatus {
 	float         speed[3];
 	float         current;
@@ -41,8 +35,6 @@ struct MotorStatus {
 	uint32_t      run_count;
 	PodString<16> motor_name[3];
 };
-
-#pragma pack(pop)
 
 REGISTER_STRUCT(MotorStatus,
 	FIELD_DESC_ARRAY(Single,  MotorStatus, speed, 3),
@@ -54,21 +46,15 @@ REGISTER_STRUCT(MotorStatus,
 
 // 嵌套 struct 示例（内层：仅含基本类型，供外层引用）
 
-#pragma pack(push, 8)
-
 struct GPSPosition {
 	double latitude;
 	double longitude;
 };
 
-#pragma pack(pop)
-
 REGISTER_STRUCT(GPSPosition,
 	FIELD_DESC(Double, GPSPosition, latitude),
 	FIELD_DESC(Double, GPSPosition, longitude)
 )
-
-#pragma pack(push, 8)
 
 struct Vehicle {
 	int32_t       id;
@@ -76,8 +62,6 @@ struct Vehicle {
 	GPSPosition   history[3];
 	PodString<16> plate;
 };
-
-#pragma pack(pop)
 
 REGISTER_STRUCT(Vehicle,
 	FIELD_DESC(Int32, Vehicle, id),
