@@ -70,4 +70,29 @@ REGISTER_STRUCT(Vehicle,
 	FIELD_DESC_STRING(Vehicle, plate)
 )
 
+//下面是GT4_APP项目的用户自定义struct定义
+
+//设定生产计划命令
+struct SetFeedNumCmd
+{
+	int feed_num; // 投料支数
+};
+
+REGISTER_STRUCT(SetFeedNumCmd,
+	FIELD_DESC(Int32, SetFeedNumCmd, feed_num)
+)
+
+//移动管子命令
+struct MoveTubeCmd
+{
+	PodString<20> from; // 来源工位
+	PodString<20> to;   // 目标工位
+};
+
+REGISTER_STRUCT(MoveTubeCmd,
+	FIELD_DESC_STRING(MoveTubeCmd, from),
+	FIELD_DESC_STRING(MoveTubeCmd, to)
+)
+
+
 #endif // USER_TYPES_H_

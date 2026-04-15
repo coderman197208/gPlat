@@ -16,6 +16,8 @@ inline const std::unordered_map<std::string, const StructInfo*>& GetStructRegist
 		REG(MotorStatus),
 		REG(GPSPosition),
 		REG(Vehicle),
+		REG(SetFeedNumCmd),
+		REG(MoveTubeCmd),
 		// 新增类型在此添加一行
 	};
 	return table;
@@ -26,6 +28,7 @@ inline const std::unordered_map<std::string, const StructInfo*>& GetStructRegist
 // 便捷查找函数
 inline const StructInfo* FindStructByName(const std::string& name)
 {
+
 	auto& table = GetStructRegistry();
 	auto it = table.find(name);
 	return (it != table.end()) ? it->second : nullptr;
