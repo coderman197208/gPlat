@@ -94,5 +94,53 @@ REGISTER_STRUCT(MoveTubeCmd,
 	FIELD_DESC_STRING(MoveTubeCmd, to)
 )
 
+struct ModifyTubeCmd {
+	int seq_no; // 序列号，确保管子的唯一性和顺序
+	PodString<20> position_name; // 工位名称
+	PodString<20> order_no; // 合同号
+	PodString<20> item_no; // 项目号
+	PodString<20> roll_no; // 轧批号
+	PodString<20> melt_no; // 炉号
+	PodString<20> lot_no; // 试批号
+	int tube_no; // 管号
+	int flow_no; // 流水号
+	double length; // 长度(米)
+	double weight; // 重量(KG)
+	bool length_ok; // 长度合格
+	bool weight_ok; // 重量合格
+	PodString<20> lotno_coupling; // 接箍批号
+	PodString<20> meltno_coupling; // 接箍炉号
+};
+
+REGISTER_STRUCT(ModifyTubeCmd,
+	FIELD_DESC(Int32, ModifyTubeCmd, seq_no),
+	FIELD_DESC_STRING(ModifyTubeCmd, position_name),
+	FIELD_DESC_STRING(ModifyTubeCmd, order_no),
+	FIELD_DESC_STRING(ModifyTubeCmd, item_no),
+	FIELD_DESC_STRING(ModifyTubeCmd, roll_no),
+	FIELD_DESC_STRING(ModifyTubeCmd, melt_no),
+	FIELD_DESC_STRING(ModifyTubeCmd, lot_no),
+	FIELD_DESC(Int32, ModifyTubeCmd, tube_no),
+	FIELD_DESC(Int32, ModifyTubeCmd, flow_no),
+	FIELD_DESC(Double, ModifyTubeCmd, length),
+	FIELD_DESC(Double, ModifyTubeCmd, weight),
+	FIELD_DESC(Boolean, ModifyTubeCmd, length_ok),
+	FIELD_DESC(Boolean, ModifyTubeCmd, weight_ok),
+	FIELD_DESC_STRING(ModifyTubeCmd, lotno_coupling),
+	FIELD_DESC_STRING(ModifyTubeCmd, meltno_coupling)
+)
+
+struct DeleteTubeCmd {
+	int seq_no; // 序列号，确保管子的唯一性和顺序
+	PodString<20> position_name; // 工位名称
+};
+
+REGISTER_STRUCT(DeleteTubeCmd,
+	FIELD_DESC(Int32, DeleteTubeCmd, seq_no),
+	FIELD_DESC_STRING(DeleteTubeCmd, position_name)
+)
+
+
+
 
 #endif // USER_TYPES_H_
