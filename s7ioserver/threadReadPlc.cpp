@@ -130,7 +130,14 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
                 // 比较是否变化
                 bool changed = tag->first_read;
                 if (!changed) {
-                    changed = (memcmp(raw, tag->last_raw_value.data(), tag->byte_size) != 0);
+                    if (tag->datatype == S7DataType::BOOL) {
+                        bool current_bit = ((raw[0] >> tag->bit_offset) & 0x01) != 0;
+                        bool last_bit = ((tag->last_raw_value[0] >> tag->bit_offset) & 0x01) != 0;
+                        changed = (current_bit != last_bit);
+                    }
+                    else {
+                        changed = (memcmp(raw, tag->last_raw_value.data(), tag->byte_size) != 0);
+                    }
                 }
 
                 if (!changed) continue;
