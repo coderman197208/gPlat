@@ -832,7 +832,6 @@ extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize,
 
 bool writeb_(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error, int postornot)
 {
-	AutoErrorCheck _checker(error);
 	// 参数校验
 	if (!tagname || !value || !error || actsize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -891,11 +890,13 @@ bool writeb_(int sockfd, const char* tagname, void* value, int actsize, unsigned
 
 extern "C" bool writeb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error)
 {
+	AutoErrorCheck _checker(error);
 	return writeb_(sockfd, tagname, value, actsize, error, 1);	// 触发发布
 }
 
 extern "C" bool writeb_notpost(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error)
 {
+	AutoErrorCheck _checker(error);
 	return writeb_(sockfd, tagname, value, actsize, error, 0);	// 不触发发布
 }
 
@@ -1058,7 +1059,6 @@ extern "C" bool readb_string2(int sockfd, const char* tagname, std::string& valu
 
 bool writeb_string_(int sockfd, const char* tagname, const char* value, unsigned int* error, int postornot)
 {
-	AutoErrorCheck _checker(error);
 	int strlength = strlen((const char*)value);
 
 	// 参数校验
@@ -1115,16 +1115,19 @@ bool writeb_string_(int sockfd, const char* tagname, const char* value, unsigned
 
 extern "C" bool writeb_string(int sockfd, const char* tagname, const char* value, unsigned int* error)
 {
+	AutoErrorCheck _checker(error);
 	return writeb_string_(sockfd, tagname, value, error, 1);	// 触发发布
 }
 
 extern "C" bool writeb_string_notpost(int sockfd, const char* tagname, const char* value, unsigned int* error)
 {
+	AutoErrorCheck _checker(error);
 	return writeb_string_(sockfd, tagname, value, error, 0);	// 不触发发布
 }
 
 extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string value, unsigned int* error)
 {
+	AutoErrorCheck _checker(error);
 	// 确保字符串以 null 结尾
 	if (value.length() >= MAXMSGLEN) {
 		*error = ERROR_PARAMETER_SIZE;
