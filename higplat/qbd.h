@@ -55,6 +55,108 @@
 #define QUEUEHEADSIZE   sizeof(QUEUE_HEAD)
 #define RECORDHEADSIZE  sizeof(RECORD_HEAD)
 
+enum class ErrorLevel {
+    Deprecated = -1,
+    Ignore = 0,
+    Fatal = 1
+};
+
+struct ErrorInfo {
+    ErrorLevel level;
+    const char* message;
+};
+
+inline ErrorInfo GetErrorInfo(unsigned int errorCode) {
+    switch (errorCode) {
+        case 0:
+            return { ErrorLevel::Ignore, "no error" };
+        case ERROR_DQFILE_NOT_FOUND:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_DQ_NOT_OPEN:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_DQ_EMPTY:
+            return { ErrorLevel::Ignore, "queue empty" };
+        case ERROR_DQ_FULL:
+            return { ErrorLevel::Ignore, "queue full" };
+        case ERROR_FILENAME_TOO_LONG:
+            return { ErrorLevel::Ignore, "filename too long" };
+        case ERROR_FILE_IN_USE:
+            return { ErrorLevel::Ignore, "file already in use" };
+        case ERROR_FILE_CREATE_FAILSURE:
+            return { ErrorLevel::Ignore, "failed to create file" };
+        case ERROR_FILE_OPEN_FAILSURE:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_CREATE_FILEMAPPINGOBJECT:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_OPEN_FILEMAPPINGOBJECT:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_MAPVIEWOFFILE:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_CREATE_MUTEX:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_OPEN_MUTEX:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_RECORDSIZE:
+            return { ErrorLevel::Ignore, "record size invalid" };
+        case ERROR_STARTPOSITION:
+            return { ErrorLevel::Ignore, "bad start position" };
+        case ERROR_RECORD_ALREAD_EXIST:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_TABLE_OVERFLOW:
+            return { ErrorLevel::Ignore, "table overflow" };
+        case ERROR_RECORD_NOT_EXIST:
+            return { ErrorLevel::Ignore, "record not exist" };
+        case ERROR_OPERATE_PROHIBIT:
+            return { ErrorLevel::Ignore, "unsupported operation" };
+        case ERROR_ALREADY_OPEN:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_ALREADY_CLOSE:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_ALREADY_LOAD:
+            return { ErrorLevel::Ignore, "queue already loaded" };
+        case ERROR_ALREADY_UNLOAD:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_NO_SPACE:
+            return { ErrorLevel::Ignore, "no space" };
+        case ERROR_TABLE_NOT_EXIST:
+            return { ErrorLevel::Ignore, "table not exist" };
+        case ERROR_TABLE_ALREADY_EXIST:
+            return { ErrorLevel::Ignore, "table already exist" };
+        case ERROR_TABLE_ROWID:
+            return { ErrorLevel::Ignore, "table bad row id" };
+        case ERROR_ITEM_NOT_EXIST:
+            return { ErrorLevel::Ignore, "item not exist" };
+        case ERROR_ITEM_ALREADY_EXIST:
+            return { ErrorLevel::Ignore, "item already exist" };
+        case ERROR_ITEM_OVERFLOW:
+            return { ErrorLevel::Ignore, "item overflow" };
+        case ERROR_SOCKET_NOT_CONNECTED:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_MSGSIZE:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_BUFFER_SIZE:
+            return { ErrorLevel::Deprecated, "" };
+        case ERROR_PARAMETER_SIZE:
+            return { ErrorLevel::Ignore, "parameter size invalid" };
+        case CODE_QEMPTY:
+            return { ErrorLevel::Deprecated, "" };
+        case CODE_QFULL:
+            return { ErrorLevel::Deprecated, "" };
+        case STRING_TOO_LONG:
+            return { ErrorLevel::Ignore, "string too long" };
+        case BUFFER_TOO_SMALL:
+            return { ErrorLevel::Ignore, "buffer too small" };
+        case ERROR_INVALID_PARAMETER:
+            return { ErrorLevel::Ignore, "invalid parameter" };
+        case ERROR_INVALID_RESPONSE:
+            return { ErrorLevel::Ignore, "invalid response" };
+        case ERROR_BUFFER_TOO_SMALL:
+            return { ErrorLevel::Ignore, "buffer too small" };
+        default:
+            return { ErrorLevel::Ignore, "unknown error" };
+    }
+}
+
 enum{
 	QUEUE_T,
 	BOARD_T,
