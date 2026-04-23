@@ -245,11 +245,14 @@ clean:
 
 # --- Help ---
 help:
+	@echo "The compiled binaries will be located in the 'bin/' directory, and the shared library will be in 'lib/'."
+	@echo "And the dependency files (.d) and the object files (.o) will be located in 'build/'."
 	@echo "Available targets:"
 	@echo "  all                    : Build all modules (higplat, snap7, gplat, createq, createb, toolgplat, s7ioserver)"
-	@echo "  gplat||s7ioserver|...  : Build a single target"
+	@echo "  gplat|s7ioserver|...   : Build a single target"
 	@echo "  clean                  : Remove build directories and binaries"
 	@echo "  clean-<target>         : clean one target (e.g. clean-gplat)"
+	@echo "  help                   : Show this help message"
 
 # Include dependency files
 -include $(GPLAT_OBJS:.o=.d)

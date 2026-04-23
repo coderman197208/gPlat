@@ -374,3 +374,6 @@ FodyWeavers.xsd
 build/
 lib/
 bin/
+
+# vscode settings
+.vscode/
