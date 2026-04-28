@@ -1224,7 +1224,7 @@ extern "C" bool clearb(int sockfd, unsigned int* error)
 	return (*error == 0);
 }
 
-extern "C" bool readboardinfo(int sockfd, const void* info, int infosize, unsigned int* error)
+extern "C" bool readboardinfo(int sockfd, void* info, int infosize, unsigned int* error)
 {
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -1265,7 +1265,8 @@ extern "C" bool readboardinfo(int sockfd, const void* info, int infosize, unsign
 	}
 	// 读取数据体（如果有）
 	if (msg.head.bodysize > 0) {
-		if (readn(sockfd, const_cast<void*>(info), msg.head.bodysize) < 0) {
+		// fix: 修改了函数签名，info 不再被 const 修饰，因此此处不再需要 const_cast，直接传入 info 即可
+		if (readn(sockfd, info, msg.head.bodysize) < 0) {
 			*error = errno;
 			close(sockfd);
 			return false;
@@ -1471,7 +1472,9 @@ extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int 
 		return (*error == ETIMEDOUT);  // 仅超时返回 true
 	}
 
-	tagname = msg.head.itemname ? msg.head.itemname : "";
+	// tagname = msg.head.itemname ? msg.head.itemname : "";
+	// fix: The address of ‘MSGHEAD::itemname’ will never be NULL
+	tagname = (msg.head.itemname[0] != '\0') ? msg.head.itemname : "";
 	return true;
 }
 
@@ -3187,7 +3190,7 @@ extern "C" bool ClearB(const char* lpBoardName)
 
 	int totalsize = pHead->totalsize;
 	int typesize = pHead->typesize;
-	int fileSize = pHead->totalsize + pHead->typesize;
+	[[maybe_unused]] int fileSize = pHead->totalsize + pHead->typesize;
 	//ZeroMemory((char*)pHead->index, sizeof(pHead->index));
 	memset((char*)pHead->index, 0, sizeof(pHead->index));
 	pHead->qbdtype = BOARD_T;
@@ -3949,7 +3952,7 @@ extern "C" bool ClearDB(const char* lpDbName)
 
 	int totalsize = pHead->totalsize;
 	int typesize = pHead->typesize;
-	int fileSize = pHead->totalsize + pHead->typesize;
+	[[maybe_unused]] int fileSize = pHead->totalsize + pHead->typesize;
 	//ZeroMemory((char*)pHead->index, sizeof(pHead->index));
 	memset((char*)pHead->index, 0, sizeof(pHead->index));
 	pHead->qbdtype = DATABASE_T;

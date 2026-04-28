@@ -128,7 +128,7 @@ void CLogicSocket::threadRecvProcFunc(char *pMsgBuf)
 {
 	LPSTRUC_MSG_HEADER pMsgHeader = (LPSTRUC_MSG_HEADER)pMsgBuf; // 消息头
 	PMSGHEAD pPkgHeader = (PMSGHEAD)(pMsgBuf + m_iLenMsgHeader); // 包头
-	void *pPkgBody;												 // 指向包体的指针
+	[[maybe_unused]] void *pPkgBody;												 // 指向包体的指针
 
 	unsigned short pkglen = pPkgHeader->bodysize; // 客户端指明的包大小【包体】,不含包头
 
@@ -182,7 +182,9 @@ bool CLogicSocket::HandleReadQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsg
 	// 分配返回数据需要的内存
 	CMemory *p_memory = CMemory::GetInstance();
 	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	if (ret = ReadQ(pPkgHead->qname, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, iLenPkgBody, ip))
+	// 在 if 语句条件判断中直接进行复制操作 会导致编译器警告：suggest parentheses around assignment used as truth value
+	// 解决方案：避免这样写；或者使用 (()) 向编译器明确表达式的意图
+	if ((ret = ReadQ(pPkgHead->qname, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, iLenPkgBody, ip)))
 	{
 		pPkgHead->error = 0;
 		pPkgHead->bodysize = pPkgHead->datasize;
@@ -218,8 +220,8 @@ bool CLogicSocket::HandleWriteQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 
 	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
 	bool ret;
-	char *data = (char *)pPkgHead + sizeof(PKGHEAD);
-	if (ret = WriteQ(pPkgHead->qname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize))
+	[[maybe_unused]] char *data = (char *)pPkgHead + sizeof(PKGHEAD);
+	if ((ret = WriteQ(pPkgHead->qname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize)))
 	{
 		pPkgHead->error = 0;
 	}
@@ -264,7 +266,7 @@ bool CLogicSocket::HandleClearQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
 	bool ret;
 
-	if (ret = ClearQ(pPkgHead->qname))
+	if ((ret = ClearQ(pPkgHead->qname)))
 	{
 		pPkgHead->error = 0;
 	}
@@ -304,7 +306,7 @@ bool CLogicSocket::HandleReadB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsg
 	CMemory *p_memory = CMemory::GetInstance();
 	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
 
-	if (ret = ReadB(pPkgHead->qname, pPkgHead->itemname, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, iLenPkgBody, &timestamp))
+	if ((ret = ReadB(pPkgHead->qname, pPkgHead->itemname, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, iLenPkgBody, &timestamp)))
 	{
 		pPkgHead->error = 0;
 		pPkgHead->bodysize = pPkgHead->datasize;
@@ -338,7 +340,7 @@ bool CLogicSocket::HandleWriteB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 
 	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
 	bool ret;
-	if (ret = WriteB(pPkgHead->qname, pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize))
+	if ((ret = WriteB(pPkgHead->qname, pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize)))
 	{
 		pPkgHead->error = 0;
 	}
@@ -388,7 +390,7 @@ bool CLogicSocket::HandleReadBString(lpngx_connection_t pConn, LPSTRUC_MSG_HEADE
 	CMemory *p_memory = CMemory::GetInstance();
 	char *p_sendbuf;
 	int strlen = 0; // 接收字符串的实际长度
-	if (ret = ReadB_String2(pPkgHead->qname, pPkgHead->itemname, g_buffer, pPkgHead->datasize, strlen, &timestamp))
+	if ((ret = ReadB_String2(pPkgHead->qname, pPkgHead->itemname, g_buffer, pPkgHead->datasize, strlen, &timestamp)))
 	{
 		p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + strlen, false); // 准备发送的格式，这里是消息头+包头+包体
 
@@ -436,7 +438,7 @@ bool CLogicSocket::HandleWriteBString(lpngx_connection_t pConn, LPSTRUC_MSG_HEAD
 	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
 	bool ret;
 
-	if (ret = WriteB_String(pPkgHead->qname, pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize))
+	if ((ret = WriteB_String(pPkgHead->qname, pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize)))
 	{
 		pPkgHead->error = 0;
 	}
@@ -479,7 +481,7 @@ bool CLogicSocket::HandleClearB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 	}
 	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
 	bool ret;
-	if (ret = ClearB(pPkgHead->qname))
+	if ((ret = ClearB(pPkgHead->qname)))
 	{
 		pPkgHead->error = 0;
 	}
@@ -660,7 +662,7 @@ void CLogicSocket::NotifySubscriber(std::string tagName, char *pPkgBody, unsigne
 					char* p_sendbuf = (char*)arg;
 					LPSTRUC_MSG_HEADER ptmpMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
 					lpngx_connection_t pconn = ptmpMsgHeader->pConn;
-					PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + sizeof(STRUC_MSG_HEADER));
+					[[maybe_unused]] PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + sizeof(STRUC_MSG_HEADER));
 					if (pconn->m_bWaitingTimeout)
 					{
 						pconn->m_bWaitingTimeout = false;
@@ -764,7 +766,7 @@ bool CLogicSocket::HandleReadType(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER p
 	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
 
 	int typesize = 0;
-	if (ret = ReadType(pPkgHead->qname, pPkgHead->itemname, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, iLenPkgBody, &typesize))
+	if ((ret = ReadType(pPkgHead->qname, pPkgHead->itemname, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, iLenPkgBody, &typesize)))
 	{
 		pPkgHead->error = 0;
 		pPkgHead->bodysize = typesize;
@@ -799,7 +801,7 @@ bool CLogicSocket::HandleCreateItem(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER
 
 	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
 	bool ret;
-	if (ret = CreateItem(pPkgHead->qname, pPkgHead->itemname, pPkgHead->recsize, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->bodysize))
+	if ((ret = CreateItem(pPkgHead->qname, pPkgHead->itemname, pPkgHead->recsize, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->bodysize)))
 	{
 		pPkgHead->error = 0;
 	}
@@ -834,7 +836,7 @@ bool CLogicSocket::HandleDeleteItem(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER
 	}
 	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
 	bool ret;
-	if (ret = DeleteItem(pPkgHead->qname, pPkgHead->itemname))
+	if ((ret = DeleteItem(pPkgHead->qname, pPkgHead->itemname)))
 	{
 		pPkgHead->error = 0;
 	}
@@ -1046,7 +1048,7 @@ bool CLogicSocket::HandleReadBoardInfo(lpngx_connection_t pConn, LPSTRUC_MSG_HEA
 	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
 	if (pPkgHead->datasize == sizeof(BOARD_INFO))
 	{
-		if (ret = ReadBoardInfo(pPkgHead->qname, (BOARD_INFO*)(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader)))
+		if ((ret = ReadBoardInfo(pPkgHead->qname, (BOARD_INFO*)(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader))))
 		{
 			pPkgHead->error = 0;
 			pPkgHead->bodysize = iLenPkgBody;
@@ -1090,7 +1092,7 @@ bool CLogicSocket::HandleCreateQueue(lpngx_connection_t pConn, LPSTRUC_MSG_HEADE
 	//	int operateMode,
 	//	void* pType,
 	//	int typeSize)
-	if (ret = CreateQ(pPkgHead->qname, pPkgHead->recsize, pPkgHead->count, 0, pPkgHead->start, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->bodysize))
+	if ((ret = CreateQ(pPkgHead->qname, pPkgHead->recsize, pPkgHead->count, 0, pPkgHead->start, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->bodysize)))
 	{
 		pPkgHead->error = 0;
 	}

@@ -93,7 +93,7 @@ void* CThreadPool::ThreadFunc(void* threadData)
 	CMemory* p_memory = CMemory::GetInstance();
 	int err;
 
-	pthread_t tid = pthread_self(); //获取线程自身id，以方便调试打印信息等    
+	[[maybe_unused]] pthread_t tid = pthread_self(); //获取线程自身id，以方便调试打印信息等    
 	while (true)
 	{
 		//线程用pthread_mutex_lock()函数去锁定指定的mutex变量，若该mutex已经被另外一个线程锁定了，该调用将会阻塞线程直到mutex被解锁。  

@@ -815,7 +815,7 @@ void HandleCreateQueue(const std::vector<std::string>& words)
 	std::string queueName = words[2];
 	std::string typeName = words[3];
 	int recordnum = std::stoi(words[4]);
-	unsigned int err;
+	[[maybe_unused]] unsigned int err;
 
 	const TypeInfo* ti = FindTypeByName(typeName);
 	if (!ti)
