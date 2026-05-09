@@ -19,7 +19,9 @@ inline const std::unordered_map<std::string, const StructInfo*>& GetStructRegist
 		REG(SetFeedNumCmd),
 		REG(MoveTubeCmd),
 		REG(ModifyTubeCmd),
-		REG(DeleteTubeCmd)
+		REG(DeleteTubeCmd),
+		REG(SetCurrentContractCmd),
+		REG(StartSprayEvent),
 		// 新增类型在此添加一行
 	};
 	return table;

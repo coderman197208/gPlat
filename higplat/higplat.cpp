@@ -56,9 +56,9 @@ struct AutoErrorCheck {
 			} else if (info.level == ErrorLevel::Ignore) {
 				std::cout << "[higplat error: Ignore] " << info.message << " (Code: " << *m_error << ")\n";
 				// debug use
-				if (std::uncaught_exceptions() == 0) {
-					throw std::runtime_error(info.message);
-				}
+				//if (std::uncaught_exceptions() == 0) {
+				//	throw std::runtime_error(info.message);
+				//}
 			} else {
 				std::cout << "[higplat error: Unknown Level] " << info.message << " (Code: " << *m_error << ")\n";
 			}
@@ -2751,7 +2751,7 @@ extern "C" bool ReadB(const char* lpBulletinName, const char* lpItemName, void* 
 	if (!strcmp(pIndex[loc].itemname, "\0") || pIndex[loc].erased)
 	{
 		// item not found
-		errorCode = ERROR_RECORD_NOT_EXIST;
+		errorCode = ERROR_TAG_NOT_EXIST;
 		tabmsg.pmutex_rw->unlock();
 		return false;
 	}
@@ -2841,7 +2841,7 @@ extern "C" bool ReadB_String(const char* lpBulletinName, const char* lpItemName,
 	if (!strcmp(pIndex[loc].itemname, "\0") || pIndex[loc].erased)
 	{
 		// item not found
-		errorCode = ERROR_RECORD_NOT_EXIST;
+		errorCode = ERROR_TAG_NOT_EXIST;
 		tabmsg.pmutex_rw->unlock();
 		return false;
 	}
@@ -2908,7 +2908,7 @@ extern "C" bool ReadB_String2(const char* lpBulletinName, const char* lpItemName
 	if (!strcmp(pIndex[loc].itemname, "\0") || pIndex[loc].erased)
 	{
 		// item not found
-		errorCode = ERROR_RECORD_NOT_EXIST;
+		errorCode = ERROR_TAG_NOT_EXIST;
 		tabmsg.pmutex_rw->unlock();
 		return false;
 	}
@@ -2994,7 +2994,7 @@ extern "C" bool WriteB(const char* lpBulletinName, const char* lpItemName, void*
 	if (!strcmp(pIndex[loc].itemname, "\0") || pIndex[loc].erased)
 	{
 		// item not found
-		errorCode = ERROR_RECORD_NOT_EXIST;
+		errorCode = ERROR_TAG_NOT_EXIST;
 		tabmsg.pmutex_rw->unlock();
 		return false;
 
@@ -3110,7 +3110,7 @@ extern "C" bool WriteB_String(const char* lpBulletinName, const char* lpItemName
 	if (!strcmp(pIndex[loc].itemname, "\0") || pIndex[loc].erased)	// item not found,create it
 	{
 		// item not found
-		errorCode = ERROR_RECORD_NOT_EXIST;
+		errorCode = ERROR_TAG_NOT_EXIST;
 		tabmsg.pmutex_rw->unlock();
 		return false;
 	}

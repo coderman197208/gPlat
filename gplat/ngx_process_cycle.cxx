@@ -21,7 +21,7 @@ static void ngx_worker_process_cycle(int inum, const char* pprocname);
 static void ngx_worker_process_init(int inum);
 
 //变量声明
-static u_char  master_process[] = "master process";
+static u_char  master_process[] = "gplat master";
 
 //描述：创建worker子进程
 void ngx_master_process_cycle()
@@ -114,14 +114,14 @@ static void ngx_start_worker_processes(int threadnums)
 	int i;
 	for (i = 0; i < threadnums; i++)  //master进程在走这个循环，来创建若干个子进程
 	{
-		ngx_spawn_process(i, "worker process");
+		ngx_spawn_process(i, "gplat worker");
 	}
 	return;
 }
 
 //描述：产生一个子进程
 //inum：进程编号【0开始】
-//pprocname：子进程名字"worker process"
+//pprocname：子进程名字"gplat process"
 static int ngx_spawn_process(int inum, const char* pprocname)
 {
 	pid_t  pid;

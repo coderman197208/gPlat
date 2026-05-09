@@ -141,6 +141,45 @@ REGISTER_STRUCT(DeleteTubeCmd,
 )
 
 
+struct SetCurrentContractCmd {
+  PodString<20> order_no; // 合同号
+  PodString<20> item_no; // 项目号
+};
+
+REGISTER_STRUCT(SetCurrentContractCmd,
+	FIELD_DESC_STRING(SetCurrentContractCmd, order_no),
+	FIELD_DESC_STRING(SetCurrentContractCmd, item_no)
+)
+
+struct StartSprayEvent
+{
+    PodString<20> order_no; // 合同号
+    PodString<20> item_no; // 项目号
+    int tube_no; // 管号
+    int flow_no; // 流水号
+    PodString<20> melt_no; // 炉号
+    PodString<20> lot_no; // 试批号
+    double length; // 长度(米)
+    double weight; // 重量(KG)
+    double theory_weight; // 理论重量
+    bool length_ok; // 长度合格
+    bool weight_ok; // 重量合格
+};
+
+REGISTER_STRUCT(StartSprayEvent,
+	FIELD_DESC_STRING(StartSprayEvent, order_no),
+	FIELD_DESC_STRING(StartSprayEvent, item_no),
+	FIELD_DESC(Int32, StartSprayEvent, tube_no),
+	FIELD_DESC(Int32, StartSprayEvent, flow_no),
+	FIELD_DESC_STRING(StartSprayEvent, melt_no),
+	FIELD_DESC_STRING(StartSprayEvent, lot_no),
+	FIELD_DESC(Double, StartSprayEvent, length),
+	FIELD_DESC(Double, StartSprayEvent, weight),
+	FIELD_DESC(Double, StartSprayEvent, theory_weight),
+	FIELD_DESC(Boolean, StartSprayEvent, length_ok),
+	FIELD_DESC(Boolean, StartSprayEvent, weight_ok)
+)
+
 
 
 #endif // USER_TYPES_H_

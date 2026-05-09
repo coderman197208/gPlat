@@ -48,6 +48,7 @@
 #define ERROR_INVALID_PARAMETER			(MY_ERR_OFFSET + 39)
 #define ERROR_INVALID_RESPONSE			(MY_ERR_OFFSET + 40)
 #define ERROR_BUFFER_TOO_SMALL			(MY_ERR_OFFSET + 41)
+#define ERROR_TAG_NOT_EXIST 			(MY_ERR_OFFSET + 42)
 
 #define SHIFT_MODE		1
 #define NORMAL_MODE		0
@@ -98,7 +99,7 @@ inline ErrorInfo GetErrorInfo(unsigned int errorCode) {
         case ERROR_OPEN_MUTEX:
             return { ErrorLevel::Deprecated, "" };
         case ERROR_RECORDSIZE:
-            return { ErrorLevel::Ignore, "record size invalid" };
+            return { ErrorLevel::Fatal, "record size invalid" };
         case ERROR_STARTPOSITION:
             return { ErrorLevel::Ignore, "bad start position" };
         case ERROR_RECORD_ALREAD_EXIST:
@@ -153,6 +154,8 @@ inline ErrorInfo GetErrorInfo(unsigned int errorCode) {
             return { ErrorLevel::Ignore, "invalid response" };
         case ERROR_BUFFER_TOO_SMALL:
             return { ErrorLevel::Ignore, "buffer too small" };
+        case ERROR_TAG_NOT_EXIST:
+			return { ErrorLevel::Fatal, "tag not exist" };
         default:
             return { ErrorLevel::Ignore, "unknown error" };
     }
