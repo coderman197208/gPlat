@@ -49,19 +49,18 @@ struct AutoErrorCheck {
 				// note: if the destructor is called during stack unwinding due to an exception, 
 				// we should not throw another exception, as it will call std::terminate.
 				if (std::uncaught_exceptions() == 0) {
-					throw std::runtime_error(info.message);
+					throw std::runtime_error(info.message + std::string(" (Code: ") + std::to_string(*m_error) + ")");
 				}
-			} else if (info.level == ErrorLevel::Deprecated) {
-				std::cout << "[higplat error: Deprecated] " << info.message << " (Code: " << *m_error << ")\n";
-			} else if (info.level == ErrorLevel::Ignore) {
-				std::cout << "[higplat error: Ignore] " << info.message << " (Code: " << *m_error << ")\n";
-				// debug use
-				//if (std::uncaught_exceptions() == 0) {
-				//	throw std::runtime_error(info.message);
-				//}
-			} else {
-				std::cout << "[higplat error: Unknown Level] " << info.message << " (Code: " << *m_error << ")\n";
-			}
+			} 
+			// else if (info.level == ErrorLevel::Deprecated) {
+			// 	std::cout << "[higplat error: Deprecated] " << info.message << " (Code: " << *m_error << ")\n";
+			// }
+			// else if (info.level == ErrorLevel::Ignore) {
+			// 	std::cout << "[higplat error: Ignore] " << info.message << " (Code: " << *m_error << ")\n";
+			// }
+			// else {
+			// 	std::cout << "[higplat error: Unknown Level] " << info.message << " (Code: " << *m_error << ")\n";
+			// }
 		}
 	}
 };
@@ -76,7 +75,7 @@ enum EVENTID
 
 thread_local char g_buffer[MAXMSGLEN] = { 0 };
 thread_local unsigned int errorCode = 0;
-char dataQuePath[100] = ".//qbdfile//";
+char dataQuePath[100] = "../qbdfile/";
 
 //从环境变量GPLAT_QBD_PATH初始化dataQuePath，共享库加载时自动执行
 __attribute__((constructor))
@@ -472,7 +471,6 @@ int unblock_connect(const char* ip, int port, int time)
 		return -1;
 	}
 
-	printf("connection ready after select with the socket: %d \n", sockfd);
 	fcntl(sockfd, F_SETFL, fdopt);
 	return sockfd;
 }
@@ -523,6 +521,7 @@ ssize_t readn(int sockfd, void* buf, size_t len) {
 }
 
 //变体版本（带超时控制）
+/*
 ssize_t readn_timeout(int sockfd, void* buf, size_t len, int timeout_sec) {
 	fd_set readfds;
 	struct timeval tv;
@@ -566,6 +565,7 @@ ssize_t readn_timeout(int sockfd, void* buf, size_t len, int timeout_sec) {
 
 	return (len - nleft);
 }
+*/
 
 /*F+F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F
 Function: IsEmptyQ
@@ -603,7 +603,6 @@ extern "C" int connectgplat(const char* server, int port)
 		// 继续使用，非致命错误
 	}
 
-	printf("[INFO] Connected to gplat server %s:%d (fd=%d)\n", server, port, sockfd);
 	return sockfd;
 }
 
@@ -611,7 +610,6 @@ extern "C" void disconnectgplat(int sockfd)
 {
 	if (sockfd >= 0) {
 		close(sockfd);
-		printf("[INFO] Disconnected from gplat server (fd=%d)\n", sockfd);
 	}
 }
 
@@ -1468,8 +1466,8 @@ extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int 
 
 	*error = msg.head.error;  // 或 ntohl(msg.head.error)
 	if (*error != 0) {
-		tagname = (*error == ETIMEDOUT) ? "WAIT_TIMEOUT" : "";
-		return (*error == ETIMEDOUT);  // 仅超时返回 true
+		tagname = (*error == ERROR_WAIT_TIMEOUT) ? "WAIT_TIMEOUT" : "";
+		return (*error == ERROR_WAIT_TIMEOUT);  // 仅超时返回 true
 	}
 
 	// tagname = msg.head.itemname ? msg.head.itemname : "";
@@ -1489,7 +1487,7 @@ extern "C" bool createqueue(int sockfd, const char* queuename, int recordsize, i
 
 	if (recordsize > 2048 || typesize > 100)
 	{
-		errorCode = ERROR_PARAMETER_SIZE;
+		*error = ERROR_PARAMETER_SIZE;
 		return false;
 	}
 

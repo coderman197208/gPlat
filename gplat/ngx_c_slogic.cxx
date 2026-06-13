@@ -579,7 +579,7 @@ bool CLogicSocket::HandlePostWait(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER p
 			PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + m_iLenMsgHeader);
 			pPkgHead->id = POSTWAIT;
 			pPkgHead->itemname[0] = '\0';
-			pPkgHead->error = ETIMEDOUT;
+			pPkgHead->error = ERROR_WAIT_TIMEOUT;
 			pPkgHead->bodysize = 0;
 			// f)发送数据包
 			msgSend(p_sendbuf);

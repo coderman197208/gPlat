@@ -93,11 +93,10 @@ int main(int argc, char* const* argv)
 	ngx_log.fd = -1;					//-1：表示日志文件尚未打开；因为后边ngx_log_stderr要用所以这里先给-1
 	ngx_process = NGX_PROCESS_MASTER;	//先标记本进程是master进程
 	ngx_reap = 0;						//标记子进程没有发生变化
-
 	//(2)初始化失败，就要直接退出的
 	//配置文件必须最先要，后边初始化啥的都用，所以先把配置读出来，供后续使用 
 	CConfig* p_config = CConfig::GetInstance(); //单例类
-	if (p_config->Load("gplat.conf") == false)	//把配置文件内容载入到内存            
+	if (p_config->Load("../config/gplat.conf") == false)	//把配置文件内容载入到内存            
 	{
 		ngx_log_init();    //初始化日志
 		ngx_log_stderr(0, "配置文件[%s]载入失败，退出!", "gplat.conf");

@@ -81,6 +81,38 @@ TOOLGPLAT_BIN := $(BIN_DIR)/toolgplat
 TOOLGPLAT_INCLUDES := -Iinclude
 TOOLGPLAT_LDFLAGS := -lreadline -L$(LIB_DIR) -lhigplat -Wl,-rpath,'$$ORIGIN/../lib'
 
+# --- Module: testapp (Tool) ---
+TESTAPP_DIR := testapp
+TESTAPP_SRCS := $(wildcard $(TESTAPP_DIR)/*.cpp)
+TESTAPP_OBJS := $(patsubst $(TESTAPP_DIR)/%.cpp, $(BUILD_DIR)/$(TESTAPP_DIR)/%.o, $(TESTAPP_SRCS))
+TESTAPP_BIN := $(BIN_DIR)/testapp
+TESTAPP_INCLUDES := -Iinclude
+TESTAPP_LDFLAGS := -lpthread -L$(LIB_DIR) -lhigplat -Wl,-rpath,'$$ORIGIN/../lib'
+
+# --- Module: testapp2 (Tool) ---
+TESTAPP2_DIR := testapp2
+TESTAPP2_SRCS := $(wildcard $(TESTAPP2_DIR)/*.cpp)
+TESTAPP2_OBJS := $(patsubst $(TESTAPP2_DIR)/%.cpp, $(BUILD_DIR)/$(TESTAPP2_DIR)/%.o, $(TESTAPP2_SRCS))
+TESTAPP2_BIN := $(BIN_DIR)/testapp2
+TESTAPP2_INCLUDES := -Iinclude
+TESTAPP2_LDFLAGS := -lpthread -L$(LIB_DIR) -lhigplat -Wl,-rpath,'$$ORIGIN/../lib'
+
+# --- Module: testapp3 (Tool) ---
+TESTAPP3_DIR := testapp3
+TESTAPP3_SRCS := $(wildcard $(TESTAPP3_DIR)/*.cpp)
+TESTAPP3_OBJS := $(patsubst $(TESTAPP3_DIR)/%.cpp, $(BUILD_DIR)/$(TESTAPP3_DIR)/%.o, $(TESTAPP3_SRCS))
+TESTAPP3_BIN := $(BIN_DIR)/testapp3
+TESTAPP3_INCLUDES := -Iinclude
+TESTAPP3_LDFLAGS := -lpthread -L$(LIB_DIR) -lhigplat -Wl,-rpath,'$$ORIGIN/../lib'
+
+# --- Module: testapp4 (Tool) ---
+TESTAPP4_DIR := testapp4
+TESTAPP4_SRCS := $(wildcard $(TESTAPP4_DIR)/*.cpp)
+TESTAPP4_OBJS := $(patsubst $(TESTAPP4_DIR)/%.cpp, $(BUILD_DIR)/$(TESTAPP4_DIR)/%.o, $(TESTAPP4_SRCS))
+TESTAPP4_BIN := $(BIN_DIR)/testapp4
+TESTAPP4_INCLUDES := -Iinclude
+TESTAPP4_LDFLAGS := -lpthread -L$(LIB_DIR) -lhigplat -Wl,-rpath,'$$ORIGIN/../lib'
+
 # --- Module: snap7 (Third-party Shared Library) ---
 SNAP7_BUILD_DIR := snap7/build/linux
 SNAP7_UPSTREAM_LIB := snap7/build/bin/linux/libsnap7.so
@@ -100,9 +132,11 @@ S7IOSERVER_LDFLAGS := -lpthread -L$(LIB_DIR) -lhigplat -lsnap7 -Wl,-rpath,'$$ORI
 
 .PHONY: all clean directories help \
 	gplat higplat createq createb toolgplat snap7 s7ioserver \
-	clean-gplat clean-higplat clean-createq clean-createb clean-toolgplat clean-snap7 clean-s7ioserver
+	testapp testapp2 testapp3 testapp4 \
+	clean-gplat clean-higplat clean-createq clean-createb clean-toolgplat clean-snap7 clean-s7ioserver \
+	clean-testapp clean-testapp2 clean-testapp3 clean-testapp4
 
-all: directories $(HIGPLAT_LIB) $(SNAP7_LIB) $(GPLAT_BIN) $(CREATEQ_BIN) $(CREATEB_BIN) $(TOOLGPLAT_BIN) $(S7IOSERVER_BIN)
+all: directories $(HIGPLAT_LIB) $(SNAP7_LIB) $(GPLAT_BIN) $(CREATEQ_BIN) $(CREATEB_BIN) $(TOOLGPLAT_BIN) $(S7IOSERVER_BIN) $(TESTAPP_BIN) $(TESTAPP2_BIN) $(TESTAPP3_BIN) $(TESTAPP4_BIN)
 	@echo "OK"
 
 gplat: directories $(HIGPLAT_LIB) $(GPLAT_BIN)
@@ -118,6 +152,18 @@ createb: directories $(HIGPLAT_LIB) $(CREATEB_BIN)
 	@echo "OK"
 
 toolgplat: directories $(HIGPLAT_LIB) $(TOOLGPLAT_BIN)
+	@echo "OK"
+
+testapp: directories $(HIGPLAT_LIB) $(TESTAPP_BIN)
+	@echo "OK"
+
+testapp2: directories $(HIGPLAT_LIB) $(TESTAPP2_BIN)
+	@echo "OK"
+
+testapp3: directories $(HIGPLAT_LIB) $(TESTAPP3_BIN)
+	@echo "OK"
+
+testapp4: directories $(HIGPLAT_LIB) $(TESTAPP4_BIN)
 	@echo "OK"
 
 snap7: directories $(SNAP7_LIB)
@@ -179,6 +225,46 @@ $(BUILD_DIR)/$(TOOLGPLAT_DIR)/%.o: $(TOOLGPLAT_DIR)/%.cpp
 	@echo "Compiling $<"
 	@$(CXX) $(CXXFLAGS) $(TOOLGPLAT_INCLUDES) -c $< -o $@
 
+# --- Rules for testapp ---
+$(TESTAPP_BIN): $(TESTAPP_OBJS) $(HIGPLAT_LIB)
+	@echo "Linking $@"
+	@$(CXX) $(LDFLAGS) $(TESTAPP_OBJS) $(TESTAPP_LDFLAGS) -o $@
+
+$(BUILD_DIR)/$(TESTAPP_DIR)/%.o: $(TESTAPP_DIR)/%.cpp
+	@mkdir -p $(@D)
+	@echo "Compiling $<"
+	@$(CXX) $(CXXFLAGS) $(TESTAPP_INCLUDES) -c $< -o $@
+
+# --- Rules for testapp2 ---
+$(TESTAPP2_BIN): $(TESTAPP2_OBJS) $(HIGPLAT_LIB)
+	@echo "Linking $@"
+	@$(CXX) $(LDFLAGS) $(TESTAPP2_OBJS) $(TESTAPP2_LDFLAGS) -o $@
+
+$(BUILD_DIR)/$(TESTAPP2_DIR)/%.o: $(TESTAPP2_DIR)/%.cpp
+	@mkdir -p $(@D)
+	@echo "Compiling $<"
+	@$(CXX) $(CXXFLAGS) $(TESTAPP2_INCLUDES) -c $< -o $@
+
+# --- Rules for testapp3 ---
+$(TESTAPP3_BIN): $(TESTAPP3_OBJS) $(HIGPLAT_LIB)
+	@echo "Linking $@"
+	@$(CXX) $(LDFLAGS) $(TESTAPP3_OBJS) $(TESTAPP3_LDFLAGS) -o $@
+
+$(BUILD_DIR)/$(TESTAPP3_DIR)/%.o: $(TESTAPP3_DIR)/%.cpp
+	@mkdir -p $(@D)
+	@echo "Compiling $<"
+	@$(CXX) $(CXXFLAGS) $(TESTAPP3_INCLUDES) -c $< -o $@
+
+# --- Rules for testapp4 ---
+$(TESTAPP4_BIN): $(TESTAPP4_OBJS) $(HIGPLAT_LIB)
+	@echo "Linking $@"
+	@$(CXX) $(LDFLAGS) $(TESTAPP4_OBJS) $(TESTAPP4_LDFLAGS) -o $@
+
+$(BUILD_DIR)/$(TESTAPP4_DIR)/%.o: $(TESTAPP4_DIR)/%.cpp
+	@mkdir -p $(@D)
+	@echo "Compiling $<"
+	@$(CXX) $(CXXFLAGS) $(TESTAPP4_INCLUDES) -c $< -o $@
+
 # --- Rules for snap7 third-party ---
 $(SNAP7_LIB):
 	@echo "Building third-party snap7 via upstream makefile"
@@ -226,6 +312,30 @@ clean-toolgplat:
 	@rm -rf $(BUILD_DIR)/$(TOOLGPLAT_DIR)
 	@echo "OK"
 
+clean-testapp:
+	@echo "Cleaning testapp artifacts..."
+	@rm -f $(TESTAPP_BIN)
+	@rm -rf $(BUILD_DIR)/$(TESTAPP_DIR)
+	@echo "OK"
+
+clean-testapp2:
+	@echo "Cleaning testapp2 artifacts..."
+	@rm -f $(TESTAPP2_BIN)
+	@rm -rf $(BUILD_DIR)/$(TESTAPP2_DIR)
+	@echo "OK"
+
+clean-testapp3:
+	@echo "Cleaning testapp3 artifacts..."
+	@rm -f $(TESTAPP3_BIN)
+	@rm -rf $(BUILD_DIR)/$(TESTAPP3_DIR)
+	@echo "OK"
+
+clean-testapp4:
+	@echo "Cleaning testapp4 artifacts..."
+	@rm -f $(TESTAPP4_BIN)
+	@rm -rf $(BUILD_DIR)/$(TESTAPP4_DIR)
+	@echo "OK"
+
 clean-snap7:
 	@echo "Cleaning snap7 artifacts via upstream makefile"
 	@$(MAKE) -C $(SNAP7_BUILD_DIR) clean >/dev/null 2>&1 || true
@@ -248,7 +358,7 @@ help:
 	@echo "The compiled binaries will be located in the 'bin/' directory, and the shared library will be in 'lib/'."
 	@echo "And the dependency files (.d) and the object files (.o) will be located in 'build/'."
 	@echo "Available targets:"
-	@echo "  all                    : Build all modules (higplat, snap7, gplat, createq, createb, toolgplat, s7ioserver)"
+	@echo "  all                    : Build all modules (higplat, snap7, gplat, createq, createb, toolgplat, s7ioserver, testapp, testapp2, testapp3, testapp4)"
 	@echo "  gplat|s7ioserver|...   : Build a single target"
 	@echo "  clean                  : Remove build directories and binaries"
 	@echo "  clean-<target>         : clean one target (e.g. clean-gplat)"
@@ -260,4 +370,8 @@ help:
 -include $(CREATEQ_OBJS:.o=.d)
 -include $(CREATEB_OBJS:.o=.d)
 -include $(TOOLGPLAT_OBJS:.o=.d)
+-include $(TESTAPP_OBJS:.o=.d)
+-include $(TESTAPP2_OBJS:.o=.d)
+-include $(TESTAPP3_OBJS:.o=.d)
+-include $(TESTAPP4_OBJS:.o=.d)
 -include $(S7IOSERVER_OBJS:.o=.d)

@@ -923,6 +923,11 @@ void HandleHelp(const std::vector<std::string>& words)
 		std::cout << "Usage: create tag from script file <fileName>" << std::endl;
 		std::cout << "Description: Creates tags based on a script file" << std::endl;
 		std::cout << "Example: create tag from script file tags.txt" << std::endl;
+		std::cout << "--------------------------------------------------------------------------" << std::endl;
+		std::cout << "Usage: create queue <queue name> <queue type> <queue size> <queue mode>" << std::endl;
+		std::cout << "Description: Creates a new queue with the specified name, type, size, and mode." << std::endl;
+		std::cout << "Example: create queue muqueue Int32 10" << std::endl;
+		std::cout << "Example: create queue muqueue Int32 10 shift" << std::endl;
 	}
 	else
 	{

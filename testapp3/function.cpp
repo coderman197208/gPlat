@@ -11,27 +11,27 @@ struct DemoTag
 	int b;
 	int a;
 
-	char order_no[16];				    //ºÏÍ¬ºÅ
-	char melt_no[16];					//Â¯ºÅ
-	char lot_no[8];						//ÊÔÅúºÅ
-	char roll_no[8];					//ÔþÅúºÅ
-	char comment[20];					//±¸×¢
+	char order_no[16];				    //ï¿½ï¿½Í¬ï¿½ï¿½
+	char melt_no[16];					//Â¯ï¿½ï¿½
+	char lot_no[8];						//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+	char roll_no[8];					//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+	char comment[20];					//ï¿½ï¿½×¢
 };
 
 struct TubeInfo
 {
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 8)]
-	char tube_no[8];                  //¹ÜºÅ
+	char tube_no[8];                  //ï¿½Üºï¿½
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 16)]
-	char order_no[16];				    //ºÏÍ¬ºÅ
+	char order_no[16];				    //ï¿½ï¿½Í¬ï¿½ï¿½
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 16)]
-	char melt_no[16];					//Â¯ºÅ
+	char melt_no[16];					//Â¯ï¿½ï¿½
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 8)]
-	char lot_no[8];					//ÊÔÅúºÅ
+	char lot_no[8];					//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 8)]
-	char roll_no[8];					//ÔþÅúºÅ
+	char roll_no[8];					//ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 20)]
-	char comment[20];					//±¸×¢
+	char comment[20];					//ï¿½ï¿½×¢
 };
 
 void bool1_CHANGED(void* pdata, int datasize)
@@ -48,7 +48,6 @@ void bool1_CHANGED(void* pdata, int datasize)
 void HHL_POS_CHANGED(void* pdata, int datasize)
 {
 	TubeInfo*  pTubeInfo = (TubeInfo*)pdata;
-	int rowcount = datasize / sizeof(TubeInfo);
 	pTubeInfo += 82;
 }
 

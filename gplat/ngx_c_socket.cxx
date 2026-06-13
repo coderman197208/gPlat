@@ -23,6 +23,8 @@
 #include "ngx_c_lockmutex.h"
 #include <iostream>
 
+#include "../include/higplat.h"
+
 //控制子进程退出的信号量
 extern int sockpair[2]; //socketpair的文件描述符，父进程和子进程之间的通信管道
 
@@ -946,7 +948,7 @@ void ngx_connection_s::StartTimeoutTimer(int dwMilliseconds)
 			PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + sizeof(STRUC_MSG_HEADER));
 			pPkgHead->id = POSTWAIT;
 			pPkgHead->itemname[0] = '\0';
-			pPkgHead->error = ETIMEDOUT;
+			pPkgHead->error = ERROR_WAIT_TIMEOUT;
 			pPkgHead->bodysize = 0;
 			//f)发送数据包
 			g_socket.msgSend(p_sendbuf);

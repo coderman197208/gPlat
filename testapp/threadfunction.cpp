@@ -125,7 +125,6 @@ void threadFunction2() {
 	unsigned int error;
 
 	int a = 0;
-	std::string eventname;
 	while (g_running) {  // 检查全局运行标志 {
 		a++;
 		ret = writeb(conngplat, "int1", &a, sizeof(a), &error); // 接收数据;
@@ -141,11 +140,10 @@ void threadFunction2() {
 void threadFunction3() {
 	int conngplat;
 	conngplat = connectgplat("127.0.0.1", 8777);
-	bool ret{ false };
+	[[maybe_unused]] bool ret{ false };
 	unsigned int error;
 
 	int a = 0;
-	std::string eventname;
 	while (g_running) {
 		std::string suffix = std::to_string(a++);
 		char str1[200] = "hello world, gyb 1234567890 loop=";

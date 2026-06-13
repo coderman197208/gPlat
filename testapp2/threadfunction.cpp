@@ -82,7 +82,7 @@ unsigned int TestThreadProc1(void* pParam)
 
 	++threadcount;
 
-	//cout << "thread start: " << (int)pParam << endl;
+	cout << "thread start: " << (int)(intptr_t)pParam << endl;
 
 	h = connectgplat("127.0.0.1", 8777);
 	if (h < 0)
@@ -200,10 +200,9 @@ unsigned int TestThreadProc2(void* pParam)
 	string eventname = "";
 	while (1)
 	{
-		bool ret;
 		char pdata[4096];
 		int  buffsize = 4096;
-		ret = waitpostdata(serverHandle, eventname, pdata, buffsize, 500, &errorcode);
+		waitpostdata(serverHandle, eventname, pdata, buffsize, 500, &errorcode);
 		if (eventname == "WAIT_TIMEOUT")
 		{
 			//可以在这里执行周期类任务、控制线程退出等等

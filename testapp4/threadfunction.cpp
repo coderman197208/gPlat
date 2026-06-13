@@ -14,14 +14,12 @@ extern std::atomic<bool> g_running;  // 控制线程运行的标志
 void threadFunction1() {
 	int conngplat;
 	conngplat = connectgplat("127.0.0.1", 8777);
-	bool ret{ false };
 	unsigned int error;
 
 	subscribe(conngplat, "WATCHDOG", &error);
 	subscribe(conngplat, "SPRAY_STRING_TO_L1", &error);
 	subscribe(conngplat, "MotorStatusQueue", &error);
 
-	int a = 0;
 	std::string eventname;
 	while (g_running) {  // 检查全局运行标志 {
 		char value[4096] = { 0 };
@@ -51,10 +49,6 @@ void threadFunction1() {
 }
 
 void threadFunction2() {
-	int conngplat;
-	conngplat = connectgplat("127.0.0.1", 8777);
-	bool ret{ false };
-	unsigned int error;
 }
 
 void threadFunction3() {

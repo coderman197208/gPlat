@@ -48,6 +48,7 @@
 #define ERROR_INVALID_RESPONSE			(MY_ERR_OFFSET + 40)
 #define ERROR_BUFFER_TOO_SMALL			(MY_ERR_OFFSET + 41)
 #define ERROR_TAG_NOT_EXIST 			(MY_ERR_OFFSET + 42)
+#define ERROR_WAIT_TIMEOUT              (MY_ERR_OFFSET + 43)
 
 #pragma pack( push, enter_qbdtype_h_, 8)
 
