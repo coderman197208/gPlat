@@ -1,0 +1,21 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell",
+            "label": "make_build", // 任务的名称，可以自己取
+            "command": "make",     // 核心：在终端执行的命令
+            "args": [],            // 如果需要执行 make clean && make，可以加参数
+            "options": {
+                "cwd": "${workspaceFolder}" // 在项目根目录下执行 make
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}
