@@ -382,4 +382,4 @@ bin/
 
 # qbdfile directory: ignore all files except "qbd file directory"
 qbdfile/*
-!qbdfile/qbd_file_directory
+!qbdfile/_qbd_file_directory
