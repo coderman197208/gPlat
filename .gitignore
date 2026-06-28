@@ -379,3 +379,7 @@ bin/
 .vscode/*
 !.vscode/launch.json
 !.vscode/tasks.json
+
+# qbdfile directory: ignore all files except "qbd file directory"
+qbdfile/*
+!qbdfile/qbd_file_directory

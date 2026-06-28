@@ -234,7 +234,9 @@ bool gplat_load_qbd()
 
 	std::cout << "目录 " << directoryPath << " 中的文件:" << std::endl;
 	for (const auto& file : files) {
-		std::cout << file << std::endl;
+		if (file == "_qbd_file_directory") {
+			continue; // 跳过指定文件
+		}
 
 		if (LoadQ(file.c_str()) == false) //把qbd文件内容载入到内存            
 		{

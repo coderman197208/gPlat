@@ -130,7 +130,7 @@ S7IOSERVER_LDFLAGS := -lpthread -L$(LIB_DIR) -lhigplat -lsnap7 -Wl,-rpath,'$$ORI
 # 4. Targets
 # ==========================================
 
-.PHONY: all clean directories help \
+.PHONY: all clean directories help install \
 	gplat higplat createq createb toolgplat snap7 s7ioserver \
 	testapp testapp2 testapp3 testapp4 \
 	clean-gplat clean-higplat clean-createq clean-createb clean-toolgplat clean-snap7 clean-s7ioserver \
@@ -348,6 +348,13 @@ clean-s7ioserver:
 	@rm -rf $(BUILD_DIR)/$(S7IOSERVER_DIR)
 	@echo "OK"
 
+install: $(HIGPLAT_LIB) $(SNAP7_LIB)
+	@echo "Installing shared libraries to /usr/local/lib/"
+	@cp -f $(HIGPLAT_LIB) /usr/local/lib/
+	@cp -f $(SNAP7_LIB) /usr/local/lib/
+	@ldconfig
+	@echo "OK"
+
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR) $(BIN_DIR) $(LIB_DIR)
@@ -362,6 +369,7 @@ help:
 	@echo "  gplat|s7ioserver|...   : Build a single target"
 	@echo "  clean                  : Remove build directories and binaries"
 	@echo "  clean-<target>         : clean one target (e.g. clean-gplat)"
+	@echo "  install                : Install libhigplat.so and libsnap7.so to /usr/local/lib/ (requires sudo)"
 	@echo "  help                   : Show this help message"
 
 # Include dependency files
