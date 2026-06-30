@@ -27,6 +27,56 @@ static uint32_t swap32(uint32_t val) {
     return __builtin_bswap32(val);
 }
 
+static void getSnap7ErrorText(int err, char* buffer, int buffer_size) {
+    if (buffer_size <= 0) {
+        return;
+    }
+
+    if (Cli_ErrorText(err, buffer, buffer_size) != 0) {
+        std::snprintf(buffer, buffer_size, "snap7 error %d", err);
+    }
+    buffer[buffer_size - 1] = '\0';
+}
+
+static void logSnap7Pdu(const PlcConfig& plc, S7Object client, const char* stage) {
+    int requested = 0;
+    int negotiated = 0;
+    int res = Cli_GetPduLength(client, &requested, &negotiated);
+    if (res == 0) {
+        s7log_info("[%s] snap7 PDU after %s: requested=%d negotiated=%d",
+               plc.name.c_str(), stage, requested, negotiated);
+        return;
+    }
+
+    char err_text[256] = {0};
+    getSnap7ErrorText(res, err_text, sizeof(err_text));
+    s7log_warn("[%s] Cli_GetPduLength failed after %s: err=%d (%s)",
+           plc.name.c_str(), stage, res, err_text);
+}
+
+static void logReadAreaError(const PlcConfig& plc, S7Object client, const ReadGroup& group, int err) {
+    char err_text[256] = {0};
+    getSnap7ErrorText(err, err_text, sizeof(err_text));
+
+    int requested = 0;
+    int negotiated = 0;
+    int pdu_res = Cli_GetPduLength(client, &requested, &negotiated);
+    if (pdu_res == 0) {
+        s7log_error("[%s] Cli_ReadArea failed: area=%s%d start=%d bytes=%d tags=%zu err=%d (%s), PDU requested=%d negotiated=%d",
+               plc.name.c_str(), AreaName(group.area), group.dbnumber,
+               group.start_byte, group.total_bytes, group.tags.size(),
+               err, err_text, requested, negotiated);
+        return;
+    }
+
+    char pdu_err_text[256] = {0};
+    getSnap7ErrorText(pdu_res, pdu_err_text, sizeof(pdu_err_text));
+    s7log_error("[%s] Cli_ReadArea failed: area=%s%d start=%d bytes=%d tags=%zu err=%d (%s), PDU unavailable: err=%d (%s)",
+           plc.name.c_str(), AreaName(group.area), group.dbnumber,
+           group.start_byte, group.total_bytes, group.tags.size(),
+           err, err_text, pdu_res, pdu_err_text);
+}
+
 // ---- snap7 重连 ----
 
 static bool reconnectSnap7(S7Object client, const PlcConfig& plc, int interval) {
@@ -90,6 +140,7 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
         }
     }
     s7log_info("[%s] Connected to PLC %s", plc->name.c_str(), plc->ip.c_str());
+    logSnap7Pdu(*plc, client, "connect");
 
     // 3. 初始化变化检测
     for (auto& tag : plc->tags) {
@@ -108,9 +159,7 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
                                group.start_byte, group.total_bytes, S7WLByte,
                                group.buffer.data());
             if (res != 0) {
-                s7log_error("[%s] Cli_ReadArea failed: area=%s%d start=%d bytes=%d err=%d",
-                       plc->name.c_str(), AreaName(group.area), group.dbnumber,
-                       group.start_byte, group.total_bytes, res);
+                logReadAreaError(*plc, client, group, res);
 
                 // 检查是否断开
                 int connected = 0;
@@ -274,6 +323,7 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
                 s7log_error("[%s] Read thread exiting: snap7 reconnect failed.", plc->name.c_str());
                 break;
             }
+            logSnap7Pdu(*plc, client, "reconnect");
             // 重连后标记所有tag需要首次读取
             for (auto& tag : plc->tags) {
                 tag.first_read = true;

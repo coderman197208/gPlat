@@ -143,7 +143,13 @@ static bool parseTagValue(const std::string& value, TagConfig& tag) {
 
 // ---- BuildReadGroups ----
 
-static const int GAP_THRESHOLD = 32; // 间隔≤32字节的tag合并为一组
+static const int GAP_THRESHOLD = 32;      // 间隔≤32字节的tag合并为一组
+static const int MAX_GROUP_BYTES = 256;   // 单组上限，避免轮询时形成超大连续读
+static const int LARGE_TAG_BYTES = 128;   // 大字段（尤其STRING）单独成组，避免和高频小字段混读
+
+static bool IsLargeReadTag(const TagConfig* tag) {
+    return tag->datatype == S7DataType::STRING || tag->byte_size >= LARGE_TAG_BYTES;
+}
 
 static void BuildReadGroups(PlcConfig& plc) {
     // 按(area, dbnumber)分组tag指针
@@ -179,12 +185,19 @@ static void BuildReadGroups(PlcConfig& plc) {
         current.start_byte = tagPtrs[0]->byte_offset;
         int end_byte = current.start_byte + tagPtrs[0]->byte_size;
         current.tags.push_back(tagPtrs[0]);
+        bool current_has_large_tag = IsLargeReadTag(tagPtrs[0]);
 
         for (size_t i = 1; i < tagPtrs.size(); i++) {
             int tag_start = tagPtrs[i]->byte_offset;
             int tag_end = tag_start + tagPtrs[i]->byte_size;
+            int merged_end = std::max(end_byte, tag_end);
+            int merged_total_bytes = merged_end - current.start_byte;
+            bool next_is_large_tag = IsLargeReadTag(tagPtrs[i]);
+            bool split_for_gap = (tag_start - end_byte > GAP_THRESHOLD);
+            bool split_for_size = (merged_total_bytes > MAX_GROUP_BYTES);
+            bool split_for_large_tag = current_has_large_tag || next_is_large_tag;
 
-            if (tag_start - end_byte <= GAP_THRESHOLD) {
+            if (!split_for_gap && !split_for_size && !split_for_large_tag) {
                 // 合并
                 current.tags.push_back(tagPtrs[i]);
                 if (tag_end > end_byte) end_byte = tag_end;
@@ -201,6 +214,7 @@ static void BuildReadGroups(PlcConfig& plc) {
                 current.start_byte = tag_start;
                 end_byte = tag_end;
                 current.tags.push_back(tagPtrs[i]);
+                current_has_large_tag = next_is_large_tag;
             }
         }
 
