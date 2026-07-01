@@ -323,6 +323,7 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
                 s7log_error("[%s] Read thread exiting: snap7 reconnect failed.", plc->name.c_str());
                 break;
             }
+            s7log_info("[%s] snap7 reconnected.", plc->name.c_str());
             logSnap7Pdu(*plc, client, "reconnect");
             // 重连后标记所有tag需要首次读取
             for (auto& tag : plc->tags) {
