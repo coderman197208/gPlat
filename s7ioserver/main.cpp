@@ -154,7 +154,7 @@ void signalHandler(int sig) {
 int main(int argc, char* argv[])
 {
     // 解析命令行参数
-    std::string configFile = "s7ioserver.ini";
+    std::string configFile = "../config/s7ioserver.ini";
     bool cmdline_daemon = false;
     int opt;
 
