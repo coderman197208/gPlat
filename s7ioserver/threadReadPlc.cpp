@@ -77,6 +77,26 @@ static void logReadAreaError(const PlcConfig& plc, S7Object client, const ReadGr
            err, err_text, pdu_res, pdu_err_text);
 }
 
+static bool shouldReconnectAfterReadError(int err) {
+    const unsigned int err_class = static_cast<unsigned int>(err) & 0xFFFF0000u;
+
+    switch (err_class) {
+        case errIsoConnect:
+        case errIsoDisconnect:
+        case errIsoInvalidPDU:
+        case errIsoShortPacket:
+        case errIsoTooManyFragments:
+        case errIsoPduOverflow:
+        case errIsoSendPacket:
+        case errIsoRecvPacket:
+        case errCliInvalidPlcAnswer:
+        case errCliInvalidDataSizeRecvd:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // ---- snap7 重连 ----
 
 static bool reconnectSnap7(S7Object client, const PlcConfig& plc, int interval) {
@@ -164,7 +184,11 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
                 // 检查是否断开
                 int connected = 0;
                 Cli_GetConnected(client, &connected);
-                if (!connected) {
+                if (!connected || shouldReconnectAfterReadError(res)) {
+                    if (connected) {
+                        s7log_warn("[%s] Read session became unreliable after Cli_ReadArea failure, reconnecting snap7 before reading more groups.",
+                               plc->name.c_str());
+                    }
                     snap7_ok = false;
                     break;
                 }

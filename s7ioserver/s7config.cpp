@@ -241,7 +241,7 @@ bool LoadConfig(const std::string& filename, AppConfig& config) {
     config.reconnect_interval = 3000;
     config.daemon_mode = false;
     config.pid_file = "/var/run/s7ioserver.pid";
-    config.log_file = "s7ioserver.log";
+    config.log_file = "../logs/s7ioserver.log";
     config.log_level = S7LOG_INFO;
     config.log_rotate_count = 3;
     config.log_rotate_size = 5;
