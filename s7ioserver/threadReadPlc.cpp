@@ -135,6 +135,7 @@ static int reconnectGplat(const AppConfig& config) {
 
 void threadReadPlc(PlcConfig* plc, AppConfig* config) {
     s7log_info("[%s] Read thread started for %s", plc->name.c_str(), plc->ip.c_str());
+    const auto poll_interval = std::chrono::milliseconds(plc->poll_interval > 0 ? plc->poll_interval : 0);
 
     // 1. 连接gPlat
     int conn = connectgplat(config->gplat_server.c_str(), config->gplat_port);
@@ -171,6 +172,7 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
     // 4. 主循环
     unsigned int gplat_error;
     while (g_running) {
+        const auto poll_started_at = std::chrono::steady_clock::now();
         bool snap7_ok = true;
 
         // 对每个ReadGroup读取
@@ -355,9 +357,21 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
             }
         }
 
-        // 等待轮询间隔
-        for (int i = 0; i < plc->poll_interval / 10 && g_running; i++) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const auto poll_finished_at = std::chrono::steady_clock::now();
+        const auto poll_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(poll_finished_at - poll_started_at);
+
+        if (poll_elapsed > poll_interval) {
+            s7log_warn("[%s] Poll cycle overran: elapsed=%lld ms, interval=%d ms",
+                   plc->name.c_str(),
+                   static_cast<long long>(poll_elapsed.count()),
+                   plc->poll_interval);
+        }
+        else {
+            std::this_thread::sleep_for(poll_interval - poll_elapsed);
+        }
+
+        if (!g_running) {
+            break;
         }
     }
 
