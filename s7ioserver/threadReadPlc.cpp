@@ -77,6 +77,66 @@ static void logReadAreaError(const PlcConfig& plc, S7Object client, const ReadGr
            err, err_text, pdu_res, pdu_err_text);
 }
 
+struct ReadGroupTiming {
+    const ReadGroup* group = nullptr;
+    long long        read_ms = 0;
+    long long        process_ms = 0;
+    long long        total_ms = 0;
+    size_t           changed_tags = 0;
+    bool             read_failed = false;
+    int              read_error = 0;
+};
+
+static const ReadGroupTiming* findSlowestGroupTiming(const std::vector<ReadGroupTiming>& timings) {
+    const ReadGroupTiming* slowest = nullptr;
+    for (const auto& timing : timings) {
+        if (slowest == nullptr || timing.total_ms > slowest->total_ms) {
+            slowest = &timing;
+        }
+    }
+    return slowest;
+}
+
+static std::string buildGroupTimingSummary(const std::vector<ReadGroupTiming>& timings) {
+    std::string summary;
+
+    for (const auto& timing : timings) {
+        if (timing.group == nullptr) {
+            continue;
+        }
+
+        const int end_byte = timing.group->start_byte + timing.group->total_bytes - 1;
+        char entry[256] = {0};
+        if (timing.read_failed) {
+            std::snprintf(entry, sizeof(entry),
+                          "%s%d [%d..%d] total=%lld ms read=%lld ms process=%lld ms changed=%zu err=%d",
+                          AreaName(timing.group->area), timing.group->dbnumber,
+                          timing.group->start_byte, end_byte,
+                          timing.total_ms, timing.read_ms, timing.process_ms,
+                          timing.changed_tags, timing.read_error);
+        }
+        else {
+            std::snprintf(entry, sizeof(entry),
+                          "%s%d [%d..%d] total=%lld ms read=%lld ms process=%lld ms changed=%zu",
+                          AreaName(timing.group->area), timing.group->dbnumber,
+                          timing.group->start_byte, end_byte,
+                          timing.total_ms, timing.read_ms, timing.process_ms,
+                          timing.changed_tags);
+        }
+
+        if (!summary.empty()) {
+            summary += "; ";
+        }
+        if (summary.size() + std::strlen(entry) > 1400) {
+            summary += "...";
+            break;
+        }
+        summary += entry;
+    }
+
+    return summary;
+}
+
 static bool shouldReconnectAfterReadError(int err) {
     const unsigned int err_class = static_cast<unsigned int>(err) & 0xFFFF0000u;
 
@@ -174,13 +234,26 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
     while (g_running) {
         const auto poll_started_at = std::chrono::steady_clock::now();
         bool snap7_ok = true;
+        std::vector<ReadGroupTiming> group_timings;
+        group_timings.reserve(plc->read_groups.size());
 
         // 对每个ReadGroup读取
         for (auto& group : plc->read_groups) {
+            ReadGroupTiming timing;
+            timing.group = &group;
+            const auto group_started_at = std::chrono::steady_clock::now();
+
             res = Cli_ReadArea(client, AreaToSnap7(group.area), group.dbnumber,
                                group.start_byte, group.total_bytes, S7WLByte,
                                group.buffer.data());
+            const auto group_read_finished_at = std::chrono::steady_clock::now();
+            timing.read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(group_read_finished_at - group_started_at).count();
+
             if (res != 0) {
+                timing.read_failed = true;
+                timing.read_error = res;
+                timing.total_ms = timing.read_ms;
+                group_timings.push_back(timing);
                 logReadAreaError(*plc, client, group, res);
 
                 // 检查是否断开
@@ -198,6 +271,7 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
             }
 
             // 处理组内每个tag
+            size_t changed_tags = 0;
             for (auto* tag : group.tags) {
                 int buf_offset = tag->byte_offset - group.start_byte;
                 uint8_t* raw = group.buffer.data() + buf_offset;
@@ -216,6 +290,7 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
                 }
 
                 if (!changed) continue;
+                ++changed_tags;
 
                 // 更新last_raw_value
                 memcpy(tag->last_raw_value.data(), raw, tag->byte_size);   
@@ -341,6 +416,12 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
                     }
                 }
             }
+
+            const auto group_finished_at = std::chrono::steady_clock::now();
+            timing.changed_tags = changed_tags;
+            timing.process_ms = std::chrono::duration_cast<std::chrono::milliseconds>(group_finished_at - group_read_finished_at).count();
+            timing.total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(group_finished_at - group_started_at).count();
+            group_timings.push_back(timing);
         }
 
         // snap7断开，重连
@@ -361,10 +442,37 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
         const auto poll_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(poll_finished_at - poll_started_at);
 
         if (poll_elapsed > poll_interval) {
-            s7log_warn("[%s] Poll cycle overran: elapsed=%lld ms, interval=%d ms",
-                   plc->name.c_str(),
-                   static_cast<long long>(poll_elapsed.count()),
-                   plc->poll_interval);
+            const ReadGroupTiming* slowest_group = findSlowestGroupTiming(group_timings);
+            if (slowest_group != nullptr && slowest_group->group != nullptr) {
+                const int end_byte = slowest_group->group->start_byte + slowest_group->group->total_bytes - 1;
+                char read_error_suffix[32] = {0};
+                if (slowest_group->read_failed) {
+                    std::snprintf(read_error_suffix, sizeof(read_error_suffix), " err=%d", slowest_group->read_error);
+                }
+
+                s7log_warn("[%s] Poll cycle overran: elapsed=%lld ms, interval=%d ms, slowest_group=%s%d [%d..%d] total=%lld ms read=%lld ms process=%lld ms changed=%zu%s",
+                       plc->name.c_str(),
+                       static_cast<long long>(poll_elapsed.count()),
+                       plc->poll_interval,
+                       AreaName(slowest_group->group->area), slowest_group->group->dbnumber,
+                       slowest_group->group->start_byte, end_byte,
+                       slowest_group->total_ms, slowest_group->read_ms,
+                       slowest_group->process_ms, slowest_group->changed_tags,
+                       read_error_suffix);
+
+                const std::string group_summary = buildGroupTimingSummary(group_timings);
+                if (!group_summary.empty()) {
+                    s7log_info("[%s] Poll breakdown: %s",
+                           plc->name.c_str(),
+                           group_summary.c_str());
+                }
+            }
+            else {
+                s7log_warn("[%s] Poll cycle overran: elapsed=%lld ms, interval=%d ms",
+                       plc->name.c_str(),
+                       static_cast<long long>(poll_elapsed.count()),
+                       plc->poll_interval);
+            }
         }
         else {
             std::this_thread::sleep_for(poll_interval - poll_elapsed);
