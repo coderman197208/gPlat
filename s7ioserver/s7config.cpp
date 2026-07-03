@@ -143,7 +143,7 @@ static bool parseTagValue(const std::string& value, TagConfig& tag) {
 
 // ---- BuildReadGroups ----
 
-static const int GAP_THRESHOLD = 32;      // 间隔≤32字节的tag合并为一组
+static const int GAP_THRESHOLD = 64;      // 间隔≤64字节的tag合并为一组
 static const int MAX_GROUP_BYTES = 256;   // 单组上限，避免轮询时形成超大连续读
 static const int LARGE_TAG_BYTES = 128;   // 大字段（尤其STRING）单独成组，避免和高频小字段混读
 
