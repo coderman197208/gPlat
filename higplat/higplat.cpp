@@ -615,7 +615,7 @@ extern "C" void disconnectgplat(int sockfd)
 
 extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -676,7 +676,7 @@ extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, 
 
 extern "C" bool writeq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -770,7 +770,7 @@ bool clearq(int sockfd, const char* qname, unsigned int* error)
 
 extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error, timespec* timestamp)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -839,7 +839,7 @@ extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize,
 
 bool writeb_(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error, int postornot)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -912,7 +912,7 @@ extern "C" bool writeb_notpost(int sockfd, const char* tagname, void* value, int
 
 extern "C" bool readb_string(int sockfd, const char* tagname, char* value, int buffersize, unsigned int* error, timespec* timestamp)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -989,7 +989,7 @@ extern "C" bool readb_string(int sockfd, const char* tagname, char* value, int b
 
 extern "C" bool readb_string2(int sockfd, const char* tagname, std::string& value, unsigned int* error, timespec* timestamp = 0)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -1075,7 +1075,7 @@ extern "C" bool readb_string2(int sockfd, const char* tagname, std::string& valu
 
 bool writeb_string_(int sockfd, const char* tagname, const char* value, unsigned int* error, int postornot)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -1146,7 +1146,7 @@ extern "C" bool writeb_string_notpost(int sockfd, const char* tagname, const cha
 
 extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string value, unsigned int* error)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -1163,7 +1163,7 @@ extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string valu
 
 extern "C" bool subscribe(int sockfd, const char* tagname, unsigned int* error)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -1214,7 +1214,7 @@ extern "C" bool subscribe(int sockfd, const char* tagname, unsigned int* error)
 
 extern "C" bool clearb(int sockfd, unsigned int* error)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -1250,7 +1250,7 @@ extern "C" bool clearb(int sockfd, unsigned int* error)
 
 extern "C" bool readboardinfo(int sockfd, void* info, int infosize, unsigned int* error)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -1304,7 +1304,7 @@ extern "C" bool readboardinfo(int sockfd, void* info, int infosize, unsigned int
 
 extern "C" bool subscribedelaypost(int sockfd, const char* tagname, const char* eventname, int delaytime, unsigned int* error)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -1355,7 +1355,7 @@ extern "C" bool subscribedelaypost(int sockfd, const char* tagname, const char* 
 
 extern "C" bool createtag(int sockfd, const char* tagname, int tagsize, void* type, int typesize, unsigned int* error)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -1417,7 +1417,7 @@ extern "C" bool createtag(int sockfd, const char* tagname, int tagsize, void* ty
 
 extern "C" bool deletetag(int sockfd, const char* tagname, unsigned int* error)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -1459,7 +1459,7 @@ extern "C" bool deletetag(int sockfd, const char* tagname, unsigned int* error)
 
 extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int buffersize, int timeout, unsigned int* error)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
@@ -1519,7 +1519,7 @@ extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int 
 
 extern "C" bool createqueue(int sockfd, const char* queuename, int recordsize, int recordnum, int operatemode, void* type, int typesize, unsigned int* error)
 {
-	if (error == nullptr || error == 0)
+	if (error == nullptr )
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);

@@ -154,7 +154,7 @@ inline ErrorInfo GetErrorInfo(unsigned int errorCode) {
         case ERROR_INVALID_RESPONSE:
             return { ErrorLevel::Ignore, "invalid response" };
         case ERROR_BUFFER_TOO_SMALL:
-            return { ErrorLevel::Ignore, "buffer too small" };
+            return { ErrorLevel::Fatal, "buffer too small" };
         case ERROR_TAG_NOT_EXIST:
 			return { ErrorLevel::Fatal, "tag not exist" };
         case ERROR_WAIT_TIMEOUT:
