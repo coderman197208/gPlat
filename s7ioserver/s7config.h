@@ -49,6 +49,7 @@ struct AppConfig {
     int         gplat_port;
     std::string board_name;
     int         reconnect_interval; // ms
+    bool        enable_plc_write;   // 是否真正写入PLC，默认true
     std::vector<PlcConfig> plcs;
 
     // 守护进程配置

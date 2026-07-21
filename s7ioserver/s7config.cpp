@@ -239,6 +239,7 @@ bool LoadConfig(const std::string& filename, AppConfig& config) {
     config.gplat_port = 8777;
     config.board_name = "BOARD";
     config.reconnect_interval = 3000;
+    config.enable_plc_write = true;
     config.daemon_mode = false;
     config.pid_file = "/var/run/s7ioserver.pid";
     config.log_file = "../logs/s7ioserver.log";
@@ -304,6 +305,7 @@ bool LoadConfig(const std::string& filename, AppConfig& config) {
             else if (key == "gplat_port")    config.gplat_port = std::stoi(value);
             else if (key == "board_name")    config.board_name = value;
             else if (key == "reconnect_interval") config.reconnect_interval = std::stoi(value);
+            else if (key == "enable_plc_write")     config.enable_plc_write = (std::stoi(value) != 0);
             else if (key == "daemon")                config.daemon_mode = (std::stoi(value) != 0);
             else if (key == "pid_file")              config.pid_file = value;
             else if (key == "log_file")          config.log_file = value;
@@ -370,6 +372,7 @@ void PrintConfig(const AppConfig& config) {
     s7log_info("gPlat server: %s:%d", config.gplat_server.c_str(), config.gplat_port);
     s7log_info("Board name: %s", config.board_name.c_str());
     s7log_info("Reconnect interval: %d ms", config.reconnect_interval);
+    s7log_info("PLC write enabled: %s", config.enable_plc_write ? "YES" : "NO");
     s7log_info("Daemon mode: %s", config.daemon_mode ? "YES" : "NO");
     if (config.daemon_mode)
         s7log_info("PID file: %s", config.pid_file.c_str());

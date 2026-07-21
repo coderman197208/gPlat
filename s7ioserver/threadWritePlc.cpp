@@ -103,16 +103,20 @@ void threadWritePlc(AppConfig* config) {
 
     // 2. 为每个PLC创建独立的snap7客户端
     std::map<std::string, S7Object> plcClients; // plc.name -> S7Object
-    for (auto& plc : config->plcs) {
-        S7Object client = Cli_Create();
-        int res = Cli_ConnectTo(client, plc.ip.c_str(), plc.rack, plc.slot);
-        if (res != 0) {
-            s7log_warn("[write thread] snap7 connect to %s (%s) failed (err=%d), will retry on write.",
-                   plc.name.c_str(), plc.ip.c_str(), res);
-        } else {
-            s7log_info("[write thread] snap7 connected to %s (%s)", plc.name.c_str(), plc.ip.c_str());
+    if (config->enable_plc_write) {
+        for (auto& plc : config->plcs) {
+            S7Object client = Cli_Create();
+            int res = Cli_ConnectTo(client, plc.ip.c_str(), plc.rack, plc.slot);
+            if (res != 0) {
+                s7log_warn("[write thread] snap7 connect to %s (%s) failed (err=%d), will retry on write.",
+                       plc.name.c_str(), plc.ip.c_str(), res);
+            } else {
+                s7log_info("[write thread] snap7 connected to %s (%s)", plc.name.c_str(), plc.ip.c_str());
+            }
+            plcClients[plc.name] = client;
         }
-        plcClients[plc.name] = client;
+    } else {
+        s7log_warn("[write] PLC write disabled by config. Incoming updates will not be written to PLC.");
     }
 
     // 3. 构建tag查找映射
@@ -122,7 +126,7 @@ void threadWritePlc(AppConfig* config) {
             TagLookup lookup;
             lookup.tag = &tag;
             lookup.plc = &plc;
-            lookup.client = plcClients[plc.name];
+            lookup.client = config->enable_plc_write ? plcClients[plc.name] : 0;
             tagMap[tag.tagname] = lookup;
         }
     }
@@ -168,6 +172,12 @@ void threadWritePlc(AppConfig* config) {
 
         TagLookup& lookup = it->second;
         TagConfig* tag = lookup.tag;
+
+        if (!config->enable_plc_write) {
+            s7log_debug("[write] PLC write disabled, skipped tag '%s'.", tag->tagname.c_str());
+            continue;
+        }
+
         S7Object client = lookup.client;
         int area = AreaToSnap7(tag->area);
 
