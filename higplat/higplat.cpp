@@ -4412,7 +4412,7 @@ bool writeb_string_plc(int sockfd, const char* tagname, const char* value, unsig
 	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
 
 	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0 ||
-		send_all(sockfd, value, strlength) <= 0) {
+		(strlength > 0 && send_all(sockfd, value, strlength) <= 0)) {
 		*error = errno;
 		close(sockfd);
 		return false;
