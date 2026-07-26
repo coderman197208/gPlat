@@ -299,7 +299,7 @@ static u_char* ngx_sprintf_num(u_char* buf, u_char* last, uint64_t ui64, u_char 
 
 	if (hexadecimal == 0)
 	{
-		if (ui64 <= (uint64_t)NGX_MAX_UINT32_VALUE)   //NGX_MAX_UINT32_VALUE :最大的32位无符号数：十进制是‭4294967295‬
+		if (ui64 <= (uint64_t)NGX_MAX_UINT32_VALUE)   //NGX_MAX_UINT32_VALUE :最大的32位无符号数：十进制是4294967295
 		{
 			ui32 = (uint32_t)ui64; //能保存下
 			do  //这个循环能够把诸如 7654321这个数字保存成：temp[13]=7,temp[14]=6,temp[15]=5,temp[16]=4,temp[17]=3,temp[18]=2,temp[19]=1

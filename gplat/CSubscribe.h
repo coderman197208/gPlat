@@ -26,7 +26,7 @@ class CSubscribe
 private:  
     std::shared_mutex mutex_rw;  
     std::map<std::string, std::list<EventNode>> m_mapSubject;
-    std::map<std::string, std::list<void*>> m_mapSubject_plcIoServer; //保存TAG对应的IO服务器列表 void*(lpngx_connection_t)
+    std::map<std::string, void*> m_mapSubject_plcIoServer; // 每个TAG只保留最新注册的PLC IO服务器连接
 
 public:  
     CSubscribe() {};  
@@ -72,27 +72,23 @@ public:
     void AttachPlcIoServer(std::string tagname, void* observer)
     {  
         std::unique_lock<std::shared_mutex> lock(mutex_rw);  
-        m_mapSubject_plcIoServer[tagname].push_back(observer);  
+        m_mapSubject_plcIoServer[tagname] = observer;
     }
 
     // 移除PLC IO服务器订阅者
     void DetachPlcIoServer(std::string tagname, void* observer)
     {  
         std::unique_lock<std::shared_mutex> lock(mutex_rw);  
-        for (std::list<void*>::iterator it = m_mapSubject_plcIoServer[tagname].begin(); it != m_mapSubject_plcIoServer[tagname].end();)  
-        {  
-            if ((*it) == observer)  
-                it = m_mapSubject_plcIoServer[tagname].erase(it);  
-            else  
-                ++it;  
-        }  
+        auto it = m_mapSubject_plcIoServer.find(tagname);
+        if (it != m_mapSubject_plcIoServer.end() && it->second == observer)
+            m_mapSubject_plcIoServer.erase(it);
     }
 
     // 查询PLC IO服务器订阅者
-    std::list<void*> GetPlcIoServer(const std::string& tagname)
+    void* GetPlcIoServer(const std::string& tagname)
     {  
         std::shared_lock<std::shared_mutex> lock(mutex_rw);  
         auto it = m_mapSubject_plcIoServer.find(tagname);
-        return it == m_mapSubject_plcIoServer.end() ? std::list<void*>{} : it->second;
+        return it == m_mapSubject_plcIoServer.end() ? nullptr : it->second;
     }
 };

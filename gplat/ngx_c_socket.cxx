@@ -483,7 +483,7 @@ int CSocekt::ngx_epoll_add_event(int fd,
 	}
 
 	//以下这段代码抄自nginx官方,因为指针的最后一位【二进制位】肯定不是1，所以 和 c->instance做 |运算；到时候通过一些编码，既可以取得c的真实地址，又可以把此时此刻的c->instance值取到
-	//比如c是个地址，可能的值是 0x00af0578，对应的二进制是‭101011110000010101111000‬，而 | 1后是0x00af0579
+	//比如c是个地址，可能的值是 0x00af0578，对应的二进制是101011110000010101111000，而 | 1后是0x00af0579
 	//ev.data.ptr = (void *)( (uintptr_t)c | c->instance);   //把对象弄进去，后续来事件时，用epoll_wait()后，这个对象能取出来用
 															 //但同时把一个 标志位【不是0就是1】弄进去
 
@@ -710,7 +710,7 @@ int CSocekt::ngx_epoll_process_events(int timer)
 				//EPOLLHUP：对应的连接被挂起                       16    = 0001 0000
 				//EPOLLRDHUP：表示TCP连接的远端关闭或者半关闭连接   8192   = 0010  0000   0000   0000
 				//我想打印一下日志看一下是否会出现这种情况
-				//8221 = ‭0010 0000 0001 1101‬  ：包括 EPOLLRDHUP ，EPOLLHUP， EPOLLERR
+				//8221 = 0010 0000 0001 1101 ：包括 EPOLLRDHUP ，EPOLLHUP， EPOLLERR
 				//ngx_log_stderr(errno,"CSocekt::ngx_epoll_process_events()中revents&EPOLLOUT成立并且revents & (EPOLLERR|EPOLLHUP|EPOLLRDHUP)成立,event=%ud。",revents); 
 
 				//我们只有投递了 写事件，但对端断开时，程序流程才走到这里，投递了写事件意味着 iThrowsendCount标记肯定被+1了，这里我们减回阿里

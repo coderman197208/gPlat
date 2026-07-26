@@ -986,20 +986,10 @@ bool CLogicSocket::HandleWriteBStringPlc(lpngx_connection_t pConn, LPSTRUC_MSG_H
 
 void CLogicSocket::NotifyPlcIoSever(std::string tagName, char *pPkgBody, unsigned short iBodyLength)
 {
-	std::list<void *> subscribers = m_subscriber.GetPlcIoServer(tagName);
+	void *subscriber = m_subscriber.GetPlcIoServer(tagName);
 
-	int usernumber = (int)subscribers.size();
-
-	if (usernumber > 1)
+	if (subscriber != nullptr)
 	{
-		ngx_log_stderr(0, "ERROR:一个TAG只能对应一个PLCIO服务器，请检查应用程序,%s这个TAG有%d个PLCIO服务器订阅了", tagName.c_str(), usernumber);
-		exit(1);
-	}
-
-	if (usernumber > 0)
-	{
-		for (auto subscriber : subscribers)
-		{
 			CMemory *p_memory = CMemory::GetInstance();
 			char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iBodyLength, false); // 准备发送的格式，这里是消息头+包头+包体
 			// 填充消息头
@@ -1037,7 +1027,6 @@ void CLogicSocket::NotifyPlcIoSever(std::string tagName, char *pPkgBody, unsigne
 			{
 				pConn->m_listPost.push_back(p_sendbuf);
 			}
-		}
 	}
 	else
 	{
