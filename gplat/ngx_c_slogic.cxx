@@ -232,17 +232,19 @@ bool CLogicSocket::HandleWriteQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 
 	pPkgHead->bodysize = 0;
 
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	{
+		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
 
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader, false); // 准备发送的格式，这里是消息头+包头+包体
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
+		CMemory *p_memory = CMemory::GetInstance();
+		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader, false); // 准备发送的格式，这里是消息头+包头+包体
+		// 填充消息头
+		memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
+		// 填充包头
+		memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
 
-	// 发送数据包
-	msgSend(p_sendbuf);
+		// 发送数据包
+		msgSend(p_sendbuf);
+	}
 
 	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
 
@@ -351,18 +353,20 @@ bool CLogicSocket::HandleWriteB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 
 	pPkgHead->bodysize = 0;
 
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	{
+		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
 
-	int iLenPkgBody = 0;
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
+		int iLenPkgBody = 0;
+		CMemory *p_memory = CMemory::GetInstance();
+		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
+		// 填充消息头
+		memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
+		// 填充包头
+		memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
 
-	// 发送数据包
-	msgSend(p_sendbuf);
+		// 发送数据包
+		msgSend(p_sendbuf);
+	}
 
 	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
 
@@ -449,18 +453,20 @@ bool CLogicSocket::HandleWriteBString(lpngx_connection_t pConn, LPSTRUC_MSG_HEAD
 
 	pPkgHead->bodysize = 0;
 
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	{
+		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
 
-	int iLenPkgBody = 0;
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
+		int iLenPkgBody = 0;
+		CMemory *p_memory = CMemory::GetInstance();
+		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
+		// 填充消息头
+		memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
+		// 填充包头
+		memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
 
-	// 发送数据包
-	msgSend(p_sendbuf);
+		// 发送数据包
+		msgSend(p_sendbuf);
+	}
 
 	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
 
@@ -910,18 +916,20 @@ bool CLogicSocket::HandleWriteBPlc(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER 
 
 	pPkgHead->bodysize = 0;
 
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	{
+		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
 
-	int iLenPkgBody = 0;
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
+		int iLenPkgBody = 0;
+		CMemory *p_memory = CMemory::GetInstance();
+		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
+		// 填充消息头
+		memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
+		// 填充包头
+		memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
 
-	// 发送数据包
-	msgSend(p_sendbuf);
+		// 发送数据包
+		msgSend(p_sendbuf);
+	}
 
 	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
 
@@ -953,18 +961,20 @@ bool CLogicSocket::HandleWriteBStringPlc(lpngx_connection_t pConn, LPSTRUC_MSG_H
 
 	pPkgHead->bodysize = 0;
 
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	{
+		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
 
-	int iLenPkgBody = 0;
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
+		int iLenPkgBody = 0;
+		CMemory *p_memory = CMemory::GetInstance();
+		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
+		// 填充消息头
+		memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
+		// 填充包头
+		memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
 
-	// 发送数据包
-	msgSend(p_sendbuf);
+		// 发送数据包
+		msgSend(p_sendbuf);
+	}
 
 	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
 

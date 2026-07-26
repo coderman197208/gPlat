@@ -59,10 +59,11 @@ public:
     }
 
     // 查询订阅者  
-    const std::list<EventNode>& GetSubscriber(std::string tagname)
+    std::list<EventNode> GetSubscriber(const std::string& tagname)
     {  
         std::shared_lock<std::shared_mutex> lock(mutex_rw);  
-        return m_mapSubject[tagname];  
+        auto it = m_mapSubject.find(tagname);
+        return it == m_mapSubject.end() ? std::list<EventNode>{} : it->second;
     }
 
     //------------------------------------------------------------------
@@ -88,9 +89,10 @@ public:
     }
 
     // 查询PLC IO服务器订阅者
-    const std::list<void*>& GetPlcIoServer(std::string tagname)
+    std::list<void*> GetPlcIoServer(const std::string& tagname)
     {  
         std::shared_lock<std::shared_mutex> lock(mutex_rw);  
-        return m_mapSubject_plcIoServer[tagname];  
+        auto it = m_mapSubject_plcIoServer.find(tagname);
+        return it == m_mapSubject_plcIoServer.end() ? std::list<void*>{} : it->second;
     }
 };

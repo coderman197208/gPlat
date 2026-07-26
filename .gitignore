@@ -384,3 +384,4 @@ bin/
 qbdfile/*
 !qbdfile/_qbd_file_directory
 config/s7ioserver.ini
+qbdfile/BOARD
