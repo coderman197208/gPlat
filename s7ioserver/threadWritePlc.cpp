@@ -145,7 +145,7 @@ void threadWritePlc(AppConfig* config) {
         bool ret = waitpostdata(conn, tagname, value, 1024, -1, &err);
 
         if (!ret) {
-            s7log_warn("[write] waitpostdata failed, reconnecting gPlat...");
+            s7log_warn("[write] waitpostdata failed, error = %u, reconnecting gPlat...", err);
             conn = reconnectGplatWrite(config, tagMap);
             if (conn <= 0) {
                 s7log_error("[write] Write thread exiting: gPlat reconnect failed.");
