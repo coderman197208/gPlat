@@ -1195,21 +1195,26 @@ extern "C" bool subscribe(int sockfd, const char* tagname, unsigned int* error)
 	}
 
 	// 读取响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
+	ssize_t response_size = readn(sockfd, &msg, sizeof(MSGHEAD));
+	if (response_size != static_cast<ssize_t>(sizeof(MSGHEAD))) {
+		*error = (response_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
 		close(sockfd);
 		return false;
 	}
 
 	// 验证响应
-	if (msg.head.bodysize > 0) {
+	if (msg.head.id != SUBSCRIBE || msg.head.bodysize != 0) {
 		*error = ERROR_INVALID_RESPONSE;
 		close(sockfd);
 		return false;
 	}
 
 	*error = msg.head.error;
-	return (*error == 0);
+	if (*error != 0) {
+		close(sockfd);
+		return false;
+	}
+	return true;
 }
 
 extern "C" bool clearb(int sockfd, unsigned int* error)
@@ -1463,6 +1468,12 @@ extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int 
 		throw std::runtime_error("parameter error is null");
 
 	AutoErrorCheck _checker(error);
+	if (sockfd < 0 || value == nullptr || buffersize <= 0 || timeout < -1) {
+		*error = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+	tagname.clear();
+
 	//绝对不能在本地实现超时，否则容易出现问题
 	MSGSTRUCT msg{};
 	msg.head.id = POSTWAIT;
@@ -1475,13 +1486,19 @@ extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int 
 		return false;
 	}
 
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
+	ssize_t header_size = readn(sockfd, &msg, sizeof(MSGHEAD));
+	if (header_size != static_cast<ssize_t>(sizeof(MSGHEAD))) {
+		*error = (header_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
 		close(sockfd);
 		return false;
 	}
 
-	// 验证数据大小
+	if ((msg.head.id != POST && msg.head.id != POSTWAIT) || msg.head.bodysize < 0) {
+		*error = ERROR_INVALID_RESPONSE;
+		close(sockfd);
+		return false;
+	}
+
 	if (msg.head.bodysize > buffersize) {
 		*error = ERROR_BUFFER_TOO_SMALL;
 		close(sockfd);
@@ -1490,29 +1507,29 @@ extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int 
 
 	// 读取数据体（如果有）
 	if (msg.head.bodysize > 0) {
-		if (readn(sockfd, value, msg.head.bodysize) < 0) {
-			*error = errno;
+		ssize_t body_size = readn(sockfd, value, msg.head.bodysize);
+		if (body_size != msg.head.bodysize) {
+			*error = (body_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
 			close(sockfd);
 			return false;
 		}
 	}
 
-	// 确保字符串以 null 结尾
 	if (msg.head.bodysize < buffersize) {
-		((char*)value)[msg.head.bodysize] = '\0';  // 确保 null 结尾
-	}
-	else {
-		((char*)value)[buffersize - 1] = '\0';  // 防止溢出
+		((char*)value)[msg.head.bodysize] = '\0';
 	}
 
 	*error = msg.head.error;  // 或 ntohl(msg.head.error)
 	if (*error != 0) {
-		tagname = (*error == ERROR_WAIT_TIMEOUT) ? "WAIT_TIMEOUT" : "";
-		return (*error == ERROR_WAIT_TIMEOUT);  // 仅超时返回 true
+		if (*error == ERROR_WAIT_TIMEOUT) {
+			tagname = "WAIT_TIMEOUT";
+			return true;
+		}
+		close(sockfd);
+		return false;
 	}
 
-	// tagname = msg.head.itemname ? msg.head.itemname : "";
-	// fix: The address of ‘MSGHEAD::itemname’ will never be NULL
+	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
 	tagname = (msg.head.itemname[0] != '\0') ? msg.head.itemname : "";
 	return true;
 }
@@ -4465,21 +4482,26 @@ extern "C" bool registertag(int sockfd, const char* tagname, unsigned int* error
 	}
 
 	// 读取响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
+	ssize_t response_size = readn(sockfd, &msg, sizeof(MSGHEAD));
+	if (response_size != static_cast<ssize_t>(sizeof(MSGHEAD))) {
+		*error = (response_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
 		close(sockfd);
 		return false;
 	}
 
 	// 验证响应
-	if (msg.head.bodysize > 0) {
+	if (msg.head.id != REGISTERPLCSERVER || msg.head.bodysize != 0) {
 		*error = ERROR_INVALID_RESPONSE;
 		close(sockfd);
 		return false;
 	}
 
 	*error = msg.head.error;
-	return (*error == 0);
+	if (*error != 0) {
+		close(sockfd);
+		return false;
+	}
+	return true;
 }
 
 extern "C" bool write_plc_string(int sockfd, const char* tagname, std::string str, unsigned int* error)

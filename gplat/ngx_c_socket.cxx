@@ -946,6 +946,7 @@ void ngx_connection_s::StartTimeoutTimer(int dwMilliseconds)
 			ptmpMsgHeader->iCurrsequence = pConn->iCurrsequence; //收到包时的连接池中连接序号记录到消息头里来，以备将来用；
 			//b)再填写包头内容
 			PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + sizeof(STRUC_MSG_HEADER));
+			memset(pPkgHead, 0, sizeof(PKGHEAD));
 			pPkgHead->id = POSTWAIT;
 			pPkgHead->itemname[0] = '\0';
 			pPkgHead->error = ERROR_WAIT_TIMEOUT;

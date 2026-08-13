@@ -583,6 +583,7 @@ bool CLogicSocket::HandlePostWait(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER p
 			memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
 			// c)填充包头
 			PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + m_iLenMsgHeader);
+			memset(pPkgHead, 0, sizeof(PKGHEAD));
 			pPkgHead->id = POSTWAIT;
 			pPkgHead->itemname[0] = '\0';
 			pPkgHead->error = ERROR_WAIT_TIMEOUT;
@@ -628,6 +629,7 @@ void CLogicSocket::NotifySubscriber(std::string tagName, char *pPkgBody, unsigne
 			ptmpMsgHeader->iCurrsequence = ptmpMsgHeader->pConn->iCurrsequence;
 			// 填充包头
 			PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + m_iLenMsgHeader); // 包头
+			memset(pPkgHead, 0, sizeof(PKGHEAD));
 			pPkgHead->id = POST;										 // 发布事件
 			strcpy(pPkgHead->itemname, tagName.c_str());				 // 必须的，因为最终发布事件的时候是用的itemname
 			pPkgHead->error = 0;										 // 必须设置为0，因为包头是在堆上分配的，所以error值是随机的（而且很有可能是上一次分配的同一块内存的值）
@@ -706,7 +708,7 @@ void CLogicSocket::NotifyTimerSubscriber(std::string timerName, char *pPkgBody, 
 	CMemory *p_memory = CMemory::GetInstance();
 	for (auto subscriber : subscribers)
 	{
-		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader, false); // 准备发送的格式，这里是消息头+包头
+		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iBodyLength, false); // 准备发送的格式，这里是消息头+包头+包体
 		// 填写消息头内容
 		LPSTRUC_MSG_HEADER ptmpMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
 		lpngx_connection_t pConn = (lpngx_connection_t)(subscriber.subscriber);
@@ -714,6 +716,7 @@ void CLogicSocket::NotifyTimerSubscriber(std::string timerName, char *pPkgBody, 
 		ptmpMsgHeader->iCurrsequence = ptmpMsgHeader->pConn->iCurrsequence;
 		// 填充包头
 		PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + m_iLenMsgHeader);
+		memset(pPkgHead, 0, sizeof(PKGHEAD));
 		pPkgHead->id = POST; // 发布事件
 		strncpy(pPkgHead->itemname, timerName.c_str(), sizeof(pPkgHead->itemname) - 1);
 		pPkgHead->itemname[sizeof(pPkgHead->itemname) - 1] = '\0'; // 确保字符串零终止
@@ -999,6 +1002,7 @@ void CLogicSocket::NotifyPlcIoSever(std::string tagName, char *pPkgBody, unsigne
 			ptmpMsgHeader->iCurrsequence = ptmpMsgHeader->pConn->iCurrsequence;
 			// 填充包头
 			PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + m_iLenMsgHeader); // 包头
+			memset(pPkgHead, 0, sizeof(PKGHEAD));
 			pPkgHead->id = POST;										 // 发布事件
 			strcpy(pPkgHead->itemname, tagName.c_str());				 // 必须的，因为最终发布事件的时候是用的itemname
 			pPkgHead->error = 0;										 // 必须设置为0，因为包头是在堆上分配的，所以error值是随机的（而且很有可能是上一次分配的同一块内存的值）

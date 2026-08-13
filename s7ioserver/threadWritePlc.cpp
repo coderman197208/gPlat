@@ -125,25 +125,37 @@ static bool reconnectSnap7Write(S7Object client, const PlcConfig& plc, int inter
 
 // ---- gPlat 重连 + 重新注册 ----
 
-static int reconnectGplatWrite(AppConfig* config, std::map<std::string, TagLookup>& tagMap) {
+static bool registerGplatWriteSubscriptions(int conn, const std::map<std::string, TagLookup>& tagMap) {
+    unsigned int err = 0;
+    if (!subscribe(conn, "timer_500ms", &err)) {
+        s7log_warn("[write] Failed to subscribe timer_500ms, error=%u", err);
+        return false;
+    }
+
+    size_t registered = 0;
+    for (const auto& kv : tagMap) {
+        if (!registertag(conn, kv.first.c_str(), &err)) {
+            s7log_warn("[write] Failed to register tag '%s', error=%u, registered=%zu/%zu",
+                   kv.first.c_str(), err, registered, tagMap.size());
+            return false;
+        }
+        ++registered;
+    }
+    return true;
+}
+
+static int reconnectGplatWrite(AppConfig* config, const std::map<std::string, TagLookup>& tagMap) {
     while (g_running) {
         s7log_warn("[write] gPlat reconnecting to %s:%d...",
                config->gplat_server.c_str(), config->gplat_port);
         int conn = connectgplat(config->gplat_server.c_str(), config->gplat_port);
         if (conn > 0) {
             s7log_info("[write] gPlat reconnected (fd=%d), re-registering...", conn);
-            unsigned int err;
-
-            // 重新订阅timer
-            subscribe(conn, "timer_500ms", &err);
-
-            // 重新注册所有tag
-            for (auto& kv : tagMap) {
-                registertag(conn, kv.first.c_str(), &err);
+            if (registerGplatWriteSubscriptions(conn, tagMap)) {
+                s7log_info("[write] Re-registered %zu tags.", tagMap.size());
+                return conn;
             }
-
-            s7log_info("[write] Re-registered %zu tags.", tagMap.size());
-            return conn;
+            s7log_warn("[write] gPlat subscription registration failed, retrying...");
         }
         for (int i = 0; i < config->reconnect_interval / 100 && g_running; i++)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -274,10 +286,6 @@ void threadWritePlc(AppConfig* config) {
     }
     s7log_info("[write] Connected to gPlat (fd=%d)", conn);
 
-    unsigned int err;
-    // 订阅timer用于退出检测
-    subscribe(conn, "timer_500ms", &err);
-
     // 2. 为每个PLC创建独立的snap7客户端
     std::map<std::string, S7Object> plcClients; // plc.name -> S7Object
     if (config->enable_plc_write) {
@@ -312,14 +320,18 @@ void threadWritePlc(AppConfig* config) {
         }
     }
 
-    // 4. 注册所有tag
-    for (auto& kv : tagMap) {
-        registertag(conn, kv.first.c_str(), &err);
+    // 4. 订阅timer并注册所有tag
+    if (!registerGplatWriteSubscriptions(conn, tagMap)) {
+        s7log_warn("[write] Initial gPlat subscription registration failed, reconnecting...");
+        conn = reconnectGplatWrite(config, tagMap);
     }
-    s7log_info("[write] Registered %zu tags.", tagMap.size());
+    else {
+        s7log_info("[write] Registered %zu tags.", tagMap.size());
+    }
 
     // 5. 主循环
-    while (g_running) {
+    unsigned int err = 0;
+    while (g_running && conn > 0) {
         char value[1024] = {0};
         std::string tagname;
 
@@ -327,6 +339,7 @@ void threadWritePlc(AppConfig* config) {
 
         if (!ret) {
             s7log_warn("[write] waitpostdata failed, error = %u, reconnecting gPlat...", err);
+            conn = -1;
             conn = reconnectGplatWrite(config, tagMap);
             if (conn <= 0) {
                 s7log_error("[write] Write thread exiting: gPlat reconnect failed.");
@@ -415,6 +428,10 @@ void threadWritePlc(AppConfig* config) {
                    lookup.plc->name.c_str(), connected);
             reconnectSnap7Write(client, *lookup.plc, config->reconnect_interval);
         }
+    }
+
+    if (conn > 0) {
+        disconnectgplat(conn);
     }
 
     // 清理snap7连接
