@@ -161,13 +161,23 @@ static bool shouldReconnectAfterReadError(int err) {
 
 static bool reconnectSnap7(S7Object client, const PlcConfig& plc, int interval) {
     Cli_Disconnect(client);
+    unsigned int attempt = 0;
     while (g_running) {
-        s7log_warn("[%s] snap7 reconnecting to %s...", plc.name.c_str(), plc.ip.c_str());
+        ++attempt;
+        s7log_warn("[%s] snap7 reconnect attempt=%u ip=%s rack=%d slot=%d",
+               plc.name.c_str(), attempt, plc.ip.c_str(), plc.rack, plc.slot);
         int res = Cli_ConnectTo(client, plc.ip.c_str(), plc.rack, plc.slot);
         if (res == 0) {
-            s7log_info("[%s] snap7 reconnected.", plc.name.c_str());
+            s7log_info("[%s] snap7 reconnected: ip=%s attempts=%u",
+                   plc.name.c_str(), plc.ip.c_str(), attempt);
             return true;
         }
+
+        char err_text[256] = {0};
+        getSnap7ErrorText(res, err_text, sizeof(err_text));
+        s7log_warn("[%s] snap7 reconnect failed: attempt=%u err=%d (0x%08X, %s), retry_in=%d ms",
+               plc.name.c_str(), attempt, res, static_cast<unsigned int>(res),
+               err_text, interval);
         for (int i = 0; i < interval / 100 && g_running; i++)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -430,7 +440,6 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
                 s7log_error("[%s] Read thread exiting: snap7 reconnect failed.", plc->name.c_str());
                 break;
             }
-            s7log_info("[%s] snap7 reconnected.", plc->name.c_str());
             logSnap7Pdu(*plc, client, "reconnect");
             // 重连后标记所有tag需要首次读取
             for (auto& tag : plc->tags) {

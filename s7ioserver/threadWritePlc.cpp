@@ -22,17 +22,101 @@ struct TagLookup {
     S7Object   client;
 };
 
+struct PlcWriteResult {
+    int         error;
+    const char* operation;
+};
+
+static void getSnap7ErrorText(int err, char* buffer, int buffer_size) {
+    if (buffer_size <= 0) {
+        return;
+    }
+
+    if (Cli_ErrorText(err, buffer, buffer_size) != 0) {
+        std::snprintf(buffer, buffer_size, "snap7 error %d", err);
+    }
+    buffer[buffer_size - 1] = '\0';
+}
+
+static int getSnap7ConnectedState(S7Object client) {
+    int connected = 0;
+    if (Cli_GetConnected(client, &connected) != 0) {
+        return -1;
+    }
+    return connected;
+}
+
+static bool shouldReconnectAfterIoError(int err) {
+    const unsigned int err_class = static_cast<unsigned int>(err) & 0xFFFF0000u;
+
+    switch (err_class) {
+        case errIsoConnect:
+        case errIsoDisconnect:
+        case errIsoInvalidPDU:
+        case errIsoShortPacket:
+        case errIsoTooManyFragments:
+        case errIsoPduOverflow:
+        case errIsoSendPacket:
+        case errIsoRecvPacket:
+        case errCliInvalidPlcAnswer:
+        case errCliInvalidDataSizeRecvd:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void logSnap7PduWrite(const PlcConfig& plc, S7Object client, const char* stage) {
+    int requested = 0;
+    int negotiated = 0;
+    int res = Cli_GetPduLength(client, &requested, &negotiated);
+    if (res == 0) {
+        s7log_info("[%s/write] snap7 PDU after %s: requested=%d negotiated=%d",
+               plc.name.c_str(), stage, requested, negotiated);
+        return;
+    }
+
+    char err_text[256] = {0};
+    getSnap7ErrorText(res, err_text, sizeof(err_text));
+    s7log_warn("[%s/write] Cli_GetPduLength failed after %s: err=%d (0x%08X, %s)",
+           plc.name.c_str(), stage, res, static_cast<unsigned int>(res), err_text);
+}
+
+static void logPlcWriteError(const PlcConfig& plc, const TagConfig& tag,
+                             S7Object client, const PlcWriteResult& result,
+                             const char* stage) {
+    char err_text[256] = {0};
+    getSnap7ErrorText(result.error, err_text, sizeof(err_text));
+    const int connected = getSnap7ConnectedState(client);
+
+    s7log_error("[write] %s failed during %s: tag='%s' plc=%s ip=%s area=%s db=%d byte=%d bit=%d err=%d (0x%08X, %s) Cli_GetConnected=%d",
+           result.operation, stage, tag.tagname.c_str(), plc.name.c_str(), plc.ip.c_str(),
+           AreaName(tag.area), tag.dbnumber, tag.byte_offset, tag.bit_offset,
+           result.error, static_cast<unsigned int>(result.error), err_text, connected);
+}
+
 // ---- snap7 重连 (写线程用) ----
 
 static bool reconnectSnap7Write(S7Object client, const PlcConfig& plc, int interval) {
     Cli_Disconnect(client);
+    unsigned int attempt = 0;
     while (g_running) {
-        s7log_warn("[%s/write] snap7 reconnecting to %s...", plc.name.c_str(), plc.ip.c_str());
+        ++attempt;
+        s7log_warn("[%s/write] snap7 reconnect attempt=%u ip=%s rack=%d slot=%d",
+               plc.name.c_str(), attempt, plc.ip.c_str(), plc.rack, plc.slot);
         int res = Cli_ConnectTo(client, plc.ip.c_str(), plc.rack, plc.slot);
         if (res == 0) {
-            s7log_info("[%s/write] snap7 reconnected.", plc.name.c_str());
+            s7log_info("[%s/write] snap7 reconnected: ip=%s attempts=%u",
+                   plc.name.c_str(), plc.ip.c_str(), attempt);
+            logSnap7PduWrite(plc, client, "reconnect");
             return true;
         }
+
+        char err_text[256] = {0};
+        getSnap7ErrorText(res, err_text, sizeof(err_text));
+        s7log_warn("[%s/write] snap7 reconnect failed: attempt=%u err=%d (0x%08X, %s), retry_in=%d ms",
+               plc.name.c_str(), attempt, res, static_cast<unsigned int>(res),
+               err_text, interval);
         for (int i = 0; i < interval / 100 && g_running; i++)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -77,6 +161,99 @@ static uint32_t swap32(uint32_t val) {
     return __builtin_bswap32(val);
 }
 
+static PlcWriteResult writeTagToPlc(S7Object client, const TagConfig& tag, const char* value) {
+    const int area = AreaToSnap7(tag.area);
+
+    switch (tag.datatype) {
+        case S7DataType::BOOL: {
+            bool bool_value;
+            memcpy(&bool_value, value, sizeof(bool));
+
+            uint8_t current_byte = 0;
+            int res = Cli_ReadArea(client, area, tag.dbnumber,
+                                   tag.byte_offset, 1, S7WLByte, &current_byte);
+            if (res != 0) {
+                return {res, "Cli_ReadArea (BOOL read-modify-write)"};
+            }
+
+            if (bool_value) {
+                current_byte |= (1 << tag.bit_offset);
+            }
+            else {
+                current_byte &= ~(1 << tag.bit_offset);
+            }
+
+            res = Cli_WriteArea(client, area, tag.dbnumber,
+                                tag.byte_offset, 1, S7WLByte, &current_byte);
+            return {res, "Cli_WriteArea (BOOL read-modify-write)"};
+        }
+        case S7DataType::INT: {
+            short host_value;
+            memcpy(&host_value, value, sizeof(short));
+            uint16_t raw16;
+            memcpy(&raw16, &host_value, sizeof(raw16));
+            raw16 = swap16(raw16);
+            int res = Cli_WriteArea(client, area, tag.dbnumber,
+                                    tag.byte_offset, 2, S7WLByte, &raw16);
+            return {res, "Cli_WriteArea"};
+        }
+        case S7DataType::WORD: {
+            uint16_t host_value;
+            memcpy(&host_value, value, sizeof(uint16_t));
+            uint16_t raw16 = swap16(host_value);
+            int res = Cli_WriteArea(client, area, tag.dbnumber,
+                                    tag.byte_offset, 2, S7WLByte, &raw16);
+            return {res, "Cli_WriteArea"};
+        }
+        case S7DataType::DINT: {
+            int host_value;
+            memcpy(&host_value, value, sizeof(int));
+            uint32_t raw32;
+            memcpy(&raw32, &host_value, sizeof(raw32));
+            raw32 = swap32(raw32);
+            int res = Cli_WriteArea(client, area, tag.dbnumber,
+                                    tag.byte_offset, 4, S7WLByte, &raw32);
+            return {res, "Cli_WriteArea"};
+        }
+        case S7DataType::DWORD: {
+            uint32_t host_value;
+            memcpy(&host_value, value, sizeof(uint32_t));
+            uint32_t raw32 = swap32(host_value);
+            int res = Cli_WriteArea(client, area, tag.dbnumber,
+                                    tag.byte_offset, 4, S7WLByte, &raw32);
+            return {res, "Cli_WriteArea"};
+        }
+        case S7DataType::REAL: {
+            float host_value;
+            memcpy(&host_value, value, sizeof(float));
+            uint32_t raw32;
+            memcpy(&raw32, &host_value, sizeof(raw32));
+            raw32 = swap32(raw32);
+            int res = Cli_WriteArea(client, area, tag.dbnumber,
+                                    tag.byte_offset, 4, S7WLByte, &raw32);
+            return {res, "Cli_WriteArea"};
+        }
+        case S7DataType::STRING: {
+            int actual_len = strlen(value);
+            if (actual_len > tag.maxlen) {
+                actual_len = tag.maxlen;
+            }
+
+            int s7size = tag.maxlen + 2;
+            uint8_t s7buf[258] = {0};
+            s7buf[0] = static_cast<uint8_t>(tag.maxlen);
+            s7buf[1] = static_cast<uint8_t>(actual_len);
+            memcpy(s7buf + 2, value, actual_len);
+
+            int res = Cli_WriteArea(client, area, tag.dbnumber,
+                                    tag.byte_offset, s7size, S7WLByte, s7buf);
+            return {res, "Cli_WriteArea"};
+        }
+    }
+
+    return {errCliInvalidParams, "unsupported datatype"};
+}
+
 // ---- 写PLC线程 ----
 
 void threadWritePlc(AppConfig* config) {
@@ -108,10 +285,14 @@ void threadWritePlc(AppConfig* config) {
             S7Object client = Cli_Create();
             int res = Cli_ConnectTo(client, plc.ip.c_str(), plc.rack, plc.slot);
             if (res != 0) {
-                s7log_warn("[write thread] snap7 connect to %s (%s) failed (err=%d), will retry on write.",
-                       plc.name.c_str(), plc.ip.c_str(), res);
+                char err_text[256] = {0};
+                getSnap7ErrorText(res, err_text, sizeof(err_text));
+                s7log_warn("[write thread] snap7 connect failed: plc=%s ip=%s rack=%d slot=%d err=%d (0x%08X, %s), will retry on write",
+                       plc.name.c_str(), plc.ip.c_str(), plc.rack, plc.slot,
+                       res, static_cast<unsigned int>(res), err_text);
             } else {
                 s7log_info("[write thread] snap7 connected to %s (%s)", plc.name.c_str(), plc.ip.c_str());
+                logSnap7PduWrite(plc, client, "connect");
             }
             plcClients[plc.name] = client;
         }
@@ -179,12 +360,12 @@ void threadWritePlc(AppConfig* config) {
         }
 
         S7Object client = lookup.client;
-        int area = AreaToSnap7(tag->area);
 
         // 检查snap7连接
-        int connected = 0;
-        Cli_GetConnected(client, &connected);
-        if (!connected) {
+        int connected = getSnap7ConnectedState(client);
+        if (connected != 1) {
+            s7log_warn("[write] snap7 is not connected before write: tag='%s' plc=%s ip=%s Cli_GetConnected=%d",
+                   tag->tagname.c_str(), lookup.plc->name.c_str(), lookup.plc->ip.c_str(), connected);
             if (!reconnectSnap7Write(client, *lookup.plc, config->reconnect_interval)) {
                 s7log_warn("[write] snap7 reconnect failed for %s, skipping write.",
                        lookup.plc->name.c_str());
@@ -192,136 +373,47 @@ void threadWritePlc(AppConfig* config) {
             }
         }
 
-        int res = 0;
-
-        switch (tag->datatype) {
-            case S7DataType::BOOL: {
-                // value中是bool值
-                bool bval;
-                memcpy(&bval, value, sizeof(bool));
-
-                // 读-改-写
-                uint8_t currentByte;
-                res = Cli_ReadArea(client, area, tag->dbnumber,
-                                   tag->byte_offset, 1, S7WLByte, &currentByte);
-                if (res != 0) {
-                    s7log_error("[write] BOOL read-modify-write: ReadArea failed (err=%d)", res);
-
-                    //尝试再读一次，可能是断线了
-                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                    int connected = 0;
-                    Cli_GetConnected(client, &connected);
-                    if (!connected) {
-                        if (!reconnectSnap7Write(client, *lookup.plc, config->reconnect_interval)) {
-                            s7log_warn("[write] snap7 reconnect failed for %s, skipping write.",
-                                lookup.plc->name.c_str());
-                            break;
-                        }
-                        else
-                        {
-                            s7log_info("[write] snap7 reconnected for %s, retrying BOOL read-modify-write...", lookup.plc->name.c_str());
-                        }
-                    }
-                    else
-                    {
-                        s7log_info("[write] snap7 still connected for %s, retrying ReadArea...", lookup.plc->name.c_str());
-                    }
-                    res = Cli_ReadArea(client, area, tag->dbnumber,
-                        tag->byte_offset, 1, S7WLByte, &currentByte);
-                    if (res != 0) {
-                        s7log_error("[write] BOOL read-modify-write: ReadArea failed again after reconnect (err=%d), skipping write.", res);
-                        break;
-                    }
-                    else
-                    {
-                        s7log_info("[write] BOOL read-modify-write: ReadArea succeeded after reconnect for %s.", lookup.plc->name.c_str());
-                    }
-
-                    //break;
-                }
-                if (bval)
-                    currentByte |= (1 << tag->bit_offset);
-                else
-                    currentByte &= ~(1 << tag->bit_offset);
-
-                res = Cli_WriteArea(client, area, tag->dbnumber,
-                                    tag->byte_offset, 1, S7WLByte, &currentByte);
-                break;
-            }
-            case S7DataType::INT: {
-                short hostVal;
-                memcpy(&hostVal, value, sizeof(short));
-                uint16_t raw16;
-                memcpy(&raw16, &hostVal, 2);
-                raw16 = swap16(raw16);
-                res = Cli_WriteArea(client, area, tag->dbnumber,
-                                    tag->byte_offset, 2, S7WLByte, &raw16);
-                break;
-            }
-            case S7DataType::WORD: {
-                uint16_t hostVal;
-                memcpy(&hostVal, value, sizeof(uint16_t));
-                uint16_t raw16 = swap16(hostVal);
-                res = Cli_WriteArea(client, area, tag->dbnumber,
-                                    tag->byte_offset, 2, S7WLByte, &raw16);
-                break;
-            }
-            case S7DataType::DINT: {
-                int hostVal;
-                memcpy(&hostVal, value, sizeof(int));
-                uint32_t raw32;
-                memcpy(&raw32, &hostVal, 4);
-                raw32 = swap32(raw32);
-                res = Cli_WriteArea(client, area, tag->dbnumber,
-                                    tag->byte_offset, 4, S7WLByte, &raw32);
-                break;
-            }
-            case S7DataType::DWORD: {
-                uint32_t hostVal;
-                memcpy(&hostVal, value, sizeof(uint32_t));
-                uint32_t raw32 = swap32(hostVal);
-                res = Cli_WriteArea(client, area, tag->dbnumber,
-                                    tag->byte_offset, 4, S7WLByte, &raw32);
-                break;
-            }
-            case S7DataType::REAL: {
-                float hostVal;
-                memcpy(&hostVal, value, sizeof(float));
-                uint32_t raw32;
-                memcpy(&raw32, &hostVal, 4);
-                raw32 = swap32(raw32);
-                res = Cli_WriteArea(client, area, tag->dbnumber,
-                                    tag->byte_offset, 4, S7WLByte, &raw32);
-                break;
-            }
-            case S7DataType::STRING: {
-                // value中是C字符串
-                const char* str = value;
-                int actual_len = strlen(str);
-                if (actual_len > tag->maxlen) actual_len = tag->maxlen;
-
-                int s7size = tag->maxlen + 2;
-                uint8_t s7buf[258] = {0};
-                s7buf[0] = (uint8_t)tag->maxlen;
-                s7buf[1] = (uint8_t)actual_len;
-                memcpy(s7buf + 2, str, actual_len);
-
-                res = Cli_WriteArea(client, area, tag->dbnumber,
-                                    tag->byte_offset, s7size, S7WLByte, s7buf);
-                break;
-            }
+        PlcWriteResult write_result = writeTagToPlc(client, *tag, value);
+        if (write_result.error == 0) {
+            continue;
         }
 
-        if (res != 0) {
-            s7log_error("[write] Cli_WriteArea failed for tag '%s' (err=%d)",
-                   tag->tagname.c_str(), res);
+        logPlcWriteError(*lookup.plc, *tag, client, write_result, "initial attempt");
+        connected = getSnap7ConnectedState(client);
+        if (!shouldReconnectAfterIoError(write_result.error) && connected == 1) {
+            s7log_warn("[write] PLC operation error is not a transport/session error; write event abandoned without reconnect: tag='%s' plc=%s err=%d",
+                   tag->tagname.c_str(), lookup.plc->name.c_str(), write_result.error);
+            continue;
+        }
 
-            // 检查是否断开
-            connected = 0;
-            Cli_GetConnected(client, &connected);
-            if (!connected) {
-                reconnectSnap7Write(client, *lookup.plc, config->reconnect_interval);
+        s7log_warn("[write] snap7 session is unreliable after %s failure; reconnecting before one retry: tag='%s' plc=%s Cli_GetConnected=%d",
+               write_result.operation, tag->tagname.c_str(), lookup.plc->name.c_str(), connected);
+        if (!reconnectSnap7Write(client, *lookup.plc, config->reconnect_interval)) {
+            if (g_running) {
+                s7log_error("[write] snap7 reconnect failed; write event abandoned: tag='%s' plc=%s",
+                       tag->tagname.c_str(), lookup.plc->name.c_str());
             }
+            continue;
+        }
+
+        s7log_info("[write] retrying PLC write after reconnect: tag='%s' plc=%s",
+               tag->tagname.c_str(), lookup.plc->name.c_str());
+        write_result = writeTagToPlc(client, *tag, value);
+        if (write_result.error == 0) {
+            s7log_info("[write] PLC write recovered after reconnect: tag='%s' plc=%s",
+                   tag->tagname.c_str(), lookup.plc->name.c_str());
+            continue;
+        }
+
+        logPlcWriteError(*lookup.plc, *tag, client, write_result, "retry after reconnect");
+        s7log_error("[write] PLC write event abandoned after one retry: tag='%s' plc=%s err=%d",
+               tag->tagname.c_str(), lookup.plc->name.c_str(), write_result.error);
+
+        connected = getSnap7ConnectedState(client);
+        if (shouldReconnectAfterIoError(write_result.error) || connected != 1) {
+            s7log_warn("[write] retry left snap7 session unreliable; reconnecting for subsequent events: plc=%s Cli_GetConnected=%d",
+                   lookup.plc->name.c_str(), connected);
+            reconnectSnap7Write(client, *lookup.plc, config->reconnect_interval);
         }
     }
 
