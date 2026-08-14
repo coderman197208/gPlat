@@ -385,3 +385,8 @@ qbdfile/*
 !qbdfile/_qbd_file_directory
 config/s7ioserver.ini
 qbdfile/BOARD
+
+include/struct_registry.h
+include/user_types.h
+bin/*.txt
+bin/*.ini
