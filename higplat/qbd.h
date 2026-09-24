@@ -243,36 +243,6 @@ struct BOARD_HEAD
 	BOARD_INDEX_STRUCT index[INDEXSIZE];
 };
 
-struct DB_INDEX_STRUCT
-{
-	char  tablename[MAXDQNAMELENTH];
-	int    startpos;		// reference to the beginning of data.
-	int    recordsize;		// 记录大小
-	int    maxcount;		// 最大记录数
-	int    currcount;		// 当前记录数
-	long   mutexaccess;     // 控制互斥访问的变量 //mark 未使用
-	bool   erased;			// 表删除标志
-	timespec timestamp;	// last write time
-	int	   typeaddr;		// 类型起始地址 mark
-	int	   typesize;		// 类型序列化长度
-};
-
-struct DB_HEAD
-{
-	int qbdtype;
-	int counter;
-	int totalsize;
-	int typesize;		// 最后面的类型区的大小	mark
-	int nextpos;		// reference to the beginning of unused data part.
-	int nexttypepos;	// reference to the beginning of unused type part. mark
-	int remain;
-	int typeremain;		// 类型区剩余大小 mark
-	int indexcount;
-	std::mutex mutex_rw;
-	std::mutex mutex_rw_tag[MUTEXSIZE];	//mark 尚未实现
-	DB_INDEX_STRUCT index[INDEXSIZE];
-};
-
 struct BOARD_INFO
 {
 	int    totalsize;

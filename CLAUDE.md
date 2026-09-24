@@ -7,7 +7,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 gPlat is a real-time data platform / middleware server for Linux. It provides inter-process communication via three data models:
 - **Board**: Shared-memory key-value store for named data items ("tags"), supporting binary, string, and user-defined struct data with compile-time type reflection
 - **Queue**: FIFO message queues with configurable record sizes, supporting shift mode and normal mode
-- **Database (DB)**: Table-based storage (partially implemented)
 
 Additional features include:
 - **Publish-subscribe** with delayed posting, timer-based periodic events (500ms to 5s)
@@ -311,7 +310,6 @@ Used by the server internally and by co-located processes. Operates directly on 
 
 ### Board: `CreateB`, `CreateItem`, `DeleteItem`, `ReadB`, `WriteB`, `ReadB_String`, `WriteB_String`, `WriteBOffSet`, `ClearB`, `ReadInfoB`, `ReadType`
 ### Queue: `CreateQ`, `LoadQ`, `UnloadQ`, `ReadQ`, `WriteQ`, `ClearQ`, `PeekQ`, `IsEmptyQ`, `IsFullQ`, `MulReadQ`, `MulReadQ2`, `SetPtrQ`, `PopJustRecordFromQueue`, `ReadHead`
-### Database: `CreateTable`, `InsertTable`, `UpdateTable`, `RefreshTable`, `SelectTable`, `ClearTable`, `DeleteTable`, `ClearDB`, `ReadHeadDB`
 ### Lifecycle: `LoadQ`, `UnloadQ`, `UnloadAll`, `FlushQFile`
 
 ## Board Locking Model
