@@ -1,179 +1,88 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
-gPlat is a real-time data platform / middleware server for Linux. It provides inter-process communication via two data models:
-- **Board**: Shared-memory key-value store for named data items ("tags"), supporting binary, string, and user-defined struct data with compile-time type reflection
-- **Queue**: FIFO message queues with user-defined record sizes, supporting shift mode and normal mode
+gPlat: Linux real-time data middleware server providing IPC via:
+- **Board**: shared-memory (mmap) key-value store of named "tags" (binary, string, reflected user structs)
+- **Queue**: FIFO record queues (shift / normal mode)
 
-Additional features include:
-- **Publish-subscribe** with delayed posting, timer-based periodic events (500ms to 5s)
-- **TCP network access** (default port 8777) using a custom binary protocol
-- **PLC integration** via Siemens S7 protocol (Snap7 library) with a dedicated I/O server bridge
-- **Compile-time struct reflection** with `PodString<N>`, array fields, and nested structs (one layer)
+Plus pub/sub (delayed post, periodic timers 500ms–5s), TCP access (port 8777, custom binary protocol), and Siemens S7 PLC bridge (Snap7).
 
-## Build System
+## Build
 
-Supports two build methods.
+- **Makefile** (repo root, g++ C++17, Linux only): `make` / `make <target>` / `make clean-<target>` / `make help`. Outputs: `bin/`, `lib/` (`libhigplat.so`, `libsnap7.so`), `build/` (.o/.d). Snap7 built via `snap7/build/linux` upstream makefile. Binaries use rpath `$ORIGIN/../lib`.
+- **Visual Studio** `gPlat.sln` (13 `.vcxproj`, ApplicationType=Linux), authored on Windows, remote-built on Linux.
 
-### The code is authored on Windows and cross-compiled to Linux via Visual Studio's "Visual C++ for Linux Development" workload.
-Visual Studio solution `gPlat.sln` (13 projects) with `.vcxproj` projects targeting Linux (ApplicationType = Linux). 
+Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `../qbdfile`, logs `../logs`, s7ioserver config `../config/s7ioserver.ini` (`-c` to override).
 
-### Makefile build
-Run the `make` command in the `gPlat` directory.
+## Server Architecture (gplat/, Nginx-inspired)
 
-## Architecture
-
-The server follows an **Nginx-inspired architecture**:
-- **Master/worker process model** via `ngx_master_process_cycle()` with `socketpair()` IPC for exit signaling
-- **Epoll-based event loop** (LT mode) for non-blocking I/O
-- **Connection pool** with pre-allocated `ngx_connection_s` objects managed via free-list, delayed recycling (60s default)
-- **Thread pool** (`CThreadPool`) consuming from a message queue with pthread mutex/condvar
-- **Dedicated send thread** dequeuing from `m_MsgSendQueue` via semaphore, with EPOLLOUT fallback for partial sends
-- **Configuration** read from `nginx.conf` via `CConfig` singleton
-- **Timer manager** (`TimerManager` in `timer_manager.h`) using epoll + timerfd + min-heap with drift compensation
-- **Daemon mode** via `ngx_daemon()`
-
-**Singletons** (all use nested `CGarhuishou` destructor pattern): `CConfig`, `CMemory`.
-
-**Global objects** (defined in `nginx.cxx`): `g_socket` (CLogicSocket), `g_threadpool` (CThreadPool), `g_tm` (TimerManager).
-
-**Message dispatching**: Function pointer array `statusHandler[]` in `ngx_c_slogic.cxx`, indexed by `MSGID` enum values (5–51) from `msg.h`. 17 active handlers, rest are `noop`.
-
-**Pub/Sub**: `CSubscribe` uses `std::map<std::string, std::list<EventNode>>` with `std::shared_mutex` for thread-safe subscriber management. Event types: DEFAULT, POST_DELAY, NOT_EQUAL_ZERO, EQUAL_ZERO. Separate map for PLC I/O server subscribers.
-
-**Worker initialization** (in `ngx_worker_process_init`): Creates thread pool, starts TimerManager with 5 periodic timers (`timer_500ms`, `timer_1s`, `timer_2s`, `timer_3s`, `timer_5s`) that fire `NotifyTimerSubscriber()`, initializes epoll and send/recycle threads.
+- Master/worker processes (`ngx_master_process_cycle()`), `socketpair()` for exit signaling; daemon via `ngx_daemon()`
+- Epoll (LT) event loop; connection pool of `ngx_connection_s` with free-list and delayed recycling (`Sock_RecyConnectionWaitTime`, code default 60s)
+- `CThreadPool` consumes a message queue (pthread mutex/condvar); dedicated send thread dequeues `m_MsgSendQueue` via semaphore, EPOLLOUT fallback on partial sends
+- `TimerManager` (`include/timer_manager.h`): epoll + timerfd + min-heap, drift compensation
+- Singletons with nested `CGarhuishou` destructor: `CConfig`, `CMemory`. Globals in `nginx.cxx`: `g_socket` (CLogicSocket), `g_threadpool`, `g_tm`
+- `ngx_worker_process_init`: creates thread pool, starts 5 timers (`timer_500ms`, `timer_1s`, `timer_2s`, `timer_3s`, `timer_5s`) calling `NotifyTimerSubscriber()`, inits epoll and send/recycle threads
+- **Dispatch**: `statusHandler[]` in `ngx_c_slogic.cxx`, indexed by `MSGID`; indices 0–4 NULL, 18 active handlers, rest `noop`
+- **Pub/Sub** (`CSubscribe`): `std::map<std::string, std::list<EventNode>>` + `std::shared_mutex`; events DEFAULT=1, POST_DELAY=2, NOT_EQUAL_ZERO=4, EQUAL_ZERO=8; separate `m_mapSubject_plcIoServer` (latest PLC I/O server per tag)
 
 ## Wire Protocol
 
-Messages use `MSGHEAD` (packed struct, `#pragma pack(1)`) as header followed by a variable-length body (max 16KB per `MAXMSGLEN`). The `MSGID` enum defines 47 operation codes (values 5–51). Adding a new message type requires:
-1. Add enum value to `MSGID` in `include/msg.h`
+`MSGHEAD` (`#pragma pack(1)`) + body (≤ `MAXMSGLEN` = 16384). `MSGID` in `include/msg.h`: 49 codes, `SUCCEED = 5` … `CREATEQUEUE = 53`. Adding a message type (see `Doc/add_message_type.md`):
+1. Append enum value to `MSGID`
 2. Implement handler in `gplat/ngx_c_slogic.cxx`
-3. Register handler in `statusHandler[]` array (index must match enum value)
-4. Add client-side API in `higplat/higplat.cpp` and declare in `include/higplat.h`
+3. Register in `statusHandler[]` at the matching index
+4. Add client API in `higplat/higplat.cpp`, declare in `include/higplat.h`
 
-## Compile-Time Struct Reflection System
+## Struct Reflection (Board tags with typed display in toolgplat)
 
-A macro-based reflection system allows user-defined structs to be stored in Board tags with field-level type-aware display in `toolgplat`.
+1. Define struct in `include/user_types.h` inside `#pragma pack(push, 8)` / `#pragma pack(pop)`; fields may be scalars, `PodString<N>`, fixed arrays, or one layer of nested struct. Must be trivially copyable (`static_assert` in `REGISTER_STRUCT`).
+2. Register: `REGISTER_STRUCT(MyStruct, FIELD_DESC(Int32, MyStruct, value), FIELD_DESC_STRING(MyStruct, name), FIELD_DESC_ARRAY(Single, MyStruct, data, 4))`
+3. Add `REG(MyStruct),` to `GetStructRegistry()` in `include/struct_registry.h`.
 
-### Adding a New User-Defined Struct
+## s7ioserver (S7 PLC ↔ Board)
 
-1. **Define the struct** in `include/user_types.h` with `#pragma pack(push, 8)`:
-   ```cpp
-   #pragma pack(push, 8)
-   struct MyStruct {
-       int32_t       value;
-       PodString<20> name;
-       float         data[4];
-   };
-   #pragma pack(pop)
-   ```
+- Read thread per PLC: polls DBs, detects changes by raw byte compare, writes Board via `write_plc_*`
+- Shared write thread: subscribes tags, `waitpostdata()`, writes back to PLC via Snap7
+- INI config: `[general]` (gPlat connection) + per-PLC sections with tag mappings (sample: `Doc/s7ioserver.ini`)
 
-2. **Register with reflection macros**:
-   ```cpp
-   REGISTER_STRUCT(MyStruct,
-       FIELD_DESC(Int32,   MyStruct, value),
-       FIELD_DESC_STRING(MyStruct, name),
-       FIELD_DESC_ARRAY(Single, MyStruct, data, 4)
-   )
-   ```
+## Network API (`extern "C"` in `include/higplat.h`, blocking TCP)
 
-3. **Add to global registry** in `include/struct_registry.h`:
-   ```cpp
-   REG(MyStruct),
-   ```
+- Connection: `connectgplat(server, port)` → fd (2s timeout, TCP_NODELAY), `disconnectgplat`
+- Queue: `readq`, `writeq`, `clearq`, `createqueue`
+- Board: `readb` (optional timestamp), `writeb`, `writeb_notpost`, `readb_string`/`readb_string2` (std::string), `writeb_string`/`writeb_string2`, `createtag` (optional type descriptor), `deletetag`, `clearb`, `readtype`, `readboardinfo`
+- Pub/Sub: `subscribe` (DEFAULT), `subscribedelaypost` (POST_DELAY), `waitpostdata` (tagname `"WAIT_TIMEOUT"` on timeout)
+- PLC: `write_plc_{string,bool,short,ushort,int,uint,float}`, `registertag`
 
-## S7 PLC Integration
+Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 
-The `s7ioserver` bridges Siemens S7 PLCs with gPlat Board storage using the Snap7 library.
+## Local API (direct mmap on QBD files, `higplat/higplat.cpp`)
 
-### Architecture
+- Board: `CreateB`, `CreateItem`, `DeleteItem`, `ReadB`, `WriteB`, `ReadB_String`, `WriteB_String`, `WriteBOffSet`, `ClearB`, `ReadInfoB`, `ReadBoardInfo`, `ReadType`
+- Queue: `CreateQ`, `ReadQ`, `WriteQ`, `ClearQ`, `PeekQ`, `IsEmptyQ`, `IsFullQ`, `MulReadQ`, `MulReadQ2`, `SetPtrQ`, `PopJustRecordFromQueue`, `ReadHead`
+- Lifecycle: `SetQbdPath`, `LoadQ`, `UnloadQ`, `UnloadAll`, `FlushQFile`
 
-- **Read threads** (one per PLC): Poll PLC data blocks at configurable intervals, detect changes via raw byte comparison, write changed values to Board tags via `write_plc_*` API
-- **Write thread** (shared): Subscribes to Board tags, receives change notifications via `waitpostdata()`, writes values back to PLC via Snap7
-- **Configuration**: INI-style file (`s7ioserver.ini`) with `[general]` section for gPlat connection and per-PLC sections defining tag mappings
+**Board locking** (`higplat/qbd.h`): global `std::mutex mutex_rw` for hash index traversal + striped `mutex_rw_tag[MUTEXSIZE=64]` (by tag hash) for data access; placement-new'd into the mmap'd file.
 
-## Network API (Client → Server)
+## Dependencies & Conventions
 
-All `extern "C"` functions in `higplat.h`. Each uses blocking TCP with `MSGHEAD` send/recv.
+- System: pthread, epoll, timerfd, eventfd, mmap, POSIX sockets/signals, `std::filesystem`; libreadline (toolgplat), libsnap7 (s7ioserver)
+- All executables link `libhigplat.so`
+- Server RAII lock: `CLock` (`gplat/ngx_c_lockmutex.h`) over `pthread_mutex_t`
 
-### Connection
-- `connectgplat(server, port)` → socket fd (2s timeout, TCP_NODELAY)
-- `disconnectgplat(sockfd)`
+## Projects
 
-### Queue Operations
-- `readq`, `writeq`, `clearq`
-
-### Board Operations (Binary)
-- `readb` (with optional timestamp), `writeb`
-
-### Board Operations (String)
-- `readb_string` (char buffer), `readb_string2` (std::string)
-- `writeb_string` (C string), `writeb_string2` (std::string)
-
-### Board Management
-- `createtag` (with optional type descriptor), `deletetag`, `clearb`
-- `readtype` — Read type descriptor for a tag
-
-### Pub/Sub
-- `subscribe` — Subscribe to tag change (DEFAULT event)
-- `subscribedelaypost` — Subscribe with POST_DELAY event and delay time
-- `waitpostdata` — Blocking wait for posted data (with timeout; returns `"WAIT_TIMEOUT"` on timeout)
-
-## Local API (Direct mmap)
-
-Used by the server internally and by co-located processes. Operates directly on memory-mapped QBD files.
-
-### Board: `CreateB`, `CreateItem`, `DeleteItem`, `ReadB`, `WriteB`, `ReadB_String`, `WriteB_String`, `WriteBOffSet`, `ClearB`, `ReadInfoB`, `ReadType`
-### Queue: `CreateQ`, `LoadQ`, `UnloadQ`, `ReadQ`, `WriteQ`, `ClearQ`, `PeekQ`, `IsEmptyQ`, `IsFullQ`, `MulReadQ`, `MulReadQ2`, `SetPtrQ`, `PopJustRecordFromQueue`, `ReadHead`
-### Lifecycle: `LoadQ`, `UnloadQ`, `UnloadAll`, `FlushQFile`
-
-## Board Locking Model
-
-Two-level locking for concurrent access:
-1. **Global mutex** (`BOARD_HEAD.mutex_rw`): Acquired for hash index traversal
-2. **Per-tag striped mutex** (`BOARD_HEAD.mutex_rw_tag[hash & 63]`): Acquired for data read/write
-
-64 stripe locks (MUTEXSIZE) allow concurrent access to different tags. Mutexes are placement-new'd into the mmap'd file for cross-process sharing.
-
-## Dependencies
-
-- **System**: pthread, Linux epoll, timerfd, eventfd, mmap, POSIX sockets/signals, `std::filesystem`
-- **External**: libreadline (toolgplat only), libsnap7 (s7ioserver only)
-- **Internal**: All executables link `libhigplat.so`; s7ioserver additionally links `libsnap7.so`
-
-## Code Conventions
-
-- RAII locking via `CLock` wrapper around `pthread_mutex_t`
-- User-defined structs must be `trivially_copyable` (enforced by `static_assert` in `REGISTER_STRUCT`)
-
-## Solution Projects (13)
-
-| Project | Type | Directory | Description |
-|---|---|---|---|
-| gplat | Executable | `gplat/` | Server |
-| higplat | Shared library | `higplat/` | Client library (libhigplat.so) |
-| include | Test executable | `include/` | Header compilation test |
-| createq | Executable | `createq/` | Queue creation tool |
-| createb | Executable | `createb/` | Board creation tool |
-| toolgplat | Executable | `toolgplat/` | Interactive REPL client |
-| testapp | Executable | `testapp/` | Subscribe/read/write integration test |
-| testapp2 | Executable | `testapp2/` | Performance stress test |
-| testapp3 | Executable | `testapp3/` | Struct type test |
-| s7ioserver | Executable | `s7ioserver/` | PLC-to-Board bridge |
-| snap7 | Shared library | `snap7/` | Snap7 PLC library (libsnap7.so) |
-| snap7.demo.cpp | Executable | `snap7.demo.cpp/` | Snap7 demo |
-
-- **gplat/** — Server executable. Entry point: `nginx.cxx`. Networking: `ngx_c_socket*`. Business logic: `ngx_c_slogic.*`. Subscribe engine: `CSubscribe.*`.
-- **higplat/** — Client shared library (`libhigplat.so`). Contains both local mmap-based QBD operations and network client API. Public API declared with `extern "C"` in `include/higplat.h`.
-- **include/** — Shared headers. `higplat.h` (public API + data structures), `msg.h` (wire protocol), `timer_manager.h` (timer), `podstring.h` (PodString<N>), `type_code.h` / `struct_reflect.h` / `struct_registry.h` / `user_types.h` (struct reflection system).
-- **createq/, createb/** — CLI tools to create Queue and Board data files on disk.
-- **toolgplat/** — Interactive REPL client using libreadline with type-aware tag display.
-- **testapp/** — Multi-threaded integration test (3 threads: subscribe, read, write).
-- **testapp2/** — Performance and correctness stress test (10 threads × 100 tags, subscribe chain propagation, large data transfers).
-- **testapp3/** — Struct type test exercising `PodString`, float arrays, string arrays, nested structs.
-- **s7ioserver/** — Siemens S7 PLC I/O bridge. Reads PLC data via Snap7, writes to Board tags, supports PLC write-back via gPlat subscribe mechanism.
-- **snap7/** — Snap7 library source (builds `libsnap7.so`). Siemens S7 communication protocol implementation.
-- **snap7.demo.cpp/** — Snap7 standalone demo application.
+| Dir | Description |
+|---|---|
+| `gplat/` | Server. Entry `nginx.cxx`; network `ngx_c_socket*`; logic `ngx_c_slogic.*`; `CSubscribe.*` |
+| `higplat/` | `libhigplat.so`: local mmap QBD ops + network client |
+| `include/` | Shared headers (`higplat.h`, `msg.h`, `timer_manager.h`, `podstring.h`, `type_code.h`, `struct_reflect.h`, `struct_registry.h`, `user_types.h`); also a header-compile test project |
+| `createq/`, `createb/` | CLI to create Queue / Board files |
+| `toolgplat/` | Interactive REPL client (readline, type-aware display) |
+| `testapp/` | Integration test (subscribe/read/write threads) |
+| `testapp2/` | Stress test (10 threads × 100 tags, subscribe chains, large data) |
+| `testapp3/` | Struct type test (`PodString`, arrays, nested) |
+| `testapp4/` | Subscribe/`waitpostdata` test |
+| `s7ioserver/` | PLC ↔ Board bridge |
+| `snap7/` | Snap7 source (`libsnap7.so`) |
+| `snap7.demo.cpp/` | Snap7 demo (VS only, not in Makefile) |
