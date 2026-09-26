@@ -1,6 +1,0 @@
-export LD_LIBRARY_PATH=/home/gyb/projects/gPlature/bin/x64/Debug:$LD_LIBRARY_PATH
-
-g++ main.cpp -I../Include -L/home/gyb/projects/gPlature/bin/x64/Debug -llibgPlature.so -o mainApp
-
-/home/gyb/projects/x64_debug/
-scp -r ./dotNetConsoleApp1/bin/Debug/net8.0   gyb@192.168.152.128:/home/gyb/projects/x64/Debug/net8.0

@@ -254,7 +254,7 @@ class CConfig {
     static CGarhuishou Garhuishou;
 };
 ```
-应用于: `CConfig`, `CMemory`, `CCRC32`
+应用于: `CConfig`, `CMemory`
 
 ### 观察者模式
 ```cpp
@@ -334,10 +334,6 @@ class CMemory {
 - 日志级别: DEBUG, INFO, NOTICE, WARN, ERROR, CRIT, ALERT, EMERG
 - 日志文件: `error.log`
 - 格式: 时间戳 + 日志级别 + 消息
-
-### CRC32 校验 (`ngx_c_crc32.cxx/h`)
-- 数据完整性验证
-- 静态查找表优化
 
 ### 定时器管理 (`timer_manager.h`)
 ```cpp

@@ -21,7 +21,6 @@
 #include "ngx_global.h"
 #include "ngx_func.h"
 #include "ngx_c_memory.h"
-#include "ngx_c_crc32.h"
 #include "ngx_c_slogic.h"
 #include "ngx_logiccomm.h"
 #include "ngx_c_lockmutex.h"
