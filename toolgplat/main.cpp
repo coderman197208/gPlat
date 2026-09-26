@@ -65,6 +65,12 @@ int main(int argc, char* argv[])
 		std::string input(line);
 		free(line); // readline 返回的指针需要手动释放
 
+		// 去掉行尾的 \r \n 及空白（兼容 CRLF 脚本重定向输入）
+		while (!input.empty() &&
+			(input.back() == '\r' || input.back() == '\n' ||
+			 input.back() == ' ' || input.back() == '\t'))
+			input.pop_back();
+
 		if (input.empty())
 			continue;
 
@@ -170,9 +176,9 @@ bool CreateTag(const std::string& tagName, const std::string& para, const std::s
 		size_t tagsize = (arraysize > 1) ? (size_t)itemsize * arraysize : (size_t)itemsize;
 
 		// 检查大小限制
-		if (itemsize > 16000)
+		if (tagsize > 16000)
 		{
-			std::cout << "TAG的大小超过了16000，无法创建" << std::endl;
+			std::cout << "TAG的大小超过了16000，无法创建, size = " << tagsize << std::endl;
 			return false;
 		}
 
@@ -203,7 +209,6 @@ bool CreateTag(const std::string& tagName, const std::string& para, const std::s
 	}
 	else
 	{
-		// 简单类型（标量或数组）
 		std::string typeName = para;
 
 		// String/string/STRING 当作 Char 处理
@@ -222,7 +227,7 @@ bool CreateTag(const std::string& tagName, const std::string& para, const std::s
 
 				if (tagsize > 16000)
 				{
-					std::cout << "TAG的大小超过了16000，无法创建" << std::endl;
+					std::cout << "TAG的大小超过了16000，无法创建, size = " << tagsize << std::endl;
 					return false;
 				}
 
@@ -257,7 +262,7 @@ bool CreateTag(const std::string& tagName, const std::string& para, const std::s
 		// 检查大小限制
 		if (tagsize > 16000)
 		{
-			std::cout << "TAG的大小超过了16000，无法创建" << std::endl;
+			std::cout << "TAG的大小超过了16000，无法创建, size = " << tagsize << std::endl;
 			return false;
 		}
 

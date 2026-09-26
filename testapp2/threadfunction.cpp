@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "../include/higplat.h"
+#include "../include/user_types.h"
 
 extern std::atomic<bool> g_running;  // 控制线程运行的标志
 
@@ -31,45 +32,6 @@ bool exitloop = false;
 
 #define LOOPCOUNT   50
 
-struct DemoTag
-{
-	int b;
-	int a;
-
-	char order_no[16];				    //合同号
-	char melt_no[16];					//炉号
-	char lot_no[8];						//试批号
-	char roll_no[8];					//轧批号
-	char comment[20];					//备注
-};
-
-struct TubeInfo
-{
-	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 8)]
-	char tube_no[8];                  //管号
-	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 16)]
-	char order_no[16];				    //合同号
-	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 16)]
-	char melt_no[16];					//炉号
-	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 8)]
-	char lot_no[8];					//试批号
-	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 8)]
-	char roll_no[8];					//轧批号
-	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 20)]
-	char comment[20];					//备注
-};
-
-struct TagBigData
-{
-	long long a;
-	unsigned char data[3992];
-	char str1[3992];
-	char str2[3992];
-	char str3[3992];
-	long long b;
-	float c;
-};
-
 unsigned int TestThreadProc1(void* pParam)
 {
 	int h;
@@ -77,8 +39,6 @@ unsigned int TestThreadProc1(void* pParam)
 	bool   ret;
 	string input;
 	int i, j;
-
-	//cout << "sizeof(TagBigData)=" << sizeof(TagBigData) << endl;
 
 	++threadcount;
 
