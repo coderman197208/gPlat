@@ -15,6 +15,7 @@
 #include <arpa/inet.h>
 #include <pthread.h> //多线程
 #include <iostream>
+#include <algorithm>
 
 #include "ngx_c_conf.h"
 #include "ngx_macro.h"
@@ -97,6 +98,7 @@ static const handler statusHandler[] =
 		&CLogicSocket::HandleWriteBStringPlc, // WRITEBSTRINGPLC
 		&CLogicSocket::HandleReadBoardInfo,   // READBOARDINFO
 		&CLogicSocket::HandleCreateQueue,   // CREATEQUEUE
+		&CLogicSocket::HandleGetResponse,   // GETRESPONSE
 };
 
 #define AUTH_TOTAL_COMMANDS sizeof(statusHandler) / sizeof(handler) // 整个数组有多少个命令
@@ -372,7 +374,11 @@ bool CLogicSocket::HandleWriteB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 	// 发布订阅
 	if (ret && pPkgHead->start == 1)	// 1表示触发发布，0表示不触发发布
 	{
-		NotifySubscriber(pPkgHead->itemname, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize);
+		// response_tag 只投递给等待的请求方，不通知普通订阅者
+		if (!DeliverResponse(pPkgHead->itemname, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize))
+		{
+			NotifySubscriber(pPkgHead->itemname, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize);
+		}
 	}
 
 	return true;
@@ -1119,4 +1125,304 @@ bool CLogicSocket::HandleCreateQueue(lpngx_connection_t pConn, LPSTRUC_MSG_HEADE
 	msgSend(p_sendbuf);
 
 	return true;
+}
+
+// 请求包：itemname=request_tag, qname=response_tag, datasize=请求大小, recsize=响应大小, timeout=超时毫秒
+bool CLogicSocket::HandleGetResponse(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
+{
+	if (pPkgHeader == NULL)
+	{
+		return false;
+	}
+
+	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader;
+	pPkgHead->itemname[sizeof(pPkgHead->itemname) - 1] = '\0';
+	pPkgHead->qname[sizeof(pPkgHead->qname) - 1] = '\0';
+
+	auto req = std::make_shared<PendingRequest>();
+	req->pConn = pConn;
+	req->iCurrsequence = pMsgHeader->iCurrsequence;
+	req->requestTag = pPkgHead->itemname;
+	req->responseTag = pPkgHead->qname;
+	req->responseSize = pPkgHead->recsize;
+
+	int requestSize = pPkgHead->datasize;
+	int timeout = pPkgHead->timeout;
+	unsigned int error = 0;
+
+	if (req->requestTag.empty() || req->responseTag.empty() || req->requestTag == req->responseTag ||
+		timeout <= 0 || requestSize <= 0 || requestSize != iBodyLength ||
+		req->responseSize <= 0 || req->responseSize > MAXMSGLEN)
+	{
+		error = ERROR_INVALID_PARAMETER;
+	}
+	// 借助 ReadB 校验两个 tag 存在且大小一致
+	else if (!ReadB("BOARD", req->requestTag.c_str(), g_buffer, requestSize) ||
+			 !ReadB("BOARD", req->responseTag.c_str(), g_buffer, req->responseSize))
+	{
+		error = GetLastErrorQ();
+	}
+
+	if (error != 0)
+	{
+		SendGetResponseReply(req, error, nullptr, 0);
+		return true;
+	}
+
+	char* pData = (char*)pPkgHead + sizeof(PKGHEAD);
+	req->requestData.assign(pData, pData + requestSize);
+
+	bool startNow = false;
+	{
+		std::lock_guard<std::mutex> lock(m_reqMutex);
+
+		auto owner = m_mapResponseOwner.find(req->responseTag);
+		if (owner != m_mapResponseOwner.end() && owner->second != req->requestTag)
+		{
+			error = ERROR_INVALID_PARAMETER;	// response_tag 不得被多个 request_tag 共用
+		}
+		else
+		{
+			RequestChannel& channel = m_mapReqChannel[req->requestTag];
+			if (channel.active && channel.waiting.size() >= REQUEST_QUEUE_MAX)
+			{
+				error = ERROR_REQUEST_QUEUE_FULL;
+			}
+			else
+			{
+				m_mapResponseOwner[req->responseTag] = req->requestTag;
+
+				std::weak_ptr<PendingRequest> weakReq = req;
+				req->timerId = g_tm.add_once(timeout, [this, weakReq](void*) { OnRequestTimeout(weakReq); }, nullptr);
+
+				if (channel.active)
+				{
+					channel.waiting.push_back(req);
+				}
+				else
+				{
+					channel.active = req;
+					startNow = true;
+				}
+			}
+		}
+	}
+
+	if (error != 0)
+	{
+		ngx_log_error_core(NGX_LOG_WARN, 0, "getresponse被拒绝: request=%s, response=%s, error=%d",
+			req->requestTag.c_str(), req->responseTag.c_str(), error);
+		SendGetResponseReply(req, error, nullptr, 0);
+		return true;
+	}
+
+	if (startNow)
+	{
+		StartRequest(req);
+	}
+
+	return true;
+}
+
+// 写入请求并通知响应方；写入失败则结束该请求并继续处理下一个
+void CLogicSocket::StartRequest(PendingRequestPtr req)
+{
+	while (req)
+	{
+		if (WriteB("BOARD", req->requestTag.c_str(), req->requestData.data(), (int)req->requestData.size()))
+		{
+			NotifySubscriber(req->requestTag, req->requestData.data(), (unsigned short)req->requestData.size());
+			return;
+		}
+
+		unsigned int error = GetLastErrorQ();
+		PendingRequestPtr next;
+		{
+			std::lock_guard<std::mutex> lock(m_reqMutex);
+			if (!DetachRequestLocked(req, next))
+			{
+				return;
+			}
+		}
+		SendGetResponseReply(req, error, nullptr, 0);
+		req = next;
+	}
+}
+
+// 返回 false 表示 responseTag 不是 response_tag，调用者按普通 writeb 处理
+bool CLogicSocket::DeliverResponse(const char* responseTag, char* pData, int iDataLen)
+{
+	PendingRequestPtr req;
+	PendingRequestPtr next;
+	{
+		std::lock_guard<std::mutex> lock(m_reqMutex);
+
+		auto owner = m_mapResponseOwner.find(responseTag);
+		if (owner == m_mapResponseOwner.end())
+		{
+			return false;
+		}
+
+		auto it = m_mapReqChannel.find(owner->second);
+		if (it != m_mapReqChannel.end() && it->second.active && it->second.active->responseTag == responseTag)
+		{
+			req = it->second.active;
+			DetachRequestLocked(req, next);
+		}
+	}
+
+	if (!req)
+	{
+		ngx_log_error_core(NGX_LOG_WARN, 0, "丢弃无人等待的响应: response=%s", responseTag);
+		return true;
+	}
+
+	if (iDataLen != req->responseSize)
+	{
+		SendGetResponseReply(req, ERROR_RECORDSIZE, nullptr, 0);
+	}
+	else
+	{
+		SendGetResponseReply(req, 0, pData, iDataLen);
+	}
+
+	if (next)
+	{
+		StartRequest(next);
+	}
+	return true;
+}
+
+void CLogicSocket::OnRequestTimeout(const std::weak_ptr<PendingRequest>& weakReq)
+{
+	PendingRequestPtr req = weakReq.lock();
+	if (!req)
+	{
+		return;
+	}
+
+	PendingRequestPtr next;
+	{
+		std::lock_guard<std::mutex> lock(m_reqMutex);
+		req->timerId = -1;	// 定时器已触发，无需再取消
+		if (!DetachRequestLocked(req, next))
+		{
+			return;
+		}
+	}
+
+	ngx_log_error_core(NGX_LOG_WARN, 0, "getresponse超时: request=%s, response=%s",
+		req->requestTag.c_str(), req->responseTag.c_str());
+	SendGetResponseReply(req, ERROR_RESPONSE_TIMEOUT, nullptr, 0);
+
+	if (next)
+	{
+		StartRequest(next);
+	}
+}
+
+// 调用前须持有 m_reqMutex；req 为 active 时把排队中的下一个提升为 active 并通过 next 返回
+bool CLogicSocket::DetachRequestLocked(const PendingRequestPtr& req, PendingRequestPtr& next)
+{
+	auto it = m_mapReqChannel.find(req->requestTag);
+	if (it == m_mapReqChannel.end())
+	{
+		return false;
+	}
+
+	RequestChannel& channel = it->second;
+	if (channel.active == req)
+	{
+		channel.active.reset();
+		if (!channel.waiting.empty())
+		{
+			channel.active = channel.waiting.front();
+			channel.waiting.pop_front();
+			next = channel.active;
+		}
+	}
+	else
+	{
+		auto w = std::find(channel.waiting.begin(), channel.waiting.end(), req);
+		if (w == channel.waiting.end())
+		{
+			return false;
+		}
+		channel.waiting.erase(w);
+	}
+
+	if (req->timerId >= 0)
+	{
+		g_tm.cancel(req->timerId);
+		req->timerId = -1;
+	}
+
+	if (!channel.active && channel.waiting.empty())
+	{
+		m_mapReqChannel.erase(it);
+	}
+	return true;
+}
+
+void CLogicSocket::SendGetResponseReply(const PendingRequestPtr& req, unsigned int error, const char* pBody, int iBodyLen)
+{
+	CMemory* p_memory = CMemory::GetInstance();
+	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iBodyLen, false);
+
+	LPSTRUC_MSG_HEADER ptmpMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
+	ptmpMsgHeader->pConn = req->pConn;
+	ptmpMsgHeader->iCurrsequence = req->iCurrsequence;	// 连接已断开时由发送线程丢弃
+
+	PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + m_iLenMsgHeader);
+	memset(pPkgHead, 0, sizeof(PKGHEAD));
+	pPkgHead->id = GETRESPONSE;
+	strncpy(pPkgHead->itemname, req->requestTag.c_str(), sizeof(pPkgHead->itemname) - 1);
+	strncpy(pPkgHead->qname, req->responseTag.c_str(), sizeof(pPkgHead->qname) - 1);
+	pPkgHead->error = error;
+	pPkgHead->bodysize = iBodyLen;
+	if (pBody != nullptr && iBodyLen > 0)
+	{
+		memcpy(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, pBody, iBodyLen);
+	}
+
+	msgSend(p_sendbuf);
+}
+
+// 连接断开时释放其占用的请求，并继续处理排队的下一个
+void CLogicSocket::CancelRequest(lpngx_connection_t pConn)
+{
+	std::vector<PendingRequestPtr> nextList;
+	{
+		std::lock_guard<std::mutex> lock(m_reqMutex);
+
+		std::vector<PendingRequestPtr> owned;
+		for (auto& kv : m_mapReqChannel)
+		{
+			if (kv.second.active && kv.second.active->pConn == pConn)
+			{
+				owned.push_back(kv.second.active);
+			}
+			for (auto& w : kv.second.waiting)
+			{
+				if (w->pConn == pConn)
+				{
+					owned.push_back(w);
+				}
+			}
+		}
+
+		for (auto& req : owned)
+		{
+			PendingRequestPtr next;
+			if (DetachRequestLocked(req, next) && next)
+			{
+				nextList.push_back(next);
+			}
+		}
+	}
+
+	for (auto& next : nextList)
+	{
+		StartRequest(next);
+	}
 }

@@ -33,6 +33,9 @@ void CSocekt::ngx_read_request_handler(lpngx_connection_t pConn)
 	{
 		//如果是recvproc()函数返回<=0，表示有问题发生了，可能是对方断开了连接，也可能是其他错误发生了；
 		
+		// 必须在持有 logicPorcMutex 之前调用，内部可能会通知订阅者（包括本连接）
+		CancelRequest(pConn);
+
 		CLock lock(&pConn->logicPorcMutex);
 
 		CancelSubscribe(pConn, pConn->GetTagList(), pConn->GetPlcTagList());

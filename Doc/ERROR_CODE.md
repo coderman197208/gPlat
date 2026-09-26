@@ -122,3 +122,12 @@ extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, 
 ### 3.2 客户端
 
 作为调用方，原有的包含 `&error` 参数的语句不需要做任何修改，错误码的监听和处理完全由库实现端的拦截器自动完成。
+
+## 4. 请求-响应错误码
+
+| 错误码 | 值 | 级别 | 说明 |
+|---|---|---|---|
+| `ERROR_RESPONSE_TIMEOUT` | 1044 | Ignore | `getresponse` 在 `timeout_ms` 内未收到响应（含服务端排队时间） |
+| `ERROR_REQUEST_QUEUE_FULL` | 1045 | Ignore | 同一 `request_tag` 排队的请求已达上限（64） |
+
+参数非法（含 `response_tag` 被多个 `request_tag` 共用）返回 `ERROR_INVALID_PARAMETER`；tag 不存在或大小不符沿用 `ERROR_TAG_NOT_EXIST` / `ERROR_RECORDSIZE`。

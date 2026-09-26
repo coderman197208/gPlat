@@ -155,6 +155,7 @@ public:
 	int ngx_epoll_oper_event(int fd, uint32_t eventtype, uint32_t flag, int bcaction, lpngx_connection_t pConn);
 
 	virtual void CancelSubscribe(lpngx_connection_t pConn, const std::list<std::string>& tagList, const std::list<std::string>& plcTagList) {};
+	virtual void CancelRequest(lpngx_connection_t pConn) {};
 
 	//gyb 没办法，超时后要用CLogicSocket全局对象调用此方法发送数据，所以这里要公开	
 	void msgSend(char* psendbuf);											//把数据扔到待发送对列中 

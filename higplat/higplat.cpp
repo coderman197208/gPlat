@@ -1596,6 +1596,78 @@ extern "C" bool createqueue(int sockfd, const char* queuename, int recordsize, i
 	return (*error == 0);
 }
 
+extern "C" bool getresponse(int sockfd, const char* request_tag, void* request_value, int request_size, const char* response_tag, void* response_value, int response_size, unsigned int* error, int timeout_ms)
+{
+	if (error == nullptr)
+		throw std::runtime_error("parameter error is null");
+
+	AutoErrorCheck _checker(error);
+	if (sockfd < 0 || !request_tag || !response_tag || !request_value || !response_value ||
+		request_size <= 0 || response_size <= 0 || timeout_ms <= 0) {
+		*error = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+
+	if (request_size > MAXMSGLEN || response_size > MAXMSGLEN) {
+		*error = ERROR_PARAMETER_SIZE;
+		return false;
+	}
+
+	// itemname 为请求 tag，qname 为响应 tag，recsize 为响应大小
+	MSGHEAD head{};
+	head.id = GETRESPONSE;
+	head.datasize = request_size;
+	head.bodysize = request_size;
+	head.recsize = response_size;
+	head.timeout = timeout_ms;
+
+	strncpy(head.itemname, request_tag, sizeof(head.itemname) - 1);
+	head.itemname[sizeof(head.itemname) - 1] = '\0';
+
+	strncpy(head.qname, response_tag, sizeof(head.qname) - 1);
+	head.qname[sizeof(head.qname) - 1] = '\0';
+
+	if (send_all(sockfd, &head, sizeof(MSGHEAD)) <= 0 ||
+		send_all(sockfd, request_value, request_size) <= 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+
+	ssize_t header_size = readn(sockfd, &head, sizeof(MSGHEAD));
+	if (header_size != static_cast<ssize_t>(sizeof(MSGHEAD))) {
+		*error = (header_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
+		close(sockfd);
+		return false;
+	}
+
+	if (head.id != GETRESPONSE) {
+		*error = ERROR_INVALID_RESPONSE;
+		close(sockfd);
+		return false;
+	}
+
+	*error = head.error;
+	if (*error != 0) {
+		return false;
+	}
+
+	if (head.bodysize != response_size) {
+		*error = ERROR_INVALID_RESPONSE;
+		close(sockfd);
+		return false;
+	}
+
+	ssize_t body_size = readn(sockfd, response_value, response_size);
+	if (body_size != response_size) {
+		*error = (body_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
+		close(sockfd);
+		return false;
+	}
+
+	return true;
+}
+
 /*F+F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F
 Function: CreateQ
 

@@ -49,6 +49,8 @@
 #define ERROR_BUFFER_TOO_SMALL			(MY_ERR_OFFSET + 41)
 #define ERROR_TAG_NOT_EXIST 			(MY_ERR_OFFSET + 42)
 #define ERROR_WAIT_TIMEOUT              (MY_ERR_OFFSET + 43)
+#define ERROR_RESPONSE_TIMEOUT          (MY_ERR_OFFSET + 44)
+#define ERROR_REQUEST_QUEUE_FULL        (MY_ERR_OFFSET + 45)
 
 #pragma pack( push, enter_qbdtype_h_, 8)
 
@@ -111,6 +113,7 @@ extern "C" bool readtype(int sockfd, const char* qbdname, const char* tagname, v
 extern "C" bool clearb(int sockfd, unsigned int* error);
 extern "C" bool readboardinfo(int sockfd, void* info, int infosize, unsigned int* error);
 extern "C" bool createqueue(int sockfd, const char* queuename, int recordsize, int recordnum, int operatemode, void* type, int typesize, unsigned int* error);
+extern "C" bool getresponse(int sockfd, const char* request_tag, void* request_value, int request_size, const char* response_tag, void* response_value, int response_size, unsigned int* error, int timeout_ms = 2000);
 
 extern "C" bool write_plc_string(int sockfd, const char* tagname, std::string str, unsigned int* error);
 extern "C" bool write_plc_bool(int sockfd, const char* tagname, bool value, unsigned int* error);
@@ -142,7 +145,7 @@ extern "C" bool ReadB_String2(const char* lpBulletinName, const char* lpItemName
 extern "C" bool WriteB(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, void* lpSubItem = 0, int actSubSize = 0);
 extern "C" bool WriteB_String(const char* lpBulletinName, const char* lpItemName, void *lpItem, int actSize, void *lpSubItem = 0, int actSubSize = 0);
 extern "C" bool ClearB(const char* lpBoardName);
-extern "C" bool GetLastErrorQ();
+extern "C" unsigned int GetLastErrorQ();
 extern "C" bool ReadType(const char* lpDqName, const char* lpItemName, void* inBuff, int buffSize, int* pTypeSize);
 extern "C" bool ReadBoardInfo(const char* lpBoardName, BOARD_INFO* boardinfo);
 

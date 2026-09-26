@@ -161,6 +161,26 @@ bool post(int sockfd, const char* tagname, unsigned int* error);
 
 ---
 
+## 请求-响应 (Request/Response)
+
+### getresponse
+```cpp
+bool getresponse(int sockfd, const char* request_tag, void* request_value, int request_size,
+                 const char* response_tag, void* response_value, int response_size,
+                 unsigned int* error, int timeout_ms = 2000);
+```
+- **功能**: 写入 `request_tag` 并通知其订阅者（响应方），阻塞等待响应方 `writeb(response_tag)` 后把响应复制到 `response_value`
+- **参数**: `request_size` / `response_size` 必须等于对应 tag 的大小（tag 需事先 `createtag`）；`timeout_ms` 必须 > 0，计时包含服务端排队时间
+- **返回**: 超时返回 false，`error = ERROR_RESPONSE_TIMEOUT`；同名请求排队超过 64 个返回 `ERROR_REQUEST_QUEUE_FULL`
+- **服务端语义**:
+  - 同一 `request_tag` 同一时刻只处理 1 个请求，其余排队；一个 `response_tag` 只能对应一个 `request_tag`，否则返回 `ERROR_INVALID_PARAMETER`
+  - 等待期间本连接其它订阅事件在服务端排队，`getresponse` 返回后再由 `waitpostdata` 取得
+  - 出现过的 `response_tag` 被 `writeb` 时只写 Board、投递给等待的请求方，不通知普通订阅者；无人等待时丢弃并记日志（响应方 `writeb` 仍返回成功）。`writeb_notpost` / `writeb_string` 不触发投递
+  - 请求方断开连接时释放其请求并继续处理排队中的下一个
+- **限制**: 同一 `sockfd` 不支持多线程并发调用
+
+---
+
 ## 错误码 (部分)
 
 ```cpp
@@ -170,6 +190,8 @@ bool post(int sockfd, const char* tagname, unsigned int* error);
 #define ERROR_BOARD_NOT_EXIST    2001
 #define ERROR_TAG_NOT_EXIST      2002
 #define ERROR_INVALID_PARAM      9001
+#define ERROR_RESPONSE_TIMEOUT   1044  // getresponse 等待响应超时
+#define ERROR_REQUEST_QUEUE_FULL 1045  // getresponse 同名请求排队已满
 ```
 
 ---

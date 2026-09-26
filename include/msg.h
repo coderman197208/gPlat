@@ -55,6 +55,7 @@ enum MSGID
 	WRITEBSTRINGPLC,
 	READBOARDINFO,
 	CREATEQUEUE,
+	GETRESPONSE,
 };
 
 #pragma pack( push, enter_MSG_H_, 1)

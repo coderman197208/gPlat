@@ -50,6 +50,8 @@
 #define ERROR_BUFFER_TOO_SMALL			(MY_ERR_OFFSET + 41)
 #define ERROR_TAG_NOT_EXIST 			(MY_ERR_OFFSET + 42)
 #define ERROR_WAIT_TIMEOUT              (MY_ERR_OFFSET + 43)
+#define ERROR_RESPONSE_TIMEOUT          (MY_ERR_OFFSET + 44)
+#define ERROR_REQUEST_QUEUE_FULL        (MY_ERR_OFFSET + 45)
 
 #define SHIFT_MODE		1
 #define NORMAL_MODE		0
@@ -159,6 +161,10 @@ inline ErrorInfo GetErrorInfo(unsigned int errorCode) {
 			return { ErrorLevel::Fatal, "tag not exist" };
         case ERROR_WAIT_TIMEOUT:
 			return { ErrorLevel::Ignore, "wait post timeout" };
+        case ERROR_RESPONSE_TIMEOUT:
+			return { ErrorLevel::Ignore, "wait response timeout" };
+        case ERROR_REQUEST_QUEUE_FULL:
+			return { ErrorLevel::Ignore, "request queue full" };
         default:
             return { ErrorLevel::Ignore, "unknown error" };
     }
