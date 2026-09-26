@@ -11,27 +11,27 @@ struct DemoTag
 	int b;
 	int a;
 
-	char order_no[16];				    //��ͬ��
-	char melt_no[16];					//¯��
-	char lot_no[8];						//������
-	char roll_no[8];					//������
-	char comment[20];					//��ע
+	char order_no[16];
+	char melt_no[16];
+	char lot_no[8];
+	char roll_no[8];
+	char comment[20];
 };
 
 struct TubeInfo
 {
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 8)]
-	char tube_no[8];                  //�ܺ�
+	char tube_no[8];
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 16)]
-	char order_no[16];				    //��ͬ��
+	char order_no[16];
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 16)]
-	char melt_no[16];					//¯��
+	char melt_no[16];
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 8)]
-	char lot_no[8];					//������
+	char lot_no[8];
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 8)]
-	char roll_no[8];					//������
+	char roll_no[8];
 	//[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 20)]
-	char comment[20];					//��ע
+	char comment[20];
 };
 
 void bool1_CHANGED(void* pdata, int datasize)

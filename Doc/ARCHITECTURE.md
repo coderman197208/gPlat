@@ -2,7 +2,7 @@
 
 ## 概述
 
-gPlat 是一个高性能的实时数据平台，采用 Nginx 启发的主从进程架构，专为工业自动化和分布式系统的进程间通信（IPC）而设计。它提供队列（Queue）、公告板（Board）和数据库（Database）三种核心数据结构，支持低延迟、高并发的数据交换。
+gPlat 是一个高性能的实时数据平台，采用 Nginx 启发的主从进程架构，专为工业自动化和分布式系统的进程间通信（IPC）而设计。它提供队列（Queue）、公告板（Board）两种核心数据结构，支持低延迟、高并发的数据交换。
 
 ---
 
@@ -19,7 +19,7 @@ gPlat/
 ├── toolgplat/          # 通用平台工具
 ├── Doc/                # 文档目录
 ├── readme/             # 快速入门指南
-└── x64/                # 编译输出目录
+└── bin/                # 编译输出目录
 ```
 
 **项目规模:**
@@ -47,9 +47,8 @@ gPlat/
 
 ### 平台与构建
 - **目标平台**: Linux（从 Windows 进行远程开发）
-- **开发环境**: Visual Studio 2022 + Remote Linux Development
-- **构建系统**: CMake + Visual Studio 项目文件
-- **最低 CMake 版本**: 3.12
+- **开发环境**: Visual Studio + Remote Linux Development
+- **构建系统**: make + Visual Studio 项目文件
 
 ---
 
@@ -306,7 +305,6 @@ class CSubscribe {
 | **连接管理** | CONNECT, RECONNECT, DISCONNECT |
 | **队列操作** | READQ, WRITEQ, CLEARQ, ISEMPTYQ, ISFULLQ, PEEKQ |
 | **公告板操作** | READB, WRITEB, READBSTRING, WRITEBSTRING, CLEARB |
-| **数据库操作** | SELECTTB, INSERTTB, CLEARTB, REFRESHTB, CREATETABLE, DELETETABLE |
 | **订阅机制** | SUBSCRIBE, CANCELSUBSCRIBE, POST, POSTWAIT |
 | **管理操作** | CREATEITEM, DELETEITEM, READTYPE |
 
@@ -423,10 +421,9 @@ ProcMsgRecvWorkThreadCount = 4
 
 ## 安全性考虑
 
-1. **数据完整性**: CRC32 校验
-2. **序列号验证**: 防止消息重放
-3. **连接回收**: 心跳超时检测
-4. **资源限制**: 连接数、消息大小限制
+1. **序列号验证**: 防止消息重放
+2. **连接回收**: 心跳超时检测
+3. **资源限制**: 连接数、消息大小限制
 
 ---
 
@@ -440,22 +437,6 @@ ProcMsgRecvWorkThreadCount = 4
 ### 无外部第三方库
 - 自包含实现
 - 无 Boost、Qt 等外部依赖
-
----
-
-## 编译与构建
-
-### CMake 构建
-```bash
-mkdir build && cd build
-cmake ..
-make
-```
-
-### 输出文件
-- `gplat`: 服务器可执行文件
-- `libhigplat.so`: 客户端共享库
-- `testapp`: 测试客户端
 
 ---
 
