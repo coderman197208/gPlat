@@ -1,95 +1,105 @@
 #ifndef TYPE_HANDLE_H_
 #define TYPE_HANDLE_H_
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <string>
-#include <unordered_map>
+#include <vector>
 
 #include "../include/type_code.h"
 #include "../include/struct_registry.h"
 
-// --- 类型描述 ---
+// --- 内置类型 ---
 
 struct TypeInfo
 {
+	const char* name;
 	TypeCode code;
-	int size;
-	// 将 value buffer 的内容按该类型输出到 ostream
-	void (*print)(std::ostream& os, const void* value);
+	int size;                                              // 0: 大小由 FieldInfo.size 决定
+	void (*print)(std::ostream& os, const void* value);    // nullptr: 不能直接打印
 };
 
-// 辅助：生成 print 函数
 template <typename T>
 void PrintValue(std::ostream& os, const void* value)
 {
 	os << *reinterpret_cast<const T*>(value);
 }
 
-// Boolean 特殊处理
 inline void PrintBool(std::ostream& os, const void* value)
 {
 	os << (*reinterpret_cast<const bool*>(value) ? "true" : "false");
 }
 
-// Char 特殊处理
-inline void PrintChar(std::ostream& os, const void* value)
-{
-	os << *reinterpret_cast<const char*>(value);
-}
-
-// PodString 特殊处理（m_data 在 offset 0，对象地址即 C 字符串地址）
-inline void PrintString(std::ostream& os, const void* value)
+// PodString 的 m_data 位于 offset 0，对象地址即 C 字符串地址
+inline void PrintPodString(std::ostream& os, const void* value)
 {
 	os << '"' << reinterpret_cast<const char*>(value) << '"';
 }
 
-// --- 注册表 ---
-
-// 名称 -> TypeInfo  (如 "Boolean" -> {Boolean, 1, PrintBool})
-inline const std::unordered_map<std::string, TypeInfo>& GetTypeByName()
+inline const std::vector<TypeInfo>& GetBuiltinTypes()
 {
-	static const std::unordered_map<std::string, TypeInfo> table = {
-		{"Boolean", {Boolean, (int)sizeof(bool),     PrintBool}},
-		{"Char",    {Char,    (int)sizeof(char),     PrintChar}},
-		{"Int16",   {Int16,   (int)sizeof(int16_t),  PrintValue<int16_t>}},
-		{"UInt16",  {UInt16,  (int)sizeof(uint16_t), PrintValue<uint16_t>}},
-		{"Int32",   {Int32,   (int)sizeof(int32_t),  PrintValue<int32_t>}},
-		{"UInt32",  {UInt32,  (int)sizeof(uint32_t), PrintValue<uint32_t>}},
-		{"Int64",   {Int64,   (int)sizeof(int64_t),  PrintValue<int64_t>}},
-		{"UInt64",  {UInt64,  (int)sizeof(uint64_t), PrintValue<uint64_t>}},
-		{"Single",  {Single,  (int)sizeof(float),    PrintValue<float>}},
-		{"Double",  {Double,  (int)sizeof(double),   PrintValue<double>}},
-		{"String",  {String,  0,                      PrintString}},  // size=0: 实际大小由 FieldInfo.size 提供
-		{"Struct",  {Struct,  0,                      nullptr}},     // 嵌套 struct，由 FieldInfo.struct_info 处理
+	static const std::vector<TypeInfo> types = {
+		{"Boolean", Boolean, (int)sizeof(bool),     PrintBool},
+		{"Char",    Char,    (int)sizeof(char),     PrintValue<char>},
+		{"Int16",   Int16,   (int)sizeof(int16_t),  PrintValue<int16_t>},
+		{"UInt16",  UInt16,  (int)sizeof(uint16_t), PrintValue<uint16_t>},
+		{"Int32",   Int32,   (int)sizeof(int32_t),  PrintValue<int32_t>},
+		{"UInt32",  UInt32,  (int)sizeof(uint32_t), PrintValue<uint32_t>},
+		{"Int64",   Int64,   (int)sizeof(int64_t),  PrintValue<int64_t>},
+		{"UInt64",  UInt64,  (int)sizeof(uint64_t), PrintValue<uint64_t>},
+		{"Single",  Single,  (int)sizeof(float),    PrintValue<float>},
+		{"Double",  Double,  (int)sizeof(double),   PrintValue<double>},
+		{"String",  String,  0,                     PrintPodString},
+		{"Struct",  Struct,  0,                     nullptr},
 	};
-	return table;
+	return types;
 }
 
-// TypeCode -> TypeInfo  (用于 SelectItem 等需要根据 typecode 打印值的场景)
-inline const std::unordered_map<int, TypeInfo>& GetTypeByCode()
+inline const TypeInfo* FindTypeByName(const std::string& name)
 {
-	static const std::unordered_map<int, TypeInfo> table = {
-		{Boolean, {Boolean, (int)sizeof(bool),     PrintBool}},
-		{Char,    {Char,    (int)sizeof(char),     PrintChar}},
-		{Int16,   {Int16,   (int)sizeof(int16_t),  PrintValue<int16_t>}},
-		{UInt16,  {UInt16,  (int)sizeof(uint16_t), PrintValue<uint16_t>}},
-		{Int32,   {Int32,   (int)sizeof(int32_t),  PrintValue<int32_t>}},
-		{UInt32,  {UInt32,  (int)sizeof(uint32_t), PrintValue<uint32_t>}},
-		{Int64,   {Int64,   (int)sizeof(int64_t),  PrintValue<int64_t>}},
-		{UInt64,  {UInt64,  (int)sizeof(uint64_t), PrintValue<uint64_t>}},
-		{Single,  {Single,  (int)sizeof(float),    PrintValue<float>}},
-		{Double,  {Double,  (int)sizeof(double),   PrintValue<double>}},
-		{String,  {String,  0,                      PrintString}},  // size=0: 实际大小由 FieldInfo.size 提供
-		{Struct,  {Struct,  0,                      nullptr}},     // 嵌套 struct，由 FieldInfo.struct_info 处理
-	};
-	return table;
+	const auto& types = GetBuiltinTypes();
+	auto it = std::find_if(types.begin(), types.end(),
+		[&](const TypeInfo& t) { return name == t.name; });
+	return (it != types.end()) ? &*it : nullptr;
 }
 
-// S7 PLC 类型名 -> 我们的类型名
-inline const std::unordered_map<std::string, std::string>& GetS7TypeMap()
+inline const TypeInfo* FindTypeByCode(int code)
 {
-	static const std::unordered_map<std::string, std::string> table = {
+	const auto& types = GetBuiltinTypes();
+	auto it = std::find_if(types.begin(), types.end(),
+		[&](const TypeInfo& t) { return code == t.code; });
+	return (it != types.end()) ? &*it : nullptr;
+}
+
+// --- 类型描述符 ---
+// createtag / createqueue / readtype 使用的格式:
+//   [int32 typecode][int32 arraysize][类名 '\0']，类名仅在 typecode == kStructTypeCode 时存在
+
+constexpr int32_t kStructTypeCode = -1;
+
+struct TypeDescriptorHeader
+{
+	int32_t typecode;
+	int32_t arraysize;    // 0: 非数组
+};
+
+inline std::vector<char> BuildTypeDescriptor(int32_t typecode, int32_t arraysize, const std::string& className)
+{
+	const TypeDescriptorHeader header{typecode, arraysize};
+	const char* raw = reinterpret_cast<const char*>(&header);
+	std::vector<char> descriptor(raw, raw + sizeof(header));
+	if (typecode == kStructTypeCode)
+		descriptor.insert(descriptor.end(), className.c_str(), className.c_str() + className.size() + 1);
+	return descriptor;
+}
+
+// --- S7 PLC 类型 ---
+
+// S7 类型名（大写）-> 内置类型名，找不到返回空字符串
+inline std::string MapS7Type(const std::string& s7type)
+{
+	static const std::vector<std::pair<std::string, std::string>> table = {
 		{"BOOL",   "Boolean"},
 		{"INT",    "Int16"},
 		{"DINT",   "Int32"},
@@ -98,33 +108,10 @@ inline const std::unordered_map<std::string, std::string>& GetS7TypeMap()
 		{"REAL",   "Single"},
 		{"STRING", "Char"},
 	};
-	return table;
-}
-
-// --- 便捷查找函数 ---
-
-// 通过类型名查找，找不到返回 nullptr
-inline const TypeInfo* FindTypeByName(const std::string& name)
-{
-	auto& table = GetTypeByName();
-	auto it = table.find(name);
-	return (it != table.end()) ? &it->second : nullptr;
-}
-
-// 通过 TypeCode 查找，找不到返回 nullptr
-inline const TypeInfo* FindTypeByCode(int code)
-{
-	auto& table = GetTypeByCode();
-	auto it = table.find(code);
-	return (it != table.end()) ? &it->second : nullptr;
-}
-
-// 通过 S7 类型名查找对应的我们的类型名，找不到返回空字符串
-inline std::string MapS7Type(const std::string& s7type)
-{
-	auto& table = GetS7TypeMap();
-	auto it = table.find(s7type);
-	return (it != table.end()) ? it->second : "";
+	for (const auto& [s7, builtin] : table)
+		if (s7 == s7type)
+			return builtin;
+	return "";
 }
 
 #endif // TYPE_HANDLE_H_
