@@ -92,11 +92,18 @@ struct BOARD_INFO
 #define ASCII_TYPE		1
 #define BINARY_TYPE		0
 
+// peekq 的读取位置
+#define PEEK_NEXT		0	// readq 下一次将返回的记录
+#define PEEK_LATEST		1	// 最近一次写入的记录
+
 extern "C" int  connectgplat(const char* server, int port);
 extern "C" void disconnectgplat(int sockfd);
 extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error);
 extern "C" bool writeq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error);
 extern "C" bool clearq(int sockfd, const char* qname, unsigned int* error);
+extern "C" bool readhead(int sockfd, const char* qname, QUEUE_HEAD* head, unsigned int* error);
+extern "C" bool peekq(int sockfd, const char* qname, int position, void* record, int actsize, RECORD_HEAD* recordhead, unsigned int* error);
+extern "C" bool listq(int sockfd, char* names, int buffsize, int* count, unsigned int* error);
 extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error, timespec* timestamp = 0);
 extern "C" bool writeb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error);
 extern "C" bool writeb_notpost(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error);
@@ -134,11 +141,15 @@ extern "C" bool CreateB(const char* lpFileName, int size);
 extern "C" bool CreateItem(const char* lpBoardName, const char* lpItemName, int itemSize, void* pType = 0, int typeSize = 0);
 extern "C" bool DeleteItem(const char* lpBoardName, const char* lpItemName);
 extern "C" bool CreateQ(const char* lpFileName, int recordSize, int recordNum, int dateType, int operateMode, void* pType = 0, int typeSize = 0);
+extern "C" bool CreateAndLoadQ(const char* lpFileName, int recordSize, int recordNum, int dataType, int operateMode, void* pType, int typeSize);
 extern "C" bool LoadQ(const char* lpDqName );
 extern "C" void SetQbdPath(const char* path);
 extern "C" bool ReadQ(const char* lpDqName, void  *lpRecord, int actSize, char* remoteIp=0 );
 extern "C" bool WriteQ(const char* lpDqName, void  *lpRecord, int actSize=0, const char* remoteIp=0 );
 extern "C" bool ClearQ(const char* lpDqName );
+extern "C" bool ReadHead(const char* lpDqName, void* lpHead);
+extern "C" bool PeekQRecord(const char* lpDqName, int position, void* lpRecord, int actSize, RECORD_HEAD* lpRecordHead);
+extern "C" bool ListQ(char* names, int buffSize, int* namesSize, int* count);
 extern "C" bool ReadB(const char* lpBoardName, const char* lpItemName, void* lpItem, int actSize, timespec* timestamp = 0);
 extern "C" bool ReadB_String(const char* lpBulletinName, const char* lpItemName, void*lpItem, int actSize, timespec*timestamp=0);
 extern "C" bool ReadB_String2(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, int& strLength, timespec* timestamp);

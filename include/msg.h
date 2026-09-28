@@ -56,6 +56,7 @@ enum MSGID
 	READBOARDINFO,
 	CREATEQUEUE,
 	GETRESPONSE,
+	LISTQ,
 };
 
 #pragma pack( push, enter_MSG_H_, 1)

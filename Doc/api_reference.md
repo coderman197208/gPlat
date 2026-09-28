@@ -51,6 +51,28 @@ bool clearq(int sockfd, const char* qname, unsigned int* error);
 ```
 - **功能**: 清空队列
 
+### readhead
+```cpp
+bool readhead(int sockfd, const char* qname, QUEUE_HEAD* head, unsigned int* error);
+```
+- **功能**: 读取队列头（记录大小、记录数、模式、读写指针、创建时间）
+- **错误码**: ERROR_RECORD_NOT_EXIST（未载入）, ERROR_OPERATE_PROHIBIT（不是队列，如 BOARD）
+
+### peekq
+```cpp
+bool peekq(int sockfd, const char* qname, int position, void* record,
+           int actsize, RECORD_HEAD* recordhead, unsigned int* error);
+```
+- **功能**: 不移动读写指针地读取一条记录
+- **参数**: `position` - PEEK_NEXT（readq 下一次将返回的记录）或 PEEK_LATEST（最近写入的记录），移位队列两者相同；`recordhead` 可为空，返回写入时间和来源 IP
+- **错误码**: ERROR_DQ_EMPTY, ERROR_RECORDSIZE, ERROR_OPERATE_PROHIBIT
+
+### listq
+```cpp
+bool listq(int sockfd, char* names, int buffsize, int* count, unsigned int* error);
+```
+- **功能**: 列出服务端已载入的队列，`names` 中依次存放 `count` 个以 `'\0'` 结尾的队列名（不含 BOARD）
+
 ### isemptyq / isfullq
 ```cpp
 bool isemptyq(int sockfd, const char* qname, unsigned int* error);

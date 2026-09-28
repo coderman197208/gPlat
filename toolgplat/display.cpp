@@ -14,7 +14,6 @@ namespace
 {
 
 constexpr int kMaxHexDumpBytes = 64;
-constexpr int kTypeDescriptorBufferSize = 2048;
 
 void PrintHex(std::ostream& os, const char* data, int size)
 {
@@ -160,6 +159,26 @@ void PrintStructTag(int conn, const std::string& tagName, const std::string& cla
 	PrintWriteTime(timestamp);
 }
 
+void PrintStructLayout(const StructInfo& info)
+{
+	for (int i = 0; i < info.field_count; i++)
+	{
+		const FieldInfo& field = info.fields[i];
+		std::cout << "    +" << field.offset << "  " << field.name << "  (" << field.size << " bytes)";
+		if (field.type == Struct && field.struct_info)
+			std::cout << "  -> " << field.struct_info->name;
+		if (field.element_count > 1)
+			std::cout << "  [" << field.element_count << "]";
+		std::cout << std::endl;
+	}
+}
+
+// 字符数组不一定以 '\0' 结尾
+std::string FixedString(const char* text, size_t capacity)
+{
+	return std::string(text, strnlen(text, capacity));
+}
+
 } // namespace
 
 void PrintTag(int conn, const std::string& tagName)
@@ -172,31 +191,22 @@ void PrintTag(int conn, const std::string& tagName)
 		std::cout << "Read type of tag '" << tagName << "' failed, error code " << err << "." << std::endl;
 		return;
 	}
-	descriptorSize = std::min(descriptorSize, (int)sizeof(descriptor));
-	if (descriptorSize < (int)sizeof(TypeDescriptorHeader))
+
+	TypeDescriptorHeader header;
+	std::string className;
+	if (!ParseTypeDescriptor(descriptor, std::min(descriptorSize, (int)sizeof(descriptor)), header, className))
 	{
 		std::cout << "Invalid type descriptor of tag '" << tagName << "'." << std::endl;
 		return;
 	}
-
-	TypeDescriptorHeader header;
-	memcpy(&header, descriptor, sizeof(header));
 	const int count = (header.arraysize > 0) ? header.arraysize : 1;
 
 	if (header.typecode == kStructTypeCode)
-	{
-		const char* name = descriptor + sizeof(header);
-		const std::string className(name, strnlen(name, descriptorSize - sizeof(header)));
 		PrintStructTag(conn, tagName, className, count);
-	}
 	else if (header.typecode == Char && header.arraysize > 0)
-	{
 		PrintStringTag(conn, tagName, header.arraysize);
-	}
 	else
-	{
 		PrintSimpleTag(conn, tagName, header.typecode, count);
-	}
 }
 
 void PrintBoardInfo(int conn)
@@ -225,15 +235,54 @@ void PrintTypes()
 	{
 		std::cout << "  " << name << "  (" << info->total_size << " bytes, "
 			<< info->field_count << " fields)" << std::endl;
-		for (int i = 0; i < info->field_count; i++)
-		{
-			const FieldInfo& field = info->fields[i];
-			std::cout << "    +" << field.offset << "  " << field.name << "  (" << field.size << " bytes)";
-			if (field.type == Struct && field.struct_info)
-				std::cout << "  -> " << field.struct_info->name;
-			if (field.element_count > 1)
-				std::cout << "  [" << field.element_count << "]";
-			std::cout << std::endl;
-		}
+		PrintStructLayout(*info);
 	}
+}
+
+void PrintQueueInfo(const std::string& queueName, const QUEUE_HEAD& head, const std::string& typeName, const StructInfo* type)
+{
+	const bool shiftMode = head.operateMode == SHIFT_MODE;
+	std::cout << "Queue:       " << queueName << std::endl;
+	std::cout << "Record type: " << (typeName.empty() ? "<unknown>" : typeName) << "  (" << head.size << " bytes)" << std::endl;
+	std::cout << "Mode:        " << (shiftMode ? "shift" : "normal") << std::endl;
+	std::cout << "Slots:       " << head.num << std::endl;
+	if (shiftMode)
+	{
+		std::cout << "Has data:    " << (head.readPoint != 0 ? "yes" : "no") << std::endl;
+	}
+	else
+	{
+		const int pending = head.num > 0 ? (head.writePoint - head.readPoint + head.num) % head.num : 0;
+		std::cout << "Pending:     " << pending << " / " << head.num - 1 << std::endl;
+	}
+	std::cout << "Read point:  " << head.readPoint << std::endl;
+	std::cout << "Write point: " << head.writePoint << std::endl;
+	std::cout << "Created:     " << FixedString(head.createDate, sizeof(head.createDate)) << std::endl;
+
+	if (type)
+	{
+		std::cout << "Fields:" << std::endl;
+		PrintStructLayout(*type);
+	}
+	else
+	{
+		std::cout << "Record type is not registered locally, records are shown as hex." << std::endl;
+	}
+}
+
+void PrintQueueRecord(const RECORD_HEAD& recordHead, const StructInfo* type, const char* data, int size)
+{
+	if (type)
+	{
+		PrintFields(*type, data, 2);
+	}
+	else
+	{
+		std::cout << "raw: ";
+		PrintHex(std::cout, data, size);
+		std::cout << std::endl;
+	}
+	std::cout << "-------------------------------------" << std::endl;
+	std::cout << "write time: " << FixedString(recordHead.createDate, sizeof(recordHead.createDate))
+		<< ", from " << FixedString(recordHead.remoteIp, sizeof(recordHead.remoteIp)) << std::endl;
 }

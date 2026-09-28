@@ -57,6 +57,8 @@
 #define NORMAL_MODE		0
 #define ASCII_TYPE		1
 #define BINARY_TYPE		0
+#define PEEK_NEXT		0	// 必须和 higplat.h 中的定义一致
+#define PEEK_LATEST		1
 #define QUEUEHEADSIZE   sizeof(QUEUE_HEAD)
 #define RECORDHEADSIZE  sizeof(RECORD_HEAD)
 
@@ -189,7 +191,7 @@ struct TABLE_MSG
 	int  hFile;
 	void* lpMapAddress;
 	int hMapFile;
-	pthread_mutex_t hMutex;
+	pthread_mutex_t* hMutex;	// 队列锁，fetchtab 返回的副本必须指向同一把锁
 	std::mutex * pmutex_rw;
 	bool erased;
 	int count;

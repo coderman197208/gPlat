@@ -135,7 +135,12 @@ bool CreateQueue(int conn, const std::string& queueName, const std::string& type
 	if (!createqueue(conn, queueName.c_str(), type.size, recordCount, shiftMode ? SHIFT_MODE : NORMAL_MODE,
 		descriptor.data(), (int)descriptor.size(), &err))
 	{
-		std::cout << "Create queue '" << queueName << "' failed, error code " << err << "." << std::endl;
+		if (err == ERROR_ALREADY_LOAD)
+			std::cout << "'" << queueName << "' already exists." << std::endl;
+		else if (err == ERROR_INVALID_PARAMETER)
+			std::cout << "Invalid queue name '" << queueName << "'." << std::endl;
+		else
+			std::cout << "Create queue '" << queueName << "' failed, error code " << err << "." << std::endl;
 		return false;
 	}
 

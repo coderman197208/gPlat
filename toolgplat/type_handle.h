@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -92,6 +93,22 @@ inline std::vector<char> BuildTypeDescriptor(int32_t typecode, int32_t arraysize
 	if (typecode == kStructTypeCode)
 		descriptor.insert(descriptor.end(), className.c_str(), className.c_str() + className.size() + 1);
 	return descriptor;
+}
+
+constexpr int kTypeDescriptorBufferSize = 2048;
+
+// className 仅在 typecode == kStructTypeCode 时被赋值
+inline bool ParseTypeDescriptor(const char* descriptor, int size, TypeDescriptorHeader& header, std::string& className)
+{
+	if (size < (int)sizeof(TypeDescriptorHeader))
+		return false;
+	memcpy(&header, descriptor, sizeof(header));
+	if (header.typecode == kStructTypeCode)
+	{
+		const char* name = descriptor + sizeof(header);
+		className.assign(name, strnlen(name, size - sizeof(header)));
+	}
+	return true;
 }
 
 // --- S7 PLC 类型 ---

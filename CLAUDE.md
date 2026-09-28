@@ -23,13 +23,13 @@ Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `
 - `TimerManager` (`include/timer_manager.h`): epoll + timerfd + min-heap, drift compensation
 - Singletons with nested `CGarhuishou` destructor: `CConfig`, `CMemory`. Globals in `nginx.cxx`: `g_socket` (CLogicSocket), `g_threadpool`, `g_tm`
 - `ngx_worker_process_init`: creates thread pool, starts 5 timers (`timer_500ms`, `timer_1s`, `timer_2s`, `timer_3s`, `timer_5s`) calling `NotifyTimerSubscriber()`, inits epoll and send/recycle threads
-- **Dispatch**: `statusHandler[]` in `ngx_c_slogic.cxx`, indexed by `MSGID`; indices 0–4 NULL, 19 active handlers, rest `noop`
+- **Dispatch**: `statusHandler[]` in `ngx_c_slogic.cxx`, indexed by `MSGID`; indices 0–4 NULL, 22 active handlers, rest `noop`
 - **Pub/Sub** (`CSubscribe`): `std::map<std::string, std::list<EventNode>>` + `std::shared_mutex`; events DEFAULT=1, POST_DELAY=2, NOT_EQUAL_ZERO=4, EQUAL_ZERO=8; separate `m_mapSubject_plcIoServer` (latest PLC I/O server per tag)
 - **Request/Response** (`HandleGetResponse` in `ngx_c_slogic.cxx`): `m_mapReqChannel` (request_tag → active + waiting deque, max 64) and `m_mapResponseOwner` (response_tag → request_tag) under `m_reqMutex`; never take `logicPorcMutex` while holding it. `HandleWriteB` (start==1) routes known response_tags to `DeliverResponse` instead of `NotifySubscriber`. Per-request timeout via `g_tm`; `CancelRequest()` on disconnect
 
 ## Wire Protocol
 
-`MSGHEAD` (`#pragma pack(1)`) + body (≤ `MAXMSGLEN` = 16384). `MSGID` in `include/msg.h`: 50 codes, `SUCCEED = 5` … `GETRESPONSE = 54`. Adding a message type (see `Doc/add_message_type.md`):
+`MSGHEAD` (`#pragma pack(1)`) + body (≤ `MAXMSGLEN` = 16384). `MSGID` in `include/msg.h`: 51 codes, `SUCCEED = 5` … `LISTQ = 55`. Adding a message type (see `Doc/add_message_type.md`):
 1. Append enum value to `MSGID`
 2. Implement handler in `gplat/ngx_c_slogic.cxx`
 3. Register in `statusHandler[]` at the matching index
@@ -50,7 +50,7 @@ Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `
 ## Network API (`extern "C"` in `include/higplat.h`, blocking TCP)
 
 - Connection: `connectgplat(server, port)` → fd (2s timeout, TCP_NODELAY), `disconnectgplat`
-- Queue: `readq`, `writeq`, `clearq`, `createqueue`
+- Queue: `readq`, `writeq`, `clearq`, `createqueue`, `readhead` (QUEUE_HEAD), `peekq` (non-consuming, `PEEK_NEXT`/`PEEK_LATEST`), `listq` (loaded queue names)
 - Board: `readb` (optional timestamp), `writeb`, `writeb_notpost`, `readb_string`/`readb_string2` (std::string), `writeb_string`/`writeb_string2`, `createtag` (optional type descriptor), `deletetag`, `clearb`, `readtype`, `readboardinfo`
 - Pub/Sub: `subscribe` (DEFAULT), `subscribedelaypost` (POST_DELAY), `waitpostdata` (tagname `"WAIT_TIMEOUT"` on timeout)
 - Request/Response: `getresponse(sockfd, request_tag, req, req_size, response_tag, rsp, rsp_size, &error, timeout_ms=2000)` — server serializes per request_tag; errors `ERROR_RESPONSE_TIMEOUT`, `ERROR_REQUEST_QUEUE_FULL`
@@ -61,8 +61,8 @@ Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 ## Local API (direct mmap on QBD files, `higplat/higplat.cpp`)
 
 - Board: `CreateB`, `CreateItem`, `DeleteItem`, `ReadB`, `WriteB`, `ReadB_String`, `WriteB_String`, `WriteBOffSet`, `ClearB`, `ReadInfoB`, `ReadBoardInfo`, `ReadType`
-- Queue: `CreateQ`, `ReadQ`, `WriteQ`, `ClearQ`, `PeekQ`, `IsEmptyQ`, `IsFullQ`, `MulReadQ`, `MulReadQ2`, `SetPtrQ`, `PopJustRecordFromQueue`, `ReadHead`
-- Lifecycle: `SetQbdPath`, `LoadQ`, `UnloadQ`, `UnloadAll`, `FlushQFile`
+- Queue: `CreateQ`, `ReadQ`, `WriteQ`, `ClearQ`, `PeekQ`, `PeekQRecord`, `ListQ`, `IsEmptyQ`, `IsFullQ`, `MulReadQ`, `MulReadQ2`, `SetPtrQ`, `PopJustRecordFromQueue`, `ReadHead`
+- Lifecycle: `SetQbdPath`, `LoadQ`, `UnloadQ`, `UnloadAll`, `FlushQFile`; `CreateAndLoadQ` (used by `HandleCreateQueue`: rejects loaded names incl. BOARD and path-like names, then loads at runtime)
 
 **Board locking** (`higplat/qbd.h`): global `std::mutex mutex_rw` for hash index traversal + striped `mutex_rw_tag[MUTEXSIZE=64]` (by tag hash) for data access; placement-new'd into the mmap'd file.
 
@@ -80,7 +80,7 @@ Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 | `higplat/` | `libhigplat.so`: local mmap QBD ops + network client |
 | `include/` | Shared headers (`higplat.h`, `msg.h`, `timer_manager.h`, `podstring.h`, `type_code.h`, `struct_reflect.h`, `struct_registry.h`, `user_types.h`); also a header-compile test project |
 | `createq/`, `createb/` | CLI to create Queue / Board files |
-| `toolgplat/` | Interactive REPL client (readline, type-aware display) |
+| `toolgplat/` | Interactive REPL client (readline, type-aware display). Scoped commands: global / board (`open board`) / queue (`open queue <name>`: desc, peek, last, clear, write) |
 | `testapp/` | Integration test (subscribe/read/write threads) |
 | `testapp2/` | Stress test (10 threads × 100 tags, subscribe chains, large data) |
 | `testapp3/` | Struct type test (`PodString`, arrays, nested) |

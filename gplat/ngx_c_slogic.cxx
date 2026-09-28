@@ -61,13 +61,13 @@ static const handler statusHandler[] =
 		&CLogicSocket::noop,				  // ISEMPTYQ
 		&CLogicSocket::noop,				  // ISFULLQ
 		&CLogicSocket::HandleReadQ,			  // READQ
-		&CLogicSocket::noop,				  // PEEKQ
+		&CLogicSocket::HandlePeekQ,			  // PEEKQ
 		&CLogicSocket::HandleWriteQ,		  // WRITEQ
 		&CLogicSocket::HandleReadB,			  // READB
 		&CLogicSocket::HandleReadBString,	  // READBSTRING
 		&CLogicSocket::HandleWriteB,		  // WRITEB
 		&CLogicSocket::noop,				  // QDATA
-		&CLogicSocket::noop,				  // READHEAD
+		&CLogicSocket::HandleReadHead,		  // READHEAD
 		&CLogicSocket::noop,				  // MULREADQ
 		&CLogicSocket::noop,				  // SETPTRQ
 		&CLogicSocket::noop,				  // WATCHDOG
@@ -99,6 +99,7 @@ static const handler statusHandler[] =
 		&CLogicSocket::HandleReadBoardInfo,   // READBOARDINFO
 		&CLogicSocket::HandleCreateQueue,   // CREATEQUEUE
 		&CLogicSocket::HandleGetResponse,   // GETRESPONSE
+		&CLogicSocket::HandleListQ,         // LISTQ
 };
 
 #define AUTH_TOTAL_COMMANDS sizeof(statusHandler) / sizeof(handler) // 整个数组有多少个命令
@@ -1100,7 +1101,7 @@ bool CLogicSocket::HandleCreateQueue(lpngx_connection_t pConn, LPSTRUC_MSG_HEADE
 	//	int operateMode,
 	//	void* pType,
 	//	int typeSize)
-	if ((ret = CreateQ(pPkgHead->qname, pPkgHead->recsize, pPkgHead->count, 0, pPkgHead->start, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->bodysize)))
+	if ((ret = CreateAndLoadQ(pPkgHead->qname, pPkgHead->recsize, pPkgHead->count, 0, pPkgHead->start, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->bodysize)))
 	{
 		pPkgHead->error = 0;
 	}
@@ -1122,6 +1123,112 @@ bool CLogicSocket::HandleCreateQueue(lpngx_connection_t pConn, LPSTRUC_MSG_HEADE
 	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
 
 	// f)发送数据包
+	msgSend(p_sendbuf);
+
+	return true;
+}
+
+bool CLogicSocket::HandleReadHead(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
+{
+	if (pPkgHeader == NULL)
+	{
+		return false;
+	}
+
+	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
+	const int iLenPkgBody = sizeof(QUEUE_HEAD);
+	CMemory* p_memory = CMemory::GetInstance();
+	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false);
+
+	if (ReadHead(pPkgHead->qname, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader))
+	{
+		pPkgHead->error = 0;
+		pPkgHead->bodysize = iLenPkgBody;
+	}
+	else
+	{
+		pPkgHead->error = GetLastErrorQ();
+		pPkgHead->bodysize = 0;
+	}
+
+	CLock lock(&pConn->logicPorcMutex);
+	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader);
+	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader);
+	msgSend(p_sendbuf);
+
+	return true;
+}
+
+// 请求包：qname=队列名, start=PEEK_NEXT|PEEK_LATEST, datasize=记录大小；响应包体：RECORD_HEAD + 记录
+bool CLogicSocket::HandlePeekQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
+{
+	if (pPkgHeader == NULL)
+	{
+		return false;
+	}
+
+	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
+	const int recordSize = pPkgHead->datasize;
+	const bool validSize = recordSize > 0 && recordSize <= MAXMSGLEN - (int)sizeof(RECORD_HEAD);
+	const int iLenPkgBody = validSize ? (int)sizeof(RECORD_HEAD) + recordSize : 0;
+	CMemory* p_memory = CMemory::GetInstance();
+	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false);
+	char* p_body = p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader;
+
+	if (!validSize)
+	{
+		pPkgHead->error = ERROR_RECORDSIZE;
+		pPkgHead->bodysize = 0;
+	}
+	else if (PeekQRecord(pPkgHead->qname, pPkgHead->start, p_body + sizeof(RECORD_HEAD), recordSize, (RECORD_HEAD*)p_body))
+	{
+		pPkgHead->error = 0;
+		pPkgHead->bodysize = iLenPkgBody;
+	}
+	else
+	{
+		pPkgHead->error = GetLastErrorQ();
+		pPkgHead->bodysize = 0;
+	}
+
+	CLock lock(&pConn->logicPorcMutex);
+	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader);
+	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader);
+	msgSend(p_sendbuf);
+
+	return true;
+}
+
+// 响应包体：以 '\0' 结尾的队列名依次排列，count=队列个数
+bool CLogicSocket::HandleListQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
+{
+	if (pPkgHeader == NULL)
+	{
+		return false;
+	}
+
+	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
+	CMemory* p_memory = CMemory::GetInstance();
+	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + MAXMSGLEN, false);
+
+	int namesSize = 0;
+	int count = 0;
+	if (ListQ(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, MAXMSGLEN, &namesSize, &count))
+	{
+		pPkgHead->error = 0;
+		pPkgHead->bodysize = namesSize;
+		pPkgHead->count = count;
+	}
+	else
+	{
+		pPkgHead->error = GetLastErrorQ();
+		pPkgHead->bodysize = 0;
+		pPkgHead->count = 0;
+	}
+
+	CLock lock(&pConn->logicPorcMutex);
+	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader);
+	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader);
 	msgSend(p_sendbuf);
 
 	return true;

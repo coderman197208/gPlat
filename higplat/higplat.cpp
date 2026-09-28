@@ -212,21 +212,29 @@ record to be fetched
 
 Returns:  bool
 F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F-F*/
-bool fetchtab(const char* dqname, struct TABLE_MSG& tabmsg)
+// 返回 dqname 在哈希表中的下标，不存在返回 -1；调用者须持有 mutex_rw
+static int findtab(const char* dqname)
 {
-	int loc, c;
-	loc = hash1(dqname);
-	c = hash2(dqname);
-
-	////WaitForSingleObject(hTabMutex, INFINITE);
-	std::lock_guard<std::mutex> lock(mutex_rw);
-
+	int loc = hash1(dqname);
+	const int c = hash2(dqname);
 	while (strcmp(table[loc].dqname, "\0") && strcmp(table[loc].dqname, dqname))
 	{
 		loc = (loc + c) % TABLESIZE;
 	}
-
 	if (!strcmp(table[loc].dqname, "\0") || table[loc].erased)
+	{
+		return -1;
+	}
+	return loc;
+}
+
+bool fetchtab(const char* dqname, struct TABLE_MSG& tabmsg)
+{
+	////WaitForSingleObject(hTabMutex, INFINITE);
+	std::lock_guard<std::mutex> lock(mutex_rw);
+
+	const int loc = findtab(dqname);
+	if (loc < 0)
 	{
 		errorCode = ERROR_RECORD_NOT_EXIST;
 		//ReleaseMutex(hTabMutex);
@@ -727,7 +735,7 @@ extern "C" bool writeq(int sockfd, const char* qname, void* record, int actsize,
 	return (*error == 0);
 }
 
-bool clearq(int sockfd, const char* qname, unsigned int* error)
+extern "C" bool clearq(int sockfd, const char* qname, unsigned int* error)
 {
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -765,6 +773,151 @@ bool clearq(int sockfd, const char* qname, unsigned int* error)
 		return false;
 	}
 
+	return true;
+}
+
+extern "C" bool readhead(int sockfd, const char* qname, QUEUE_HEAD* head, unsigned int* error)
+{
+	if (error == nullptr)
+		throw std::runtime_error("parameter error is null");
+
+	AutoErrorCheck _checker(error);
+	if (!qname || !head) {
+		*error = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+
+	MSGSTRUCT msg{};
+	msg.head.id = READHEAD;
+	msg.head.datasize = sizeof(QUEUE_HEAD);
+	msg.head.bodysize = 0;
+	strncpy(msg.head.qname, qname, sizeof(msg.head.qname) - 1);
+	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
+
+	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+
+	*error = msg.head.error;
+	if (*error != 0) {
+		return false;
+	}
+	if (msg.head.bodysize != (int)sizeof(QUEUE_HEAD)) {
+		*error = ERROR_INVALID_RESPONSE;
+		close(sockfd);
+		return false;
+	}
+	if (readn(sockfd, head, sizeof(QUEUE_HEAD)) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	return true;
+}
+
+// 响应包体：RECORD_HEAD + 记录数据
+extern "C" bool peekq(int sockfd, const char* qname, int position, void* record, int actsize, RECORD_HEAD* recordhead, unsigned int* error)
+{
+	if (error == nullptr)
+		throw std::runtime_error("parameter error is null");
+
+	AutoErrorCheck _checker(error);
+	if (!qname || !record || actsize <= 0 || actsize > MAXMSGLEN - (int)RECORDHEADSIZE) {
+		*error = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+
+	MSGSTRUCT msg{};
+	msg.head.id = PEEKQ;
+	msg.head.start = position;
+	msg.head.datasize = actsize;
+	msg.head.bodysize = 0;
+	strncpy(msg.head.qname, qname, sizeof(msg.head.qname) - 1);
+	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
+
+	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+
+	*error = msg.head.error;
+	if (*error != 0) {
+		return false;
+	}
+	if (msg.head.bodysize < (int)RECORDHEADSIZE || msg.head.bodysize - (int)RECORDHEADSIZE > actsize) {
+		*error = ERROR_INVALID_RESPONSE;
+		close(sockfd);
+		return false;
+	}
+
+	RECORD_HEAD head;
+	if (readn(sockfd, &head, RECORDHEADSIZE) < 0 ||
+		readn(sockfd, record, msg.head.bodysize - RECORDHEADSIZE) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	if (recordhead != nullptr) {
+		*recordhead = head;
+	}
+	return true;
+}
+
+// names 中依次存放以 '\0' 结尾的队列名
+extern "C" bool listq(int sockfd, char* names, int buffsize, int* count, unsigned int* error)
+{
+	if (error == nullptr)
+		throw std::runtime_error("parameter error is null");
+
+	AutoErrorCheck _checker(error);
+	if (!names || !count || buffsize <= 0) {
+		*error = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+
+	MSGSTRUCT msg{};
+	msg.head.id = LISTQ;
+	msg.head.bodysize = 0;
+
+	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+
+	*error = msg.head.error;
+	if (*error != 0) {
+		return false;
+	}
+	if (msg.head.bodysize < 0 || msg.head.bodysize > buffsize) {
+		*error = ERROR_BUFFER_TOO_SMALL;
+		close(sockfd);
+		return false;
+	}
+	if (msg.head.bodysize > 0 && readn(sockfd, names, msg.head.bodysize) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	*count = msg.head.count;
 	return true;
 }
 
@@ -1816,11 +1969,11 @@ extern "C" bool LoadQ(const char* lpDqName)
 {
 	usereason = 1;
 
-	//这里就不锁定了，因为LoadQ肯定在单线程上运行，和OpenQ不一样，另外下面的是fetchtab，函数里也要锁定的，这样会死锁的
-	//std::unique_lock<std::mutex> lock(mutex_rw);
+	// 服务端运行时也会载入新建的队列，整个过程持有 mutex_rw，避免与 fetchtab 并发访问哈希表
+	std::lock_guard<std::mutex> lock(mutex_rw);
 
 	struct TABLE_MSG tabmsg;
-	if (fetchtab(lpDqName, tabmsg))
+	if (findtab(lpDqName) >= 0)
 	{
 		errorCode = ERROR_ALREADY_LOAD;
 		return true;
@@ -1877,7 +2030,8 @@ extern "C" bool LoadQ(const char* lpDqName)
 	tabmsg.hMapFile = 0;				  //linux下不需要
 	tabmsg.lpMapAddress = lpMapAddress;   //为将内存文件映射数据定期写回文件而增加
 	//tabmsg.hMutex = hMutex;
-	pthread_mutex_init(&tabmsg.hMutex, NULL);
+	tabmsg.hMutex = new pthread_mutex_t;
+	pthread_mutex_init(tabmsg.hMutex, NULL);
 	tabmsg.filesize = file_size;		  //linux下新增
 	if (inserttab(tabmsg))
 	{
@@ -1885,8 +2039,52 @@ extern "C" bool LoadQ(const char* lpDqName)
 	}
 	//CloseHandle(hMapFile);
 	close(fd);
-	pthread_mutex_destroy(&tabmsg.hMutex);
+	pthread_mutex_destroy(tabmsg.hMutex);
+	delete tabmsg.hMutex;
 	return false;
+}
+
+// 队列名来自网络，只允许 dataQuePath 目录下的普通文件名
+static bool IsValidQueueName(const char* name)
+{
+	const size_t len = strnlen(name, MAXDQNAMELENTH);
+	return len > 0 && len < MAXDQNAMELENTH
+		&& strchr(name, '/') == nullptr
+		&& strcmp(name, ".") != 0 && strcmp(name, "..") != 0
+		&& strcmp(name, "_qbd_file_directory") != 0;
+}
+
+// 供服务端运行时创建队列：不覆盖已载入的同名对象（包括 BOARD），创建成功后立即载入
+extern "C" bool CreateAndLoadQ(const char* lpFileName, int recordSize, int recordNum, int dataType, int operateMode, void* pType, int typeSize)
+{
+	if (!IsValidQueueName(lpFileName))
+	{
+		errorCode = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+
+	// 检查、创建、载入必须作为整体执行，否则并发创建同名队列会删掉已载入的文件
+	static std::mutex createMutex;
+	std::lock_guard<std::mutex> createLock(createMutex);
+	{
+		std::lock_guard<std::mutex> lock(mutex_rw);
+		if (findtab(lpFileName) >= 0)
+		{
+			errorCode = ERROR_ALREADY_LOAD;
+			return false;
+		}
+	}
+
+	if (!CreateQ(lpFileName, recordSize, recordNum, dataType, operateMode, pType, typeSize))
+	{
+		return false;
+	}
+	if (!LoadQ(lpFileName))
+	{
+		errorCode = ERROR_FILE_OPEN_FAILSURE;
+		return false;
+	}
+	return true;
 }
 
 /*F+F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F
@@ -1907,7 +2105,8 @@ extern "C" bool UnloadQ(const char* lpDqName)
 		//关闭映射文件对象句柄、互斥量对象句柄、文件句柄。
 		//CloseHandle(tabmsg.hMapFile);
 		close(tabmsg.hFile);
-		pthread_mutex_destroy(&tabmsg.hMutex);
+		pthread_mutex_destroy(tabmsg.hMutex);
+		delete tabmsg.hMutex;
 
 		//关闭读写锁
 		if (tabmsg.pmutex_rw != nullptr)
@@ -1945,7 +2144,9 @@ extern "C" bool UnloadAll(void)
 		{
 			//CloseHandle(table[i].hMapFile);
 			close(table[i].hFile);
-			pthread_mutex_destroy(&table[i].hMutex);
+			pthread_mutex_destroy(table[i].hMutex);
+			delete table[i].hMutex;
+			table[i].hMutex = nullptr;
 			strcpy(table[i].dqname, "\0");
 
 			//关闭读写锁
@@ -2004,13 +2205,18 @@ extern "C" bool ReadHead(const char* lpDqName, void* lpHead)
 	{
 		return false;
 	}
+	if (*(int*)tabmsg.lpMapAddress != QUEUE_T)
+	{
+		errorCode = ERROR_OPERATE_PROHIBIT;
+		return false;
+	}
 
 	// 根据映射内存地址、互斥量对象句柄从数据队列取出队列头。
 	//WaitForSingleObject(tabmsg.hMutex, INFINITE);
-	pthread_mutex_lock(&tabmsg.hMutex);
+	pthread_mutex_lock(tabmsg.hMutex);
 	memcpy(lpHead, tabmsg.lpMapAddress, QUEUEHEADSIZE);
 	//ReleaseMutex(tabmsg.hMutex);
-	pthread_mutex_unlock(&tabmsg.hMutex);
+	pthread_mutex_unlock(tabmsg.hMutex);
 	return true;
 }
 
@@ -2036,9 +2242,8 @@ extern "C" bool ReadQ(const char* lpDqName, void* lpRecord, int actSize, char* r
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
+	pthread_mutex_t& hMutex = *tabmsg.hMutex;
 	QUEUE_HEAD* pDqHead;
 	pDqHead = (QUEUE_HEAD*)lpMapAddress;
 	int num, size;
@@ -2107,9 +2312,8 @@ extern "C" bool PopJustRecordFromQueue(const char* lpDqName)
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
+	pthread_mutex_t& hMutex = *tabmsg.hMutex;
 	QUEUE_HEAD* pDqHead;
 	pDqHead = (QUEUE_HEAD*)lpMapAddress;
 	int num = pDqHead->num;
@@ -2164,9 +2368,8 @@ extern "C" bool MulReadQ(const char* lpDqName, void* lpRecord, int start, int* c
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
+	pthread_mutex_t& hMutex = *tabmsg.hMutex;
 
 	QUEUE_HEAD* pDqHead;
 	pDqHead = (QUEUE_HEAD*)lpMapAddress;
@@ -2182,6 +2385,7 @@ extern "C" bool MulReadQ(const char* lpDqName, void* lpRecord, int start, int* c
 		errorCode = ERROR_STARTPOSITION;
 		return false;
 	}
+	pthread_mutex_lock(&hMutex);
 	int readCount;
 	if (pDqHead->operateMode == NORMAL_MODE)
 	{
@@ -2193,6 +2397,7 @@ extern "C" bool MulReadQ(const char* lpDqName, void* lpRecord, int start, int* c
 				(char*)lpMapAddress + ((start + i) % num) * (size + RECORDHEADSIZE) + QUEUEHEADSIZE,
 				size + RECORDHEADSIZE);
 		}
+		pthread_mutex_unlock(&hMutex);
 		return true;
 	}
 	else	// SHIFT_MODE
@@ -2207,6 +2412,7 @@ extern "C" bool MulReadQ(const char* lpDqName, void* lpRecord, int start, int* c
 				(char*)lpMapAddress + ((actstart + num - i) % num) * (size + RECORDHEADSIZE) + QUEUEHEADSIZE,
 				size + RECORDHEADSIZE);
 		}
+		pthread_mutex_unlock(&hMutex);
 		return true;
 	}
 }
@@ -2220,9 +2426,8 @@ extern "C" bool MulReadQ2(const char* lpDqName, void** lppRecords, int start, in
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
+	pthread_mutex_t& hMutex = *tabmsg.hMutex;
 
 	QUEUE_HEAD* pDqHead;
 	pDqHead = (QUEUE_HEAD*)lpMapAddress;
@@ -2324,9 +2529,8 @@ extern "C" bool WriteQ(const char* lpDqName, void* lpRecord, int actSize, const 
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
+	pthread_mutex_t& hMutex = *tabmsg.hMutex;
 	QUEUE_HEAD* pDqHead;
 	pDqHead = (QUEUE_HEAD*)lpMapAddress;
 	int num, size;
@@ -2402,9 +2606,8 @@ extern "C" bool ClearQ(const char* lpDqName)
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
+	pthread_mutex_t& hMutex = *tabmsg.hMutex;
 
 	// 清空数据队列
 	QUEUE_HEAD* pDqHead;
@@ -2421,7 +2624,7 @@ extern "C" bool ClearQ(const char* lpDqName)
 	}
 	//ReleaseMutex(hMutex);
 	pthread_mutex_unlock(&hMutex);
-	return false;
+	return true;
 }
 
 /*F+F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F
@@ -2442,9 +2645,8 @@ extern "C" bool SetPtrQ(const char* lpDqName, int readPtr, int writePtr)
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
+	pthread_mutex_t& hMutex = *tabmsg.hMutex;
 	QUEUE_HEAD* pDqHead;
 	pDqHead = (QUEUE_HEAD*)lpMapAddress;
 	int num;
@@ -2507,9 +2709,8 @@ extern "C" bool PeekQ(const char* lpDqName, void* lpRecord, int actSize)
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
+	pthread_mutex_t& hMutex = *tabmsg.hMutex;
 
 	// 根据映射内存地址、互斥量对象句柄从数据队列取出一条记录。
 	QUEUE_HEAD* pDqHead;
@@ -2548,6 +2749,93 @@ extern "C" bool PeekQ(const char* lpDqName, void* lpRecord, int actSize)
 	return false;
 }
 
+// 不移动读写指针地读取一条记录，position 为 PEEK_NEXT 或 PEEK_LATEST；lpRecordHead 可为空
+extern "C" bool PeekQRecord(const char* lpDqName, int position, void* lpRecord, int actSize, RECORD_HEAD* lpRecordHead)
+{
+	if (position != PEEK_NEXT && position != PEEK_LATEST)
+	{
+		errorCode = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+
+	struct TABLE_MSG tabmsg;
+	if (!fetchtab(lpDqName, tabmsg))
+	{
+		return false;
+	}
+	void* lpMapAddress = tabmsg.lpMapAddress;
+	QUEUE_HEAD* pDqHead = (QUEUE_HEAD*)lpMapAddress;
+	if (pDqHead->qbdtype != QUEUE_T)
+	{
+		errorCode = ERROR_OPERATE_PROHIBIT;
+		return false;
+	}
+
+	const int num = pDqHead->num;
+	const int size = pDqHead->size;
+	if (((pDqHead->dataType == ASCII_TYPE) && (actSize < size))
+		|| ((pDqHead->dataType == BINARY_TYPE) && (actSize != size)))
+	{
+		errorCode = ERROR_RECORDSIZE;
+		return false;
+	}
+
+	pthread_mutex_lock(tabmsg.hMutex);
+	int slot;
+	bool empty;
+	if (pDqHead->operateMode == NORMAL_MODE)
+	{
+		empty = (pDqHead->readPoint == pDqHead->writePoint);
+		slot = (position == PEEK_NEXT) ? (pDqHead->readPoint + 1) % num : pDqHead->writePoint;
+	}
+	else
+	{
+		// 移位队列的 readq 总是返回最新记录，readPoint 仅标记是否写入过
+		empty = (pDqHead->readPoint == 0);
+		slot = pDqHead->writePoint;
+	}
+	if (empty)
+	{
+		pthread_mutex_unlock(tabmsg.hMutex);
+		errorCode = ERROR_DQ_EMPTY;
+		return false;
+	}
+
+	const char* pRecordHead = (const char*)lpMapAddress + slot * (size + RECORDHEADSIZE) + QUEUEHEADSIZE;
+	if (lpRecordHead != 0)
+	{
+		memcpy(lpRecordHead, pRecordHead, RECORDHEADSIZE);
+	}
+	memcpy(lpRecord, pRecordHead + RECORDHEADSIZE, size);
+	pthread_mutex_unlock(tabmsg.hMutex);
+	return true;
+}
+
+// 列出已载入的队列名，以 '\0' 分隔依次存入 names，*namesSize 为使用的总字节数
+extern "C" bool ListQ(char* names, int buffSize, int* namesSize, int* count)
+{
+	std::lock_guard<std::mutex> lock(mutex_rw);
+	*namesSize = 0;
+	*count = 0;
+	for (int i = 0; i < TABLESIZE; i++)
+	{
+		const TABLE_MSG& entry = table[i];
+		if (entry.dqname[0] == '\0' || entry.erased || *(int*)entry.lpMapAddress != QUEUE_T)
+			continue;
+
+		const int len = (int)strlen(entry.dqname) + 1;
+		if (*namesSize + len > buffSize)
+		{
+			errorCode = ERROR_BUFFER_TOO_SMALL;
+			return false;
+		}
+		memcpy(names + *namesSize, entry.dqname, len);
+		*namesSize += len;
+		(*count)++;
+	}
+	return true;
+}
+
 
 /*F+F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F+++F
 Function: IsEmptyQ
@@ -2567,9 +2855,8 @@ extern "C" bool IsEmptyQ(const char* lpDqName)
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
+	pthread_mutex_t& hMutex = *tabmsg.hMutex;
 
 	// 根据映射内存地址、互斥量对象句柄从数据队列取出一条记录。
 	QUEUE_HEAD* pDqHead;
@@ -2618,9 +2905,8 @@ extern "C" bool IsFullQ(const char* lpDqName)
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
+	pthread_mutex_t& hMutex = *tabmsg.hMutex;
 
 	// 根据映射内存地址、互斥量对象句柄从数据队列取出一条记录。
 	QUEUE_HEAD* pDqHead;
@@ -2852,9 +3138,7 @@ extern "C" bool ReadB(const char* lpBulletinName, const char* lpItemName, void* 
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
 	BOARD_HEAD* pHead;
 	BOARD_INDEX_STRUCT* pIndex;
 	pHead = (BOARD_HEAD*)lpMapAddress;
@@ -2942,9 +3226,7 @@ extern "C" bool ReadB_String(const char* lpBulletinName, const char* lpItemName,
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
 	BOARD_HEAD* pHead;
 	BOARD_INDEX_STRUCT* pIndex;
 	pHead = (BOARD_HEAD*)lpMapAddress;
@@ -3009,9 +3291,7 @@ extern "C" bool ReadB_String2(const char* lpBulletinName, const char* lpItemName
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
 	BOARD_HEAD* pHead;
 	BOARD_INDEX_STRUCT* pIndex;
 	pHead = (BOARD_HEAD*)lpMapAddress;
@@ -3095,9 +3375,7 @@ extern "C" bool WriteB(const char* lpBulletinName, const char* lpItemName, void*
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
 	BOARD_HEAD* pHead;
 	BOARD_INDEX_STRUCT* pIndex;
 	pHead = (BOARD_HEAD*)lpMapAddress;
@@ -3211,9 +3489,7 @@ extern "C" bool WriteB_String(const char* lpBulletinName, const char* lpItemName
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
 	BOARD_HEAD* pHead;
 	BOARD_INDEX_STRUCT* pIndex;
 	pHead = (BOARD_HEAD*)lpMapAddress;
@@ -3353,9 +3629,7 @@ extern "C" bool DeleteItem(const char* lpBoardName, const char* lpItemName)
 	}
 
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
 	BOARD_HEAD* pHead;
 	BOARD_INDEX_STRUCT* pIndex;
 	pHead = (BOARD_HEAD*)lpMapAddress;
@@ -3468,9 +3742,7 @@ extern "C" bool CreateItem(const char* lpBoardName, const char* lpItemName, int 
 		return false;
 	}
 	void* lpMapAddress;
-	pthread_mutex_t hMutex;
 	lpMapAddress = tabmsg.lpMapAddress;
-	hMutex = tabmsg.hMutex;
 	BOARD_HEAD* pHead;
 	BOARD_INDEX_STRUCT* pIndex;
 	pHead = (BOARD_HEAD*)lpMapAddress;
