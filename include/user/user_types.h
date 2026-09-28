@@ -902,4 +902,35 @@ REGISTER_STRUCT(TagBigData,
 	 FIELD_DESC(Single, TagBigData, c),
 )
 
+// getresponse 请求/响应示例（testapp5）
+struct Request
+{
+	int32_t       id;       // 请求序号，响应原样返回
+	int32_t       cmd;      // 命令码
+	PodString<32> name;
+	double        args[4];
+};
+
+REGISTER_STRUCT(Request,
+	FIELD_DESC(Int32, Request, id),
+	FIELD_DESC(Int32, Request, cmd),
+	FIELD_DESC_STRING(Request, name),
+	FIELD_DESC_ARRAY(Double, Request, args, 4)
+)
+
+struct Response
+{
+	int32_t       id;       // 对应的请求序号
+	int32_t       result;   // 0 表示成功
+	PodString<64> message;
+	double        values[4];
+};
+
+REGISTER_STRUCT(Response,
+	FIELD_DESC(Int32, Response, id),
+	FIELD_DESC(Int32, Response, result),
+	FIELD_DESC_STRING(Response, message),
+	FIELD_DESC_ARRAY(Double, Response, values, 4)
+)
+
 #endif // USER_TYPES_H_

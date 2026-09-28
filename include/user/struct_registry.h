@@ -30,6 +30,8 @@ inline const std::unordered_map<std::string, const StructInfo*>& GetStructRegist
 		REG(ApiBundleDataEvent),
 		REG(mmwe_tqmtiwea13_t),
 		REG(TagBigData),
+		REG(Request),
+		REG(Response),		
 		// 新增类型在此添加一行
 	};
 	return table;
