@@ -120,6 +120,111 @@ bool ParseElement(const FieldInfo& field, const std::string& text, char* out, st
 	return ok;
 }
 
+// 按顶层逗号切分，[] 和 {} 内的逗号不切分
+std::vector<std::string> SplitTopLevel(const std::string& text)
+{
+	std::vector<std::string> parts;
+	if (Trim(text).empty())
+		return parts;
+	int depth = 0;
+	std::string part;
+	for (char c : text)
+	{
+		if (c == '[' || c == '{')
+			depth++;
+		else if ((c == ']' || c == '}') && depth > 0)
+			depth--;
+		if (c == ',' && depth == 0)
+		{
+			parts.push_back(Trim(part));
+			part.clear();
+		}
+		else
+			part += c;
+	}
+	parts.push_back(Trim(part));
+	return parts;
+}
+
+// text 整体被一对匹配的 open/close 包裹时取出内部
+bool Unwrap(const std::string& text, char open, char close, std::string& inner)
+{
+	const std::string t = Trim(text);
+	if (t.size() < 2 || t.front() != open || t.back() != close)
+		return false;
+	int depth = 0;
+	for (size_t i = 0; i < t.size(); i++)
+	{
+		if (t[i] == '[' || t[i] == '{')
+			depth++;
+		else if (t[i] == ']' || t[i] == '}')
+			depth--;
+		if (depth == 0 && i + 1 < t.size())
+			return false;
+	}
+	inner = t.substr(1, t.size() - 2);
+	return true;
+}
+
+bool AssignField(const FieldInfo& field, char* data, const std::string& text, std::string& error);
+
+// 单个元素：基本类型直接解析，struct 用 {v1,v2,...} 按成员顺序赋值
+bool AssignElement(const FieldInfo& field, char* out, const std::string& text, std::string& error)
+{
+	if (field.type != Struct)
+		return ParseElement(field, text, out, error);
+
+	std::string inner;
+	if (!Unwrap(text, '{', '}', inner))
+	{
+		error = "Field '" + std::string(field.name) + "' is a struct, use {v1,v2,...} or assign members, e.g. "
+			+ field.name + ".<member>=...";
+		return false;
+	}
+	const StructInfo& info = *field.struct_info;
+	const std::vector<std::string> items = SplitTopLevel(inner);
+	if ((int)items.size() > info.field_count)
+	{
+		error = "Too many values for struct field '" + std::string(field.name) + "' (" + info.name + " has "
+			+ std::to_string(info.field_count) + " members).";
+		return false;
+	}
+	for (size_t i = 0; i < items.size(); i++)
+		if (!AssignField(info.fields[i], out + info.fields[i].offset, items[i], error))
+			return false;
+	return true;
+}
+
+// 整个字段：数组用 [v0,v1,...]（也接受不带括号的逗号列表）
+bool AssignField(const FieldInfo& field, char* data, const std::string& text, std::string& error)
+{
+	if (field.element_count == 1)
+		return AssignElement(field, data, text, error);
+
+	std::string list;
+	if (!Unwrap(text, '[', ']', list))
+	{
+		list = Trim(text);
+		if (!list.empty() && (list.front() == '[' || list.back() == ']'))
+		{
+			error = "Unbalanced brackets in value for field '" + std::string(field.name) + "'.";
+			return false;
+		}
+	}
+	const std::vector<std::string> items = SplitTopLevel(list);
+	if ((int)items.size() > field.element_count)
+	{
+		error = "Too many values for field '" + std::string(field.name) + "' (size "
+			+ std::to_string(field.element_count) + ").";
+		return false;
+	}
+	const int elementSize = field.size / field.element_count;
+	for (size_t i = 0; i < items.size(); i++)
+		if (!AssignElement(field, data + i * elementSize, items[i], error))
+			return false;
+	return true;
+}
+
 // 把 value 写入 base 所指 struct 中由 path[depth..] 指定的字段
 bool Assign(const StructInfo& info, char* base, const std::vector<std::string>& path, size_t depth,
 	const std::string& value, std::string& error)
@@ -147,13 +252,8 @@ bool Assign(const StructInfo& info, char* base, const std::vector<std::string>& 
 	char* data = base + field->offset;
 	const bool isLast = (depth + 1 == path.size());
 
-	if (field->type == Struct)
+	if (field->type == Struct && !isLast)
 	{
-		if (isLast)
-		{
-			error = "Field '" + segment.name + "' is a struct, assign its members, e.g. " + segment.name + ".<member>=...";
-			return false;
-		}
 		if (segment.index < 0 && field->element_count > 1)
 		{
 			error = "Field '" + segment.name + "' is an array, specify an index, e.g. " + segment.name + "[0].<member>=...";
@@ -169,19 +269,8 @@ bool Assign(const StructInfo& info, char* base, const std::vector<std::string>& 
 		return false;
 	}
 	if (segment.index >= 0)
-		return ParseElement(*field, value, data + segment.index * elementSize, error);
-
-	const std::vector<std::string> items = (field->element_count > 1)
-		? SplitAndTrim(value, ',') : std::vector<std::string>{value};
-	if ((int)items.size() > field->element_count)
-	{
-		error = "Too many values for field '" + segment.name + "' (size " + std::to_string(field->element_count) + ").";
-		return false;
-	}
-	for (size_t i = 0; i < items.size(); i++)
-		if (!ParseElement(*field, items[i], data + i * elementSize, error))
-			return false;
-	return true;
+		return AssignElement(*field, data + segment.index * elementSize, value, error);
+	return AssignField(*field, data, value, error);
 }
 
 } // namespace
@@ -200,6 +289,57 @@ bool BuildRecord(const StructInfo& info, const std::vector<std::string>& assignm
 		}
 		const std::vector<std::string> path = SplitAndTrim(assignment.substr(0, eq), '.');
 		if (!Assign(info, record.data(), path, 0, assignment.substr(eq + 1), error))
+			return false;
+	}
+	return true;
+}
+
+bool ApplyTagValues(const FieldInfo& tag, char* data, const std::vector<std::string>& words, std::string& error)
+{
+	const StructInfo wrapper{tag.name, tag.size, 1, &tag};
+	for (const std::string& word : words)
+	{
+		const size_t eq = word.find('=');
+		const bool isAssignment = eq != std::string::npos && eq > 0 && (word[0] == '[' || tag.type == Struct);
+		if (!isAssignment)
+		{
+			if (words.size() != 1)
+			{
+				error = "Expected a single value or <path>=<value> items, got '" + word + "'.";
+				return false;
+			}
+			return AssignField(tag, data, word, error);
+		}
+
+		// 路径首段固定为 tag 本身，tag 名不参与 '.' 切分
+		const std::string pathText = Trim(word.substr(0, eq));
+		std::string first = tag.name;
+		std::string rest = pathText;
+		if (pathText[0] == '[')
+		{
+			const size_t close = pathText.find(']');
+			if (close == std::string::npos)
+			{
+				error = "Invalid path '" + pathText + "'.";
+				return false;
+			}
+			first += pathText.substr(0, close + 1);
+			rest = pathText.substr(close + 1);
+			if (!rest.empty() && rest[0] != '.')
+			{
+				error = "Invalid path '" + pathText + "'.";
+				return false;
+			}
+			if (!rest.empty())
+				rest.erase(0, 1);
+		}
+		std::vector<std::string> path{first};
+		if (!rest.empty())
+		{
+			const std::vector<std::string> members = SplitAndTrim(rest, '.');
+			path.insert(path.end(), members.begin(), members.end());
+		}
+		if (!Assign(wrapper, data, path, 0, word.substr(eq + 1), error))
 			return false;
 	}
 	return true;

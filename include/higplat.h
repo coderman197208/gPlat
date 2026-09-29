@@ -114,6 +114,7 @@ extern "C" bool deletetag(int sockfd, const char* tagname, unsigned int* error);
 extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int buffersize, int timeout, unsigned int* error);
 extern "C" bool readb_string(int sockfd, const char* tagname, char* value, int buffersize, unsigned int* error, timespec*timestamp=0);
 extern "C" bool writeb_string(int sockfd, const char* tagname, const char* value, unsigned int* error);
+extern "C" bool writeb_string_notpost(int sockfd, const char* tagname, const char* value, unsigned int* error);
 extern "C" bool readb_string2(int sockfd, const char* tagname, std::string& value, unsigned int* error, timespec* timestamp = 0);
 extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string value, unsigned int* error);
 extern "C" bool readtype(int sockfd, const char* qbdname, const char* tagname, void* inbuff, int buffsize, int* ptypesize, unsigned int* error);

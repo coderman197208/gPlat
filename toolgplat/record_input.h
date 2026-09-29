@@ -11,4 +11,8 @@
 bool BuildRecord(const StructInfo& info, const std::vector<std::string>& assignments,
 	std::vector<char>& record, std::string& error);
 
+// 把 write 参数应用到 BOARD tag 的数据上（不清零）；tag.offset 须为 0
+// words: 单个整体值，或若干 "<path>=<value>"，path: member[.member] | [i] | [i].member
+bool ApplyTagValues(const FieldInfo& tag, char* data, const std::vector<std::string>& words, std::string& error);
+
 #endif // RECORD_INPUT_H_

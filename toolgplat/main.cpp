@@ -415,6 +415,126 @@ void CmdBoardClear(Session& session, const Words& words)
 		std::cout << "Clear board failed, error code " << err << "." << std::endl;
 }
 
+bool ReadTagType(int conn, const std::string& tagName, TypeDescriptorHeader& header, std::string& className)
+{
+	char descriptor[kTypeDescriptorBufferSize];
+	int size = 0;
+	unsigned int err = 0;
+	if (!readtype(conn, kBoardName, tagName.c_str(), descriptor, sizeof(descriptor), &size, &err))
+	{
+		std::cout << "Read type of tag '" << tagName << "' failed, error code " << err << "." << std::endl;
+		return false;
+	}
+	if (!ParseTypeDescriptor(descriptor, std::min(size, (int)sizeof(descriptor)), header, className))
+	{
+		std::cout << "Invalid type descriptor of tag '" << tagName << "'." << std::endl;
+		return false;
+	}
+	return true;
+}
+
+// 按 tag 的类型描述符构造覆盖整个 tag 的 FieldInfo，类型不可用时返回 false
+bool MakeTagField(const std::string& tagName, const TypeDescriptorHeader& header, const std::string& className,
+	FieldInfo& field)
+{
+	const int count = (header.arraysize > 0) ? header.arraysize : 1;
+	if (header.typecode == kStructTypeCode)
+	{
+		const StructInfo* info = FindStructByName(className);
+		if (!info)
+		{
+			std::cout << "Custom type '" << className << "' not found in local registry, cannot write." << std::endl;
+			return false;
+		}
+		field = {tagName.c_str(), Struct, info->total_size * count, 0, count, info, 0};
+		return true;
+	}
+	const TypeInfo* type = FindTypeByCode(header.typecode);
+	if (!type || type->size == 0)
+	{
+		std::cout << "Unsupported type code " << header.typecode << " of tag '" << tagName << "'." << std::endl;
+		return false;
+	}
+	field = {tagName.c_str(), type->code, type->size * count, 0, count, nullptr, 0};
+	return true;
+}
+
+void PrintTagWriteResult(const std::string& tagName, bool ok, unsigned int err)
+{
+	if (ok)
+		std::cout << "Tag '" << tagName << "' written." << std::endl;
+	else
+		std::cout << "Write tag '" << tagName << "' failed, error code " << err << "." << std::endl;
+}
+
+// write <tagName> [nopost] [zero] <value | path=value ...>
+void CmdBoardWrite(Session& session, const Words& words)
+{
+	if (!RequireWords(words, 3))
+		return;
+
+	const std::string& tagName = words[1];
+	TypeDescriptorHeader header;
+	std::string className;
+	if (!ReadTagType(session.conn, tagName, header, className))
+		return;
+	const bool isString = header.typecode == Char && header.arraysize > 0;
+
+	// 字符串 tag 的最后一个词总是值，以便写入 "zero"/"nopost" 本身
+	bool post = true;
+	bool zero = false;
+	size_t first = 2;
+	for (; first < words.size() && (!isString || first + 1 < words.size()); first++)
+	{
+		if (words[first] == "nopost")
+			post = false;
+		else if (words[first] == "zero")
+			zero = true;
+		else
+			break;
+	}
+	const Words values(words.begin() + first, words.end());
+	unsigned int err = 0;
+
+	if (isString)
+	{
+		if (values.size() != 1)
+		{
+			std::cout << "String tag takes a single value; quote values containing spaces." << std::endl;
+			return;
+		}
+		const bool ok = post ? writeb_string(session.conn, tagName.c_str(), values[0].c_str(), &err)
+			: writeb_string_notpost(session.conn, tagName.c_str(), values[0].c_str(), &err);
+		PrintTagWriteResult(tagName, ok, err);
+		return;
+	}
+
+	FieldInfo field{};
+	if (!MakeTagField(tagName, header, className, field))
+		return;
+	if (values.empty() && !zero)
+	{
+		std::cout << "Missing value. Type 'help write' for usage." << std::endl;
+		return;
+	}
+
+	std::vector<char> data(field.size, 0);
+	if (!zero && !readb(session.conn, tagName.c_str(), data.data(), (int)data.size(), &err))
+	{
+		std::cout << "Read tag '" << tagName << "' failed, error code " << err << "." << std::endl;
+		return;
+	}
+	std::string error;
+	if (!ApplyTagValues(field, data.data(), values, error))
+	{
+		std::cout << error << std::endl;
+		return;
+	}
+	const bool ok = post ? writeb(session.conn, tagName.c_str(), data.data(), (int)data.size(), &err)
+		: writeb_notpost(session.conn, tagName.c_str(), data.data(), (int)data.size(), &err);
+	PrintTagWriteResult(tagName, ok, err);
+}
+
 // ---- 队列命令 ----
 
 void CmdQueueDesc(Session& session, const Words&)
@@ -501,7 +621,7 @@ Description: Connects to the gPlat server (default 127.0.0.1).
 )"},
 		{Scope::Global, {"open", "openb"}, CmdOpen,
 R"(Usage: open [board]
-Description: Enters the board context. Subsequent select/create/delete/desc/clear act on BOARD.
+Description: Enters the board context. Subsequent select/write/create/delete/desc/clear act on BOARD.
 --------------------------------------------------------------------------
 Usage: open queue <queueName>
 Description: Enters the context of the specified queue. Subsequent desc/peek/last/clear/write act on it.
@@ -555,6 +675,24 @@ Description: Exits the tool.
 R"(Usage: select <tagName>
 Description: Selects the specified tag and displays its value and metadata.
 )"},
+		{Scope::Board, {"write"}, CmdBoardWrite,
+R"(Usage: write <tagName> [nopost] [zero] <value>
+       write <tagName> [nopost] [zero] <path>=<value> [<path>=<value> ...]
+Description: Writes a tag in BOARD. Unassigned parts keep their current value.
+             Subscribers are notified unless 'nopost' is given.
+             'zero' clears the tag before assigning (alone: writes all zeros).
+path:  member | member.sub | [i] | [i].member   (relative to the tag)
+value: scalar | "text" | [v0,v1,...] for arrays | {m0,m1,...} for structs
+Example: write temperature 25.5
+Example: write alarmMessage "motor overheat"
+Example: write sensorValues [1,2,3]        (other elements unchanged)
+Example: write sensorValues [4]=99
+Example: write sensor1 temperature=25 alarm=true
+Example: write vehicle1 {7, {31.2,121.5}}
+Example: write vehicle1 pos={31.2,121.5} history[1].latitude=30.5
+Example: write sensorarray [0].temperature=25 [2]={30,60,1.01,false,"Lab"}
+Example: write sensorarray zero [{1,2},{3,4}]
+)"},
 		{Scope::Board, {"delete"}, CmdDelete,
 R"(Usage: delete <tagName>
 Description: Deletes the specified tag from BOARD.
@@ -590,10 +728,13 @@ R"(Usage: write <field>=<value> [<field>=<value> ...]
 Description: Writes one record to the current queue; unassigned fields are zero.
              Subscribers of the queue are notified.
 field: name | name[i] | name.member | name[i].member
-Array fields without index take comma-separated values; quote values containing spaces.
+Array fields without index take a bracketed list: name=[v0,v1,...].
+Struct fields take member values in declaration order: name={m0,m1,...}.
+Omitted trailing values are zero; quote values containing spaces.
 Example: write temperature=25 humidity=60 pressure=1.013 alarm=true location="Room 1"
-Example: write speed=1.5,2,3 motor_name[0]=M1
-Example: write id=7 pos.latitude=31.2 history[1].longitude=121.5
+Example: write speed=[1.5, 2, 3] motor_name=[M1,M2] motor_name[2]=M3
+Example: write id=7 pos={31.2, 121.5} history=[{30.1,120.3},{30.5,120.8}] plate=AB123
+Example: write id=7 pos.latitude=31.2 history[1]={30.5,120.8} history[2].longitude=121.5
 )"},
 	};
 	return commands;

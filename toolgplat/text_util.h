@@ -36,13 +36,14 @@ inline std::string StripComment(const std::string& line)
 	return Trim(line.substr(0, line.find('#')));
 }
 
-// 按空白切分，忽略空段；双引号内的空白不切分，引号本身被去掉
+// 按空白切分，忽略空段；双引号、[] 或 {} 内的空白不切分，引号本身被去掉
 inline std::vector<std::string> SplitWords(const std::string& s)
 {
 	std::vector<std::string> words;
 	std::string word;
 	bool inWord = false;
 	bool quoted = false;
+	int bracketDepth = 0;
 	for (char c : s)
 	{
 		if (c == '"')
@@ -50,7 +51,7 @@ inline std::vector<std::string> SplitWords(const std::string& s)
 			quoted = !quoted;
 			inWord = true;
 		}
-		else if (!quoted && std::isspace((unsigned char)c))
+		else if (!quoted && bracketDepth == 0 && std::isspace((unsigned char)c))
 		{
 			if (inWord)
 				words.push_back(word);
@@ -59,6 +60,10 @@ inline std::vector<std::string> SplitWords(const std::string& s)
 		}
 		else
 		{
+			if (!quoted && (c == '[' || c == '{'))
+				bracketDepth++;
+			else if (!quoted && (c == ']' || c == '}') && bracketDepth > 0)
+				bracketDepth--;
 			word += c;
 			inWord = true;
 		}
