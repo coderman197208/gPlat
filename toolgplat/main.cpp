@@ -43,6 +43,7 @@ struct Session
 {
 	int conn = -1;
 	std::string host;
+	int port = kGplatPort;
 	Scope scope = Scope::Global;
 	QueueContext queue;
 	bool running = true;
@@ -173,23 +174,40 @@ void PrintQueueError(const std::string& action, const std::string& queueName, un
 }
 
 // ---- 全局命令 ----
-// ---- 全局命令 ----
 
-void CmdConnect(Session& session, const Words& words)
+bool ParsePort(const std::string& text, int& port)
 {
-	const std::string host = (words.size() > 1) ? words[1] : kDefaultHost;
-	int conn = connectgplat(host.c_str(), kGplatPort);
+	if (ParseInt(text, port) && port > 0 && port <= 65535)
+		return true;
+	std::cout << "Invalid port: " << text << std::endl;
+	return false;
+}
+
+bool Connect(Session& session, const std::string& host, int port)
+{
+	int conn = connectgplat(host.c_str(), port);
 	if (conn <= 0)
 	{
-		std::cout << "无法连接到" << host << "." << std::endl;
-		return;
+		std::cout << "无法连接到" << host << ":" << port << "." << std::endl;
+		return false;
 	}
 
 	if (session.IsConnected())
 		disconnectgplat(session.conn);
 	session.conn = conn;
 	session.host = host;
+	session.port = port;
 	session.scope = Scope::Global;
+	return true;
+}
+
+void CmdConnect(Session& session, const Words& words)
+{
+	const std::string host = (words.size() > 1) ? words[1] : kDefaultHost;
+	int port = kGplatPort;
+	if (words.size() > 2 && !ParsePort(words[2], port))
+		return;
+	Connect(session, host, port);
 }
 
 std::string ReadQueueTypeName(int conn, const std::string& queueName)
@@ -382,7 +400,7 @@ void CmdSelect(Session& session, const Words& words)
 void CmdMonitor(Session& session, const Words& words)
 {
 	if (RequireWords(words, 2))
-		MonitorTags(session.conn, session.host, kGplatPort, Words(words.begin() + 1, words.end()));
+		MonitorTags(session.conn, session.host, session.port, Words(words.begin() + 1, words.end()));
 }
 
 void CmdDelete(Session& session, const Words& words)
@@ -605,8 +623,8 @@ const std::vector<Command>& GetCommands()
 {
 	static const std::vector<Command> commands = {
 		{Scope::Global, {"conn", "connect"}, CmdConnect,
-R"(Usage: conn [host]
-Description: Connects to the gPlat server (default 127.0.0.1).
+R"(Usage: conn [host] [port]
+Description: Connects to the gPlat server (default 127.0.0.1:8777).
 )"},
 		{Scope::Global, {"open", "openb"}, CmdOpen,
 R"(Usage: open [board]
@@ -837,11 +855,24 @@ char** Complete(const char* text, int start, int)
 
 } // namespace
 
-int main()
+int main(int argc, char* argv[])
 {
+	if (argc > 3)
+	{
+		std::cout << "Usage: toolgplat [host] [port]" << std::endl;
+		return 1;
+	}
+	const std::string host = (argc > 1) ? argv[1] : kDefaultHost;
+	int port = kGplatPort;
+	if (argc > 2 && !ParsePort(argv[2], port))
+		return 1;
+
 	Session session;
 	g_session = &session;
 	rl_attempted_completion_function = Complete;
+
+	if (Connect(session, host, port))
+		session.scope = Scope::Board;
 
 	char* line;
 	while (session.running && (line = readline(session.Prompt().c_str())) != nullptr)
