@@ -84,18 +84,20 @@
     <ClCompile Include="creation.cpp" />
     <ClCompile Include="display.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="monitor.cpp" />
     <ClCompile Include="record_input.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="creation.h" />
     <ClInclude Include="display.h" />
+    <ClInclude Include="monitor.h" />
     <ClInclude Include="record_input.h" />
     <ClInclude Include="text_util.h" />
     <ClInclude Include="type_handle.h" />
   </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Link>
-      <LibraryDependencies>higplat;readline</LibraryDependencies>
+      <LibraryDependencies>higplat;readline;pthread</LibraryDependencies>
       <AdditionalLibraryDirectories>D:\Program\Linux\gPlat\lib;%(Link.AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <ClCompile>

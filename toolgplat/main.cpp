@@ -15,6 +15,7 @@
 #include "../include/higplat.h"
 #include "creation.h"
 #include "display.h"
+#include "monitor.h"
 #include "record_input.h"
 #include "text_util.h"
 #include "type_handle.h"
@@ -378,6 +379,12 @@ void CmdSelect(Session& session, const Words& words)
 		PrintTag(session.conn, words[1]);
 }
 
+void CmdMonitor(Session& session, const Words& words)
+{
+	if (RequireWords(words, 2))
+		MonitorTags(session.conn, session.host, kGplatPort, Words(words.begin() + 1, words.end()));
+}
+
 void CmdDelete(Session& session, const Words& words)
 {
 	if (!RequireWords(words, 2))
@@ -413,24 +420,6 @@ void CmdBoardClear(Session& session, const Words& words)
 		std::cout << "Board cleared." << std::endl;
 	else
 		std::cout << "Clear board failed, error code " << err << "." << std::endl;
-}
-
-bool ReadTagType(int conn, const std::string& tagName, TypeDescriptorHeader& header, std::string& className)
-{
-	char descriptor[kTypeDescriptorBufferSize];
-	int size = 0;
-	unsigned int err = 0;
-	if (!readtype(conn, kBoardName, tagName.c_str(), descriptor, sizeof(descriptor), &size, &err))
-	{
-		std::cout << "Read type of tag '" << tagName << "' failed, error code " << err << "." << std::endl;
-		return false;
-	}
-	if (!ParseTypeDescriptor(descriptor, std::min(size, (int)sizeof(descriptor)), header, className))
-	{
-		std::cout << "Invalid type descriptor of tag '" << tagName << "'." << std::endl;
-		return false;
-	}
-	return true;
 }
 
 // 按 tag 的类型描述符构造覆盖整个 tag 的 FieldInfo，类型不可用时返回 false
@@ -621,7 +610,7 @@ Description: Connects to the gPlat server (default 127.0.0.1).
 )"},
 		{Scope::Global, {"open", "openb"}, CmdOpen,
 R"(Usage: open [board]
-Description: Enters the board context. Subsequent select/write/create/delete/desc/clear act on BOARD.
+Description: Enters the board context. Subsequent select/monitor/write/create/delete/desc/clear act on BOARD.
 --------------------------------------------------------------------------
 Usage: open queue <queueName>
 Description: Enters the context of the specified queue. Subsequent desc/peek/last/clear/write act on it.
@@ -674,6 +663,14 @@ Description: Exits the tool.
 		{Scope::Board, {"select"}, CmdSelect,
 R"(Usage: select <tagName>
 Description: Selects the specified tag and displays its value and metadata.
+)"},
+		{Scope::Board, {"monitor"}, CmdMonitor,
+R"(Usage: monitor <tagName> [tagName ...]
+Description: Shows the current value of the tags, then displays every new value
+             published by the server (writes with 'nopost' are not shown).
+             Press 'q' to stop monitoring.
+Example: monitor temperature
+Example: monitor temperature sensor1 alarmMessage
 )"},
 		{Scope::Board, {"write"}, CmdBoardWrite,
 R"(Usage: write <tagName> [nopost] [zero] <value>

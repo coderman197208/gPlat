@@ -100,23 +100,65 @@ bool ReadTagData(int conn, const std::string& tagName, std::vector<char>& data, 
 	return false;
 }
 
-void PrintSimpleTag(int conn, const std::string& tagName, int typecode, int count)
+const TypeInfo* FindPrintableType(int typecode)
 {
 	const TypeInfo* type = FindTypeByCode(typecode);
-	if (!type || !type->print || type->size == 0)
+	if (type && type->print && type->size > 0)
+		return type;
+	std::cout << "Unknown type code " << typecode << "." << std::endl;
+	return nullptr;
+}
+
+const StructInfo* FindLocalStruct(const std::string& className)
+{
+	const StructInfo* info = FindStructByName(className);
+	if (!info)
+		std::cout << "Custom type '" << className << "' not found in local registry." << std::endl;
+	return info;
+}
+
+void PrintSimpleValue(const TypeInfo& type, const char* data, int count)
+{
+	std::cout << "value: ";
+	PrintElements(std::cout, type, data, type.size, count);
+	std::cout << std::endl;
+}
+
+void PrintStringValue(const char* text, size_t length)
+{
+	std::cout << "字符串长度:" << length << std::endl;
+	std::cout << "字符串内容:" << std::string(text, length) << std::endl;
+}
+
+void PrintStructValue(const StructInfo& info, const char* data, int count)
+{
+	for (int i = 0; i < count; i++)
 	{
-		std::cout << "Unknown type code " << typecode << "." << std::endl;
-		return;
+		if (count > 1)
+			std::cout << "[" << i << "]" << std::endl;
+		PrintFields(info, data + i * info.total_size, 2);
 	}
+}
+
+void PrintRaw(const char* data, int size)
+{
+	std::cout << "raw: ";
+	PrintHex(std::cout, data, size);
+	std::cout << std::endl;
+}
+
+void PrintSimpleTag(int conn, const std::string& tagName, int typecode, int count)
+{
+	const TypeInfo* type = FindPrintableType(typecode);
+	if (!type)
+		return;
 
 	std::vector<char> data(type->size * count);
 	timespec timestamp{};
 	if (!ReadTagData(conn, tagName, data, timestamp))
 		return;
 
-	std::cout << "value: ";
-	PrintElements(std::cout, *type, data.data(), type->size, count);
-	std::cout << std::endl;
+	PrintSimpleValue(*type, data.data(), count);
 	PrintWriteTime(timestamp);
 }
 
@@ -131,31 +173,22 @@ void PrintStringTag(int conn, const std::string& tagName, int capacity)
 		return;
 	}
 
-	std::cout << "字符串长度:" << strlen(text.data()) << std::endl;
-	std::cout << "字符串内容:" << text.data() << std::endl;
+	PrintStringValue(text.data(), strlen(text.data()));
 	PrintWriteTime(timestamp);
 }
 
 void PrintStructTag(int conn, const std::string& tagName, const std::string& className, int count)
 {
-	const StructInfo* info = FindStructByName(className);
+	const StructInfo* info = FindLocalStruct(className);
 	if (!info)
-	{
-		std::cout << "Custom type '" << className << "' not found in local registry." << std::endl;
 		return;
-	}
 
 	std::vector<char> data(info->total_size * count);
 	timespec timestamp{};
 	if (!ReadTagData(conn, tagName, data, timestamp))
 		return;
 
-	for (int i = 0; i < count; i++)
-	{
-		if (count > 1)
-			std::cout << "[" << i << "]" << std::endl;
-		PrintFields(*info, data.data() + i * info->total_size, 2);
-	}
+	PrintStructValue(*info, data.data(), count);
 	PrintWriteTime(timestamp);
 }
 
@@ -181,24 +214,52 @@ std::string FixedString(const char* text, size_t capacity)
 
 } // namespace
 
-void PrintTag(int conn, const std::string& tagName)
+bool ReadTagType(int conn, const std::string& tagName, TypeDescriptorHeader& header, std::string& className)
 {
 	char descriptor[kTypeDescriptorBufferSize];
-	int descriptorSize = 0;
+	int size = 0;
 	unsigned int err = 0;
-	if (!readtype(conn, "BOARD", tagName.c_str(), descriptor, sizeof(descriptor), &descriptorSize, &err))
+	if (!readtype(conn, "BOARD", tagName.c_str(), descriptor, sizeof(descriptor), &size, &err))
 	{
 		std::cout << "Read type of tag '" << tagName << "' failed, error code " << err << "." << std::endl;
+		return false;
+	}
+	if (!ParseTypeDescriptor(descriptor, std::min(size, (int)sizeof(descriptor)), header, className))
+	{
+		std::cout << "Invalid type descriptor of tag '" << tagName << "'." << std::endl;
+		return false;
+	}
+	return true;
+}
+
+void PrintTagData(const TypeDescriptorHeader& header, const std::string& className, const char* data, int size)
+{
+	if (header.typecode == Char && header.arraysize > 0)
+	{
+		PrintStringValue(data, strnlen(data, size));
 		return;
 	}
 
+	const int count = (header.arraysize > 0) ? header.arraysize : 1;
+	const StructInfo* info = nullptr;
+	const TypeInfo* type = nullptr;
+	if (header.typecode == kStructTypeCode)
+		info = FindLocalStruct(className);
+	else
+		type = FindPrintableType(header.typecode);
+
+	if (info)
+		PrintStructValue(*info, data, count);
+	else if (type)
+		PrintSimpleValue(*type, data, count);
+}
+
+void PrintTag(int conn, const std::string& tagName)
+{
 	TypeDescriptorHeader header;
 	std::string className;
-	if (!ParseTypeDescriptor(descriptor, std::min(descriptorSize, (int)sizeof(descriptor)), header, className))
-	{
-		std::cout << "Invalid type descriptor of tag '" << tagName << "'." << std::endl;
+	if (!ReadTagType(conn, tagName, header, className))
 		return;
-	}
 	const int count = (header.arraysize > 0) ? header.arraysize : 1;
 
 	if (header.typecode == kStructTypeCode)
@@ -273,15 +334,9 @@ void PrintQueueInfo(const std::string& queueName, const QUEUE_HEAD& head, const 
 void PrintQueueRecord(const RECORD_HEAD& recordHead, const StructInfo* type, const char* data, int size)
 {
 	if (type)
-	{
 		PrintFields(*type, data, 2);
-	}
 	else
-	{
-		std::cout << "raw: ";
-		PrintHex(std::cout, data, size);
-		std::cout << std::endl;
-	}
+		PrintRaw(data, size);
 	std::cout << "-------------------------------------" << std::endl;
 	std::cout << "write time: " << FixedString(recordHead.createDate, sizeof(recordHead.createDate))
 		<< ", from " << FixedString(recordHead.remoteIp, sizeof(recordHead.remoteIp)) << std::endl;

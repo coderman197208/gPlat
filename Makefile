@@ -79,7 +79,7 @@ TOOLGPLAT_SRCS := $(wildcard $(TOOLGPLAT_DIR)/*.cpp)
 TOOLGPLAT_OBJS := $(patsubst $(TOOLGPLAT_DIR)/%.cpp, $(BUILD_DIR)/$(TOOLGPLAT_DIR)/%.o, $(TOOLGPLAT_SRCS))
 TOOLGPLAT_BIN := $(BIN_DIR)/toolgplat
 TOOLGPLAT_INCLUDES := -Iinclude
-TOOLGPLAT_LDFLAGS := -lreadline -L$(LIB_DIR) -lhigplat -Wl,-rpath,'$$ORIGIN/../lib'
+TOOLGPLAT_LDFLAGS := -lreadline -lpthread -L$(LIB_DIR) -lhigplat -Wl,-rpath,'$$ORIGIN/../lib'
 
 # --- Module: testapp (Tool) ---
 TESTAPP_DIR := testapp
