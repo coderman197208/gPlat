@@ -8,7 +8,7 @@
 #include <thread>
 #include <vector>
 
-#include "../include/higplat.h"
+#include "../include/gplat_connection.h"
 #include "../include/user_types.h"
 
 static const char* SERVER_IP = "127.0.0.1";
@@ -96,7 +96,7 @@ static bool requestOnce(int conn, int id)
 	Request req = makeRequest(id);
 	Response rsp{};
 	unsigned int error = 0;
-	bool ok = getresponse(conn, REQ_TAG, &req, sizeof(req), RSP_TAG, &rsp, sizeof(rsp), &error);
+	bool ok = getresponse(conn, REQ_TAG, &req, sizeof(req), RSP_TAG, &rsp, sizeof(rsp), &error, 2000);
 	CHECK(ok, "getresponse id=%d failed, error=%u", id, error);
 	if (!ok)
 	{
@@ -125,15 +125,17 @@ static void responderThread()
 	g_responderReady = true;
 
 	char buf[4096];
+	char name[GPLAT_TAGNAME_SIZE];
 	std::string tag;
 	while (g_running)
 	{
-		if (!waitpostdata(conn, tag, buf, sizeof(buf), 200, &error))
+		if (!waitpostdata(conn, name, sizeof(name), buf, sizeof(buf), 200, &error))
 		{
 			printf("responder waitpostdata failed, error=%u\n", error);
 			g_failures++;
 			break;
 		}
+		tag = name;
 		if (tag == "WAIT_TIMEOUT")
 		{
 			continue;
@@ -160,7 +162,7 @@ static void responderThread()
 			// 处理期间请求 tag 不应被其它同名请求覆盖（验证串行化）
 			std::this_thread::sleep_for(std::chrono::milliseconds(2));
 			Request current{};
-			readb(conn, REQ_TAG, &current, sizeof(current), &error);
+			readb(conn, REQ_TAG, &current, sizeof(current), &error, nullptr);
 			CHECK(current.id == req.id, "request overwritten while processing: got %d, now %d", req.id, current.id);
 
 			writeb(conn, RSP_TAG, &rsp, sizeof(rsp), &error);
@@ -208,8 +210,9 @@ static void testPendingEvents()
 	}
 
 	char buf[256];
-	std::string tag;
-	bool ok = waitpostdata(conn, tag, buf, sizeof(buf), 1000, &error);
+	char name[GPLAT_TAGNAME_SIZE];
+	bool ok = waitpostdata(conn, name, sizeof(name), buf, sizeof(buf), 1000, &error);
+	std::string tag(name);
 	CHECK(ok && tag == "timer_500ms", "queued event not received after getresponse, tag=%s error=%u", tag.c_str(), error);
 	disconnectgplat(conn);
 }

@@ -93,7 +93,7 @@ int main()
 		for (j = 0; j < 100; j++)
 		{
 			sprintf(tagname[j], "tagint%02d_10", j);
-			ret = readb(h, tagname[j], &value, sizeof(int), &err);
+			ret = readb(h, tagname[j], &value, sizeof(int), &err, nullptr);
 			assert(ret);
 
 			if (value != 0) break;

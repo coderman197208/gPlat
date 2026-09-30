@@ -57,7 +57,7 @@ int main(int argc, char* argv[])
 		return 0;
 	}
 
-	if (CreateQ(lpname, size, number, type, mode))
+	if (CreateQ(lpname, size, number, type, mode, nullptr, 0))
 	{
 		printf("Queue \'%s\' created successfully!\n", lpname);
 		printf("size = %d, number = %d\n", size, number);

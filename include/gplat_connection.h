@@ -1,15 +1,40 @@
 #if !defined(GPLAT_CONNECTION_H_INCLUDED_)
 #define GPLAT_CONNECTION_H_INCLUDED_
 
+#include <cstring>
 #include <ctime>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "higplat.h"
 
-// C++ wrapper of the gPlat network API.
-// Header-only on purpose: libhigplat.so keeps exporting only the extern "C" API, so this class adds no ABI surface.
-// Methods return the error code (0 = success). Not thread-safe: use one connection per thread.
+template<typename T, typename CharT>
+T read_value(CharT* buffer) {
+	static_assert(std::is_same_v<std::remove_cv_t<CharT>, char>, "buffer must be char*");
+
+	if constexpr (std::is_same_v<T, std::string>) {
+		return std::string(buffer);
+	}
+	else if constexpr (std::is_same_v<T, const char*>) {
+		return buffer;
+	}
+	else if constexpr (std::is_same_v<T, char*>) {
+		static_assert(!std::is_const_v<CharT>, "cannot return char* from const char*");
+		return buffer;
+	}
+	else {
+		static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
+		T result{};
+		std::memcpy(&result, buffer, sizeof(T));
+		return result;
+	}
+}
+
+// C++ wrapper of the gPlat network API (higplat.h is the pure C interface of libhigplat.so).
+// Header-only on purpose: std::string and exceptions stay in the caller's translation unit, so no C++ ABI crosses the library boundary.
+// Methods return the error code (0 = success) and throw std::runtime_error on Fatal-level codes. Not thread-safe: use one connection per thread.
 class GplatConnection
 {
 public:
@@ -111,9 +136,11 @@ public:
 
 	[[nodiscard]] unsigned int readb_string(const std::string& tagname, std::string& value, timespec* timestamp = nullptr)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
-			return ::readb_string2(fd, tagname.c_str(), value, err, timestamp);
-		});
+		std::string buffer(GPLAT_MAX_DATA_SIZE, '\0');
+		unsigned int error = readb_string(tagname, &buffer[0], (int)buffer.size(), timestamp);
+		if (error == 0)
+			value.assign(buffer.c_str());
+		return error;
 	}
 
 	[[nodiscard]] unsigned int writeb_string(const std::string& tagname, const char* value)
@@ -125,9 +152,7 @@ public:
 
 	[[nodiscard]] unsigned int writeb_string(const std::string& tagname, const std::string& value)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
-			return ::writeb_string2(fd, tagname.c_str(), value, err);
-		});
+		return writeb_string(tagname, value.c_str());
 	}
 
 	[[nodiscard]] unsigned int writeb_string_notpost(const std::string& tagname, const char* value)
@@ -160,9 +185,12 @@ public:
 	// On timeout returns ERROR_WAIT_TIMEOUT and sets tagname to "WAIT_TIMEOUT".
 	[[nodiscard]] unsigned int waitpostdata(std::string& tagname, void* value, int buffersize, int timeout)
 	{
-		return call(CloseRule::AnyServerError, [&](int fd, unsigned int* err) {
-			return ::waitpostdata(fd, tagname, value, buffersize, timeout, err);
+		char name[GPLAT_TAGNAME_SIZE] = {};
+		unsigned int error = call(CloseRule::AnyServerError, [&](int fd, unsigned int* err) {
+			return ::waitpostdata(fd, name, sizeof(name), value, buffersize, timeout, err);
 		});
+		tagname = name;
+		return error;
 	}
 
 	// ---- Request/Response ----
@@ -179,7 +207,7 @@ public:
 	[[nodiscard]] unsigned int write_plc_string(const std::string& tagname, const std::string& str)
 	{
 		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
-			return ::write_plc_string(fd, tagname.c_str(), str, err);
+			return ::write_plc_string(fd, tagname.c_str(), str.c_str(), err);
 		});
 	}
 
@@ -259,21 +287,16 @@ private:
 			return ERROR_SOCKET_NOT_CONNECTED;
 
 		unsigned int error = 0;
-		bool ok = false;
-		try {
-			ok = f(m_sockfd, &error);
-		}
-		catch (...) {
-			// libhigplat throws on fatal error codes after it may have closed the socket
-			if (error != 0 && closed_by_library(rule, error))
-				m_sockfd = -1;
-			throw;
-		}
+		bool ok = f(m_sockfd, &error);
+		if (!ok && closed_by_library(rule, error))
+			m_sockfd = -1;
+
+		const char* message = nullptr;
+		if (error != 0 && ::IsFatalError(error, &message))
+			throw std::runtime_error(std::string(message) + " (Code: " + std::to_string(error) + ")");
 
 		if (ok)
 			return error;	// non-zero only for waitpostdata timeout
-		if (closed_by_library(rule, error))
-			m_sockfd = -1;
 		return error != 0 ? error : ERROR_SOCKET_NOT_CONNECTED;
 	}
 

@@ -126,12 +126,12 @@ unsigned int TestThreadProc1(void* pParam)
 
 	TagBigData tagBigData2;
 	tagBigData2.b = -1;
-	ret = readb(h, "TagBigData1", &tagBigData2, sizeof(TagBigData), &err);
+	ret = readb(h, "TagBigData1", &tagBigData2, sizeof(TagBigData), &err, nullptr);
 	assert(ret);
 	assert(tagBigData1.b == tagBigData2.b);
 
 	char buffer[10001]{};	//读的时候要多一个字符空间，用于存放字符串结束符
-	ret = readb_string(h, "string1", buffer, 10001, &err);
+	ret = readb_string(h, "string1", buffer, 10001, &err, nullptr);
 	assert(ret);
 	string str2(buffer);
 	assert(str1 == str2);
@@ -170,7 +170,7 @@ void DataChangedHandler(string& eventname, void* pdata, int datasize)
 	sprintf(tagname + 9, "%02d", subfix);
 
 	int oldvalue;
-	ret = readb(serverHandle, tagname, &oldvalue, sizeof(int), &err);
+	ret = readb(serverHandle, tagname, &oldvalue, sizeof(int), &err, nullptr);
 	assert(ret);
 	if (newvalue - oldvalue != 1)
 	{
@@ -202,7 +202,9 @@ unsigned int TestThreadProc2(void* pParam)
 	{
 		char pdata[4096];
 		int  buffsize = 4096;
-		waitpostdata(serverHandle, eventname, pdata, buffsize, 500, &errorcode);
+		char name[GPLAT_TAGNAME_SIZE];
+		waitpostdata(serverHandle, name, sizeof(name), pdata, buffsize, 500, &errorcode);
+		eventname = name;
 		if (eventname == "WAIT_TIMEOUT")
 		{
 			//可以在这里执行周期类任务、控制线程退出等等

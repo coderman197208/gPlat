@@ -33,7 +33,7 @@ Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `
 1. Append enum value to `MSGID`
 2. Implement handler in `gplat/ngx_c_slogic.cxx`
 3. Register in `statusHandler[]` at the matching index
-4. Add client API in `higplat/higplat.cpp`, declare in `include/higplat.h`
+4. Add client API in `higplat/higplat.cpp`, declare in `include/higplat.h` (C types only, no default args, must not throw); optionally wrap in `include/gplat_connection.h`
 
 ## Struct Reflection (Board tags with typed display in toolgplat)
 
@@ -47,20 +47,22 @@ Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `
 - Shared write thread: subscribes tags, `waitpostdata()`, writes back to PLC via Snap7
 - INI config: `[general]` (gPlat connection) + per-PLC sections with tag mappings (sample: `Doc/s7ioserver.ini`)
 
-## Network API (`extern "C"` in `include/higplat.h`, blocking TCP)
+## Network API (pure C header `include/higplat.h`, blocking TCP)
+
+`higplat.h` compiles as C99+ and C++ (`extern "C"` block under `__cplusplus`): C types only, no default args/templates/`std::string`, never throws (null `error` → return false; Fatal codes are logged only). `higplat/qbd.h` includes it, so `higplat.cpp` definitions are checked against the declarations. Constants `GPLAT_MAX_DATA_SIZE` (=MAXMSGLEN), `GPLAT_TAGNAME_SIZE` (=40, static_assert'ed); `IsFatalError(error, &msg)`.
 
 - Connection: `connectgplat(server, port)` → fd (2s timeout, TCP_NODELAY), `disconnectgplat`
 - Queue: `readq`, `writeq`, `clearq`, `createqueue`, `readhead` (QUEUE_HEAD), `peekq` (non-consuming, `PEEK_NEXT`/`PEEK_LATEST`), `listq` (loaded queue names)
-- Board: `readb` (optional timestamp), `writeb`, `writeb_notpost`, `readb_string`/`readb_string2` (std::string), `writeb_string`/`writeb_string2`, `createtag` (optional type descriptor), `deletetag`, `clearb`, `readtype`, `readboardinfo`, `listtags` (paged `TAG_META` + name + type descriptor; pass `*next` until -1)
-- Pub/Sub: `subscribe` (DEFAULT), `subscribedelaypost` (POST_DELAY), `waitpostdata` (tagname `"WAIT_TIMEOUT"` on timeout)
-- Request/Response: `getresponse(sockfd, request_tag, req, req_size, response_tag, rsp, rsp_size, &error, timeout_ms=2000)` — server serializes per request_tag; errors `ERROR_RESPONSE_TIMEOUT`, `ERROR_REQUEST_QUEUE_FULL`
-- PLC: `write_plc_{string,bool,short,ushort,int,uint,float}`, `registertag`
+- Board: `readb` (timestamp may be NULL), `writeb`, `writeb_notpost`, `readb_string`, `writeb_string`, `writeb_string_notpost`, `createtag` (optional type descriptor), `deletetag`, `clearb`, `readtype`, `readboardinfo`, `listtags` (paged `TAG_META` + name + type descriptor; pass `*next` until -1)
+- Pub/Sub: `subscribe` (DEFAULT), `subscribedelaypost` (POST_DELAY), `waitpostdata(sockfd, char* tagname, tagnamesize >= GPLAT_TAGNAME_SIZE, ...)` (tagname `"WAIT_TIMEOUT"` on timeout)
+- Request/Response: `getresponse(sockfd, request_tag, req, req_size, response_tag, rsp, rsp_size, &error, timeout_ms)` — server serializes per request_tag; errors `ERROR_RESPONSE_TIMEOUT`, `ERROR_REQUEST_QUEUE_FULL`
+- PLC: `write_plc_{string(const char*),bool,short,ushort,int,uint,float}`, `registertag`
 
 Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 
 ## C++ Wrapper (`include/gplat_connection.h`)
 
-`GplatConnection(server, port)`: header-only inline wrapper over the network API (no C++ symbols exported from `libhigplat.so`). `open()`/`close()`/`is_open()`; methods drop `sockfd`, return the error code (`[[nodiscard]] unsigned int`, 0 = ok), take `const std::string&` names; `readb_string`/`writeb_string` overloads replace the `*2` variants. Not open → `ERROR_SOCKET_NOT_CONNECTED`, no auto-reconnect. Because C functions `close(sockfd)` internally on I/O/protocol errors, `call()` marks the fd closed by error-code heuristics (`closed_by_library`); Fatal-level exceptions pass through after that update. Non-copyable, movable, not thread-safe.
+`GplatConnection(server, port)`: header-only C++ layer over `higplat.h` (all C++ features — `std::string`, exceptions, default args, `=delete` overloads, `read_value<T>` — live here, in the caller's TU). `open()`/`close()`/`is_open()`; methods drop `sockfd`, return the error code (`[[nodiscard]] unsigned int`, 0 = ok), take `const std::string&` names; `std::string` overloads of `readb_string`/`writeb_string`/`waitpostdata`. Not open → `ERROR_SOCKET_NOT_CONNECTED`, no auto-reconnect. Because C functions `close(sockfd)` internally on I/O/protocol errors, `call()` marks the fd closed by error-code heuristics (`closed_by_library`), then throws `std::runtime_error` if `IsFatalError(error)`. Non-copyable, movable, not thread-safe.
 
 ## Local API (direct mmap on QBD files, `higplat/higplat.cpp`)
 

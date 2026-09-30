@@ -333,9 +333,10 @@ void threadWritePlc(AppConfig* config) {
     unsigned int err = 0;
     while (g_running && conn > 0) {
         char value[1024] = {0};
-        std::string tagname;
+        char name[GPLAT_TAGNAME_SIZE] = {0};
 
-        bool ret = waitpostdata(conn, tagname, value, 1024, -1, &err);
+        bool ret = waitpostdata(conn, name, sizeof(name), value, 1024, -1, &err);
+        std::string tagname(name);
 
         if (!ret) {
             s7log_warn("[write] waitpostdata failed, error = %u, reconnecting gPlat...", err);

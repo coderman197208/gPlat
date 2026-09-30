@@ -551,7 +551,7 @@ void CmdBoardWrite(Session& session, const Words& words)
 	}
 
 	std::vector<char> data(field.size, 0);
-	if (!zero && !readb(session.conn, tagName.c_str(), data.data(), (int)data.size(), &err))
+	if (!zero && !readb(session.conn, tagName.c_str(), data.data(), (int)data.size(), &err, nullptr))
 	{
 		std::cout << "Read tag '" << tagName << "' failed, error code " << err << "." << std::endl;
 		return;

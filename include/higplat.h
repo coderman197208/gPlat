@@ -1,9 +1,8 @@
 ﻿#if !defined(HIGPLAT_H_INCLUDED_)
 #define HIGPLAT_H_INCLUDED_
 
-#include <cstring>
-#include <string>
-#include <type_traits>
+#include <stdbool.h>
+#include <time.h>
 
 #define MY_ERR_OFFSET    1000
 #define ERROR_DQFILE_NOT_FOUND			(MY_ERR_OFFSET + 1)
@@ -54,7 +53,7 @@
 
 #pragma pack( push, enter_qbdtype_h_, 8)
 
-struct QUEUE_HEAD
+typedef struct QUEUE_HEAD
 {
 	int  qbdtype;
 	int  dataType;			// 数据队列的类型，1为ASCII型；0为BINARY型
@@ -66,31 +65,31 @@ struct QUEUE_HEAD
 	char createDate[20];	// 创建日期
 	int  typesize;			// 类型序列化长度
 	int  reserved;
-};
+} QUEUE_HEAD;
 
-struct RECORD_HEAD
+typedef struct RECORD_HEAD
 {
 	char createDate[20];
 	char remoteIp[16];
 	int  ack;				// 确认标志 0未确认1已确认
 	int  index;				// 位置索引（0开始）
 	int  reserve;			// 预留
-};
+} RECORD_HEAD;
 
-struct BOARD_INFO
+typedef struct BOARD_INFO
 {
 	int    totalsize;
 	int    remainsize;
 	int    tagcount_head;
 	int    tagcount_act;
-};
+} BOARD_INFO;
 
 // listtags/ListTags 输出的每条记录：TAG_META + 以 '\0' 结尾的 tag 名 + typesize 字节的类型描述符（不对齐）
-struct TAG_META
+typedef struct TAG_META
 {
 	int    itemsize;
 	int    typesize;
-};
+} TAG_META;
 
 #pragma pack( pop, enter_qbdtype_h_ )
 
@@ -103,116 +102,82 @@ struct TAG_META
 #define PEEK_NEXT		0	// readq 下一次将返回的记录
 #define PEEK_LATEST		1	// 最近一次写入的记录
 
-extern "C" int  connectgplat(const char* server, int port);
-extern "C" void disconnectgplat(int sockfd);
-extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error);
-extern "C" bool writeq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error);
-extern "C" bool clearq(int sockfd, const char* qname, unsigned int* error);
-extern "C" bool readhead(int sockfd, const char* qname, QUEUE_HEAD* head, unsigned int* error);
-extern "C" bool peekq(int sockfd, const char* qname, int position, void* record, int actsize, RECORD_HEAD* recordhead, unsigned int* error);
-extern "C" bool listq(int sockfd, char* names, int buffsize, int* count, unsigned int* error);
-extern "C" bool listtags(int sockfd, int start, char* buff, int buffsize, int* bytes, int* count, int* next, unsigned int* error);
-extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error, timespec* timestamp = 0);
-extern "C" bool writeb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error);
-extern "C" bool writeb_notpost(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error);
-extern "C" bool subscribe(int sockfd, const char* tagname, unsigned int* error);
-extern "C" bool subscribedelaypost(int sockfd, const char* tagname, const char* eventname, int delaytime, unsigned int* error);
-extern "C" bool createtag(int sockfd, const char* tagname, int tagsize, void* type, int typesize, unsigned int* error);
-extern "C" bool deletetag(int sockfd, const char* tagname, unsigned int* error);
-extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int buffersize, int timeout, unsigned int* error);
-extern "C" bool readb_string(int sockfd, const char* tagname, char* value, int buffersize, unsigned int* error, timespec*timestamp=0);
-extern "C" bool writeb_string(int sockfd, const char* tagname, const char* value, unsigned int* error);
-extern "C" bool writeb_string_notpost(int sockfd, const char* tagname, const char* value, unsigned int* error);
-extern "C" bool readb_string2(int sockfd, const char* tagname, std::string& value, unsigned int* error, timespec* timestamp = 0);
-extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string value, unsigned int* error);
-extern "C" bool readtype(int sockfd, const char* qbdname, const char* tagname, void* inbuff, int buffsize, int* ptypesize, unsigned int* error);
-extern "C" bool clearb(int sockfd, unsigned int* error);
-extern "C" bool readboardinfo(int sockfd, void* info, int infosize, unsigned int* error);
-extern "C" bool createqueue(int sockfd, const char* queuename, int recordsize, int recordnum, int operatemode, void* type, int typesize, unsigned int* error);
-extern "C" bool getresponse(int sockfd, const char* request_tag, void* request_value, int request_size, const char* response_tag, void* response_value, int response_size, unsigned int* error, int timeout_ms = 2000);
+#define GPLAT_MAX_DATA_SIZE	16384	// 单次读写数据的最大长度
+#define GPLAT_TAGNAME_SIZE	40		// tag 名缓冲区长度（含 '\0'）
 
-extern "C" bool write_plc_string(int sockfd, const char* tagname, std::string str, unsigned int* error);
-extern "C" bool write_plc_bool(int sockfd, const char* tagname, bool value, unsigned int* error);
-template<typename T> bool write_plc_bool(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
-extern "C" bool write_plc_short(int sockfd, const char* tagname, short value, unsigned int* error);
-template<typename T> bool write_plc_short(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
-extern "C" bool write_plc_ushort(int sockfd, const char* tagname, unsigned short value, unsigned int* error);
-template<typename T> bool write_plc_ushort(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
-extern "C" bool write_plc_int(int sockfd, const char* tagname, int value, unsigned int* error);
-template<typename T> bool write_plc_int(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
-extern "C" bool write_plc_uint(int sockfd, const char* tagname, unsigned int value, unsigned int* error);
-template<typename T> bool write_plc_uint(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
-extern "C" bool write_plc_float(int sockfd, const char* tagname, float value, unsigned int* error);
-template<typename T> bool write_plc_float(int sockfd, const char* tagname, T value, unsigned int* error) = delete;
-extern "C" bool registertag(int sockfd, const char* tagname, unsigned int* error);
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-extern "C" bool CreateB(const char* lpFileName, int size);
-extern "C" bool CreateItem(const char* lpBoardName, const char* lpItemName, int itemSize, void* pType = 0, int typeSize = 0);
-extern "C" bool DeleteItem(const char* lpBoardName, const char* lpItemName);
-extern "C" bool CreateQ(const char* lpFileName, int recordSize, int recordNum, int dateType, int operateMode, void* pType = 0, int typeSize = 0);
-extern "C" bool CreateAndLoadQ(const char* lpFileName, int recordSize, int recordNum, int dataType, int operateMode, void* pType, int typeSize);
-extern "C" bool LoadQ(const char* lpDqName );
-extern "C" void SetQbdPath(const char* path);
-extern "C" bool ReadQ(const char* lpDqName, void  *lpRecord, int actSize, char* remoteIp=0 );
-extern "C" bool WriteQ(const char* lpDqName, void  *lpRecord, int actSize=0, const char* remoteIp=0 );
-extern "C" bool ClearQ(const char* lpDqName );
-extern "C" bool ReadHead(const char* lpDqName, void* lpHead);
-extern "C" bool PeekQRecord(const char* lpDqName, int position, void* lpRecord, int actSize, RECORD_HEAD* lpRecordHead);
-extern "C" bool ListQ(char* names, int buffSize, int* namesSize, int* count);
-extern "C" bool ReadB(const char* lpBoardName, const char* lpItemName, void* lpItem, int actSize, timespec* timestamp = 0);
-extern "C" bool ReadB_String(const char* lpBulletinName, const char* lpItemName, void*lpItem, int actSize, timespec*timestamp=0);
-extern "C" bool ReadB_String2(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, int& strLength, timespec* timestamp);
-extern "C" bool WriteB(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, void* lpSubItem = 0, int actSubSize = 0);
-extern "C" bool WriteB_String(const char* lpBulletinName, const char* lpItemName, void *lpItem, int actSize, void *lpSubItem = 0, int actSubSize = 0);
-extern "C" bool ClearB(const char* lpBoardName);
-extern "C" unsigned int GetLastErrorQ();
-extern "C" bool ReadType(const char* lpDqName, const char* lpItemName, void* inBuff, int buffSize, int* pTypeSize);
-extern "C" bool ReadBoardInfo(const char* lpBoardName, BOARD_INFO* boardinfo);
-extern "C" bool ListTags(const char* lpBoardName, int start, char* buff, int buffSize, int* bytes, int* count, int* next);
+struct timespec;
 
-template<typename T, typename CharT>
-T read_value(CharT* buffer) {
-	static_assert(std::is_same_v<std::remove_cv_t<CharT>, char>, "buffer must be char*");
+// ---- Network API ----
+int  connectgplat(const char* server, int port);
+void disconnectgplat(int sockfd);
+bool readq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error);
+bool writeq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error);
+bool clearq(int sockfd, const char* qname, unsigned int* error);
+bool readhead(int sockfd, const char* qname, QUEUE_HEAD* head, unsigned int* error);
+bool peekq(int sockfd, const char* qname, int position, void* record, int actsize, RECORD_HEAD* recordhead, unsigned int* error);
+bool listq(int sockfd, char* names, int buffsize, int* count, unsigned int* error);
+bool listtags(int sockfd, int start, char* buff, int buffsize, int* bytes, int* count, int* next, unsigned int* error);
+bool readb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error, struct timespec* timestamp);
+bool writeb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error);
+bool writeb_notpost(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error);
+bool subscribe(int sockfd, const char* tagname, unsigned int* error);
+bool subscribedelaypost(int sockfd, const char* tagname, const char* eventname, int delaytime, unsigned int* error);
+bool createtag(int sockfd, const char* tagname, int tagsize, void* type, int typesize, unsigned int* error);
+bool deletetag(int sockfd, const char* tagname, unsigned int* error);
+// tagnamesize >= GPLAT_TAGNAME_SIZE; on timeout returns true with error ERROR_WAIT_TIMEOUT and tagname "WAIT_TIMEOUT"
+bool waitpostdata(int sockfd, char* tagname, int tagnamesize, void* value, int buffersize, int timeout, unsigned int* error);
+bool readb_string(int sockfd, const char* tagname, char* value, int buffersize, unsigned int* error, struct timespec* timestamp);
+bool writeb_string(int sockfd, const char* tagname, const char* value, unsigned int* error);
+bool writeb_string_notpost(int sockfd, const char* tagname, const char* value, unsigned int* error);
+bool readtype(int sockfd, const char* qbdname, const char* tagname, void* inbuff, int buffsize, int* ptypesize, unsigned int* error);
+bool clearb(int sockfd, unsigned int* error);
+bool readboardinfo(int sockfd, void* info, int infosize, unsigned int* error);
+bool createqueue(int sockfd, const char* queuename, int recordsize, int recordnum, int operatemode, void* type, int typesize, unsigned int* error);
+bool getresponse(int sockfd, const char* request_tag, void* request_value, int request_size, const char* response_tag, void* response_value, int response_size, unsigned int* error, int timeout_ms);
 
-	if constexpr (std::is_same_v<T, std::string>) {
-		return std::string(buffer);
-	}
-	else if constexpr (std::is_same_v<T, const char*>) {
-		return buffer;
-	}
-	else if constexpr (std::is_same_v<T, char*>) {
-		static_assert(!std::is_const_v<CharT>, "cannot return char* from const char*");
-		return buffer;
-	}
-	else {
-		static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
-		T result{};
-		std::memcpy(&result, buffer, sizeof(T));
-		return result;
-	}
+bool write_plc_string(int sockfd, const char* tagname, const char* str, unsigned int* error);
+bool write_plc_bool(int sockfd, const char* tagname, bool value, unsigned int* error);
+bool write_plc_short(int sockfd, const char* tagname, short value, unsigned int* error);
+bool write_plc_ushort(int sockfd, const char* tagname, unsigned short value, unsigned int* error);
+bool write_plc_int(int sockfd, const char* tagname, int value, unsigned int* error);
+bool write_plc_uint(int sockfd, const char* tagname, unsigned int value, unsigned int* error);
+bool write_plc_float(int sockfd, const char* tagname, float value, unsigned int* error);
+bool registertag(int sockfd, const char* tagname, unsigned int* error);
+
+// message may be NULL
+bool IsFatalError(unsigned int error, const char** message);
+
+// ---- Local API ----
+bool CreateB(const char* lpFileName, int size);
+bool CreateItem(const char* lpBoardName, const char* lpItemName, int itemSize, void* pType, int typeSize);
+bool DeleteItem(const char* lpBoardName, const char* lpItemName);
+bool CreateQ(const char* lpFileName, int recordSize, int recordNum, int dateType, int operateMode, void* pType, int typeSize);
+bool CreateAndLoadQ(const char* lpFileName, int recordSize, int recordNum, int dataType, int operateMode, void* pType, int typeSize);
+bool LoadQ(const char* lpDqName);
+void SetQbdPath(const char* path);
+bool ReadQ(const char* lpDqName, void* lpRecord, int actSize, char* remoteIp);
+bool WriteQ(const char* lpDqName, void* lpRecord, int actSize, const char* remoteIp);
+bool ClearQ(const char* lpDqName);
+bool ReadHead(const char* lpDqName, void* lpHead);
+bool PeekQRecord(const char* lpDqName, int position, void* lpRecord, int actSize, RECORD_HEAD* lpRecordHead);
+bool ListQ(char* names, int buffSize, int* namesSize, int* count);
+bool ReadB(const char* lpBoardName, const char* lpItemName, void* lpItem, int actSize, struct timespec* timestamp);
+bool ReadB_String(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, struct timespec* timestamp);
+bool ReadB_String2(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, int* strLength, struct timespec* timestamp);
+bool WriteB(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, void* lpSubItem, int actSubSize);
+bool WriteB_String(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, void* lpSubItem, int actSubSize);
+bool ClearB(const char* lpBoardName);
+unsigned int GetLastErrorQ(void);
+bool ReadType(const char* lpDqName, const char* lpItemName, void* inBuff, int buffSize, int* pTypeSize);
+bool ReadBoardInfo(const char* lpBoardName, BOARD_INFO* boardinfo);
+bool ListTags(const char* lpBoardName, int start, char* buff, int buffSize, int* bytes, int* count, int* next);
+
+#ifdef __cplusplus
 }
-
-//更稳一点的字符串版本
-//如果字符串可能不是完整填满，最好再带长度：
-/*
-template<typename T>
-T read_value(const char* buffer, size_t size) {
-	if constexpr (std::is_same_v<T, std::string>) {
-		return std::string(buffer, strnlen(buffer, size));
-	}
-	else if constexpr (std::is_same_v<T, const char*>) {
-		return buffer;
-	}
-	else {
-		static_assert(std::is_trivially_copyable_v<T>, "T must be trivially copyable");
-		if (size < sizeof(T)) {
-			throw std::out_of_range("buffer too small");
-		}
-		T result{};
-		std::memcpy(&result, buffer, sizeof(T));
-		return result;
-	}
-}
-*/
+#endif
 
 #endif // HIGPLAT_H_INCLUDED_

@@ -1,5 +1,11 @@
 # API 快速参考
 
+`include/higplat.h` 是 `libhigplat.so` 的纯 C 头文件（C99 起可用，C++ 中自动 `extern "C"`）：只用 C 类型、无默认参数、不抛异常（错误只通过返回值和 `error` 返回，`error` 为 NULL 时直接返回 false）。C++ 调用方建议使用 `include/gplat_connection.h`（见下文 GplatConnection）。
+
+- `GPLAT_MAX_DATA_SIZE`（16384）：单次读写数据的最大长度
+- `GPLAT_TAGNAME_SIZE`（40）：tag 名缓冲区长度（含 `'\0'`）
+- `bool IsFatalError(unsigned int error, const char** message)`：错误码是否为 Fatal 级，`message` 可为 NULL
+
 ## 连接管理
 
 ### connectgplat
@@ -111,7 +117,7 @@ bool readb(int sockfd, const char* tagname, void* value, int actsize,
            unsigned int* error, timespec* timestamp);
 ```
 - **功能**: 读取标签值
-- **参数**: `timestamp` - 可选，返回数据时间戳
+- **参数**: `timestamp` - 可为 NULL，非空时返回数据时间戳
 
 ### writeb
 ```cpp
@@ -177,12 +183,12 @@ bool subscribedelaypost(int sockfd, const char* tagname,
 
 ### waitpostdata
 ```cpp
-bool waitpostdata(int sockfd, std::string& tagname,
-                  int timeout, unsigned int* error);
+bool waitpostdata(int sockfd, char* tagname, int tagnamesize,
+                  void* value, int buffersize, int timeout, unsigned int* error);
 ```
 - **功能**: 阻塞等待事件
-- **参数**: `timeout` - 超时时间（毫秒）
-- **返回**: `tagname` - 触发事件的标签名
+- **参数**: `tagname` - 返回触发事件的标签名，`tagnamesize` 必须 >= `GPLAT_TAGNAME_SIZE`（否则 `ERROR_INVALID_PARAMETER`）；`timeout` - 超时时间（毫秒，-1 永久等待）
+- **超时**: 返回 true，`error = ERROR_WAIT_TIMEOUT`，`tagname` 为 `"WAIT_TIMEOUT"`
 
 ### post
 ```cpp
@@ -198,10 +204,10 @@ bool post(int sockfd, const char* tagname, unsigned int* error);
 ```cpp
 bool getresponse(int sockfd, const char* request_tag, void* request_value, int request_size,
                  const char* response_tag, void* response_value, int response_size,
-                 unsigned int* error, int timeout_ms = 2000);
+                 unsigned int* error, int timeout_ms);
 ```
 - **功能**: 写入 `request_tag` 并通知其订阅者（响应方），阻塞等待响应方 `writeb(response_tag)` 后把响应复制到 `response_value`
-- **参数**: `request_size` / `response_size` 必须等于对应 tag 的大小（tag 需事先 `createtag`）；`timeout_ms` 必须 > 0，计时包含服务端排队时间
+- **参数**: `request_size` / `response_size` 必须等于对应 tag 的大小（tag 需事先 `createtag`）；`timeout_ms` 必须 > 0（建议 2000，GplatConnection 默认值），计时包含服务端排队时间
 - **返回**: 超时返回 false，`error = ERROR_RESPONSE_TIMEOUT`；同名请求排队超过 64 个返回 `ERROR_REQUEST_QUEUE_FULL`
 - **服务端语义**:
   - 同一 `request_tag` 同一时刻只处理 1 个请求，其余排队；一个 `response_tag` 只能对应一个 `request_tag`，否则返回 `ERROR_INVALID_PARAMETER`
@@ -214,7 +220,7 @@ bool getresponse(int sockfd, const char* request_tag, void* request_value, int r
 
 ## C++ 封装类 GplatConnection
 
-头文件 `include/gplat_connection.h`，header-only（全部 inline 转调上面的 `extern "C"` 接口），`libhigplat.so` 不导出任何 C++ 符号，因此不引入额外的 ABI 依赖；类布局变化只需用户重新编译。
+头文件 `include/gplat_connection.h`，是 `higplat.h` 的 C++ 封装，header-only（全部 inline 转调上面的 C 接口）。`std::string`、异常、默认参数等 C++ 特性只存在于调用方的编译单元，`libhigplat.so` 边界上只有 C ABI；类布局变化只需用户重新编译。另提供 `read_value<T>(char*)` 模板，用于从 `waitpostdata` 缓冲区取值。
 
 ```cpp
 GplatConnection conn("127.0.0.1", 8777);   // 构造只保存地址，不连接
@@ -227,12 +233,12 @@ conn.close();                              // 析构时也会自动关闭
 ```
 
 - **与 C 接口的差异**: 去掉 `sockfd` 参数；去掉 `unsigned int* error`，改为返回值（`[[nodiscard]] unsigned int`，0 为成功）；名称参数为 `const std::string&`，写入缓冲区为 `const void*`
-- **重载**: `readb_string(tag, char*, int, timespec* = nullptr)` / `readb_string(tag, std::string&, timespec* = nullptr)`（对应 `readb_string2`）；`writeb_string` / `writeb_string_notpost` 均有 `const char*` 与 `const std::string&` 两个版本；`write_plc_*` 保留 `=delete` 模板，禁止隐式类型转换
+- **重载**: `readb_string(tag, char*, int, timespec* = nullptr)` / `readb_string(tag, std::string&, timespec* = nullptr)`（内部以 `GPLAT_MAX_DATA_SIZE` 缓冲区调用 C 版，失败时不修改 `value`）；`writeb_string` / `writeb_string_notpost` 均有 `const char*` 与 `const std::string&` 两个版本；`waitpostdata(std::string& tagname, ...)`；`write_plc_*` 有 `=delete` 模板，禁止隐式类型转换
 - **已封装**: `readq` `writeq` `clearq` `peekq` `readb` `writeb` `writeb_notpost` `readb_string` `writeb_string` `writeb_string_notpost` `subscribe` `subscribedelaypost` `waitpostdata` `getresponse` `write_plc_{string,bool,short,ushort,int,uint,float}`
 - **waitpostdata 超时**: 返回 `ERROR_WAIT_TIMEOUT`，`tagname` 置为 `"WAIT_TIMEOUT"`
 - **未连接**: 未 `open()` 或连接已断开时直接返回 `ERROR_SOCKET_NOT_CONNECTED`，不自动重连（重连会丢失订阅），需调用者重新 `open()` 并重新订阅
 - **断线识别**: C 接口在 I/O 失败等情况下会在内部 `close(sockfd)`，封装类按错误码判断并把连接标记为关闭（不会重复 close）：失败且 error 为 0、errno（< 1000）、`ERROR_SOCKET_NOT_CONNECTED`、`ERROR_INVALID_RESPONSE`、`ERROR_BUFFER_TOO_SMALL`；`subscribe` / `waitpostdata` 另外在任何服务端错误时（`ERROR_INVALID_PARAMETER`、`ERROR_WAIT_TIMEOUT` 除外）视为已断开。`is_open()` 只反映本地状态，对端关闭要到下一次调用失败才能感知
-- **异常**: Fatal 级错误（如 `ERROR_TAG_NOT_EXIST`、`ERROR_BUFFER_TOO_SMALL`）与 C 接口一样抛 `std::runtime_error`，抛出前已更新连接状态
+- **异常**: 错误码为 Fatal 级（`IsFatalError`，如 `ERROR_TAG_NOT_EXIST`、`ERROR_BUFFER_TOO_SMALL`）时由封装类抛 `std::runtime_error`，抛出前已更新连接状态；C 接口本身只打印日志并返回错误码
 - **拷贝/移动**: 不可拷贝，可移动（被移动对象变为未连接）
 - **线程安全**: 不加锁，一个连接只能在一个线程中使用
 - **示例/测试**: `testapp6`
@@ -283,10 +289,11 @@ disconnectgplat(sockfd);
 ### 事件驱动
 ```cpp
 subscribe(sockfd, "alarm", &error);
+char tagname[GPLAT_TAGNAME_SIZE];
+char value[4096];
 while (true) {
-    std::string tagname;
-    if (waitpostdata(sockfd, tagname, 5000, &error)) {
-        printf("Event: %s\n", tagname.c_str());
+    if (waitpostdata(sockfd, tagname, sizeof(tagname), value, sizeof(value), 5000, &error)) {
+        printf("Event: %s\n", tagname);
         // 处理事件
     }
 }

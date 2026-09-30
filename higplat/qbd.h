@@ -4,61 +4,11 @@
 #include <chrono>
 #include <mutex>
 
-#define MAXDQNAMELENTH 40	// 必须和higplat.h中的定义一致
+#include "../include/higplat.h"
 
-#define MY_ERR_OFFSET    1000
-#define ERROR_DQFILE_NOT_FOUND			(MY_ERR_OFFSET + 1)
-#define ERROR_DQ_NOT_OPEN				(MY_ERR_OFFSET + 2)
-#define ERROR_DQ_EMPTY					(MY_ERR_OFFSET + 3)
-#define ERROR_DQ_FULL					(MY_ERR_OFFSET + 4)
-#define ERROR_FILENAME_TOO_LONG			(MY_ERR_OFFSET + 5)
-#define ERROR_FILE_IN_USE				(MY_ERR_OFFSET + 6)
-#define ERROR_FILE_CREATE_FAILSURE		(MY_ERR_OFFSET + 7)
-#define ERROR_FILE_OPEN_FAILSURE		(MY_ERR_OFFSET + 8)
-#define ERROR_CREATE_FILEMAPPINGOBJECT	(MY_ERR_OFFSET + 9)
-#define ERROR_OPEN_FILEMAPPINGOBJECT	(MY_ERR_OFFSET + 10)
-#define ERROR_MAPVIEWOFFILE				(MY_ERR_OFFSET + 11)
-#define ERROR_CREATE_MUTEX				(MY_ERR_OFFSET + 12)
-#define ERROR_OPEN_MUTEX				(MY_ERR_OFFSET + 13)
-#define ERROR_RECORDSIZE				(MY_ERR_OFFSET + 14)
-#define ERROR_STARTPOSITION				(MY_ERR_OFFSET + 15)
-#define ERROR_RECORD_ALREAD_EXIST		(MY_ERR_OFFSET + 16)
-#define ERROR_TABLE_OVERFLOW			(MY_ERR_OFFSET + 17)
-#define ERROR_RECORD_NOT_EXIST			(MY_ERR_OFFSET + 18)
-#define ERROR_OPERATE_PROHIBIT			(MY_ERR_OFFSET + 19)
-#define ERROR_ALREADY_OPEN				(MY_ERR_OFFSET + 20)
-#define ERROR_ALREADY_CLOSE				(MY_ERR_OFFSET + 21)
-#define ERROR_ALREADY_LOAD				(MY_ERR_OFFSET + 22)
-#define ERROR_ALREADY_UNLOAD			(MY_ERR_OFFSET + 23)
-#define ERROR_NO_SPACE			        (MY_ERR_OFFSET + 24)
-#define ERROR_TABLE_NOT_EXIST			(MY_ERR_OFFSET + 25)
-#define ERROR_TABLE_ALREADY_EXIST		(MY_ERR_OFFSET + 26)
-#define ERROR_TABLE_ROWID				(MY_ERR_OFFSET + 27)
-#define ERROR_ITEM_NOT_EXIST			(MY_ERR_OFFSET + 28)
-#define ERROR_ITEM_ALREADY_EXIST		(MY_ERR_OFFSET + 29)
-#define ERROR_ITEM_OVERFLOW				(MY_ERR_OFFSET + 30)
-#define ERROR_SOCKET_NOT_CONNECTED      (MY_ERR_OFFSET + 31)
-#define ERROR_MSGSIZE			        (MY_ERR_OFFSET + 32)
-#define ERROR_BUFFER_SIZE		        (MY_ERR_OFFSET + 33)
-#define ERROR_PARAMETER_SIZE	        (MY_ERR_OFFSET + 34)
-#define CODE_QEMPTY						(MY_ERR_OFFSET + 35)
-#define CODE_QFULL						(MY_ERR_OFFSET + 36)
-#define STRING_TOO_LONG			        (MY_ERR_OFFSET + 37)
-#define BUFFER_TOO_SMALL			    (MY_ERR_OFFSET + 38)
-#define ERROR_INVALID_PARAMETER			(MY_ERR_OFFSET + 39)
-#define ERROR_INVALID_RESPONSE			(MY_ERR_OFFSET + 40)
-#define ERROR_BUFFER_TOO_SMALL			(MY_ERR_OFFSET + 41)
-#define ERROR_TAG_NOT_EXIST 			(MY_ERR_OFFSET + 42)
-#define ERROR_WAIT_TIMEOUT              (MY_ERR_OFFSET + 43)
-#define ERROR_RESPONSE_TIMEOUT          (MY_ERR_OFFSET + 44)
-#define ERROR_REQUEST_QUEUE_FULL        (MY_ERR_OFFSET + 45)
+#define MAXDQNAMELENTH 40
+static_assert(MAXDQNAMELENTH == GPLAT_TAGNAME_SIZE, "tag name size mismatch");
 
-#define SHIFT_MODE		1
-#define NORMAL_MODE		0
-#define ASCII_TYPE		1
-#define BINARY_TYPE		0
-#define PEEK_NEXT		0	// 必须和 higplat.h 中的定义一致
-#define PEEK_LATEST		1
 #define QUEUEHEADSIZE   sizeof(QUEUE_HEAD)
 #define RECORDHEADSIZE  sizeof(RECORD_HEAD)
 
@@ -198,29 +148,6 @@ struct TABLE_MSG
 	long filesize;	// 文件大小 linux平台新增
 };
 
-struct QUEUE_HEAD
-{
-	int  qbdtype;
-	int  dataType;			// 数据队列的类型，1为ASCII型；0为BINARY型
-	int  operateMode;		// 1为移位队列，不判断溢出；0为通用队列
-	int  num;				// 记录数
-	int  size;				// 记录大小
-	int  readPoint;			// 读指针
-	int  writePoint;		// 写指针
-	char createDate[20];	// 创建日期
-	int  typesize;			// 类型序列化长度
-	int  reserved;
-};
-
-struct RECORD_HEAD
-{
-	char createDate[20];
-	char remoteIp[16];
-	int  ack;				// 确认标志 0未确认1已确认
-	int  index;				// 位置索引（0开始）
-	int  reserve;			// 预留
-};
-
 //clock_gettime(CLOCK_REALTIME, &ts);
 //printf("秒: %ld, 纳秒: %ld\n", ts.tv_sec, ts.tv_nsec);
 struct BOARD_INDEX_STRUCT
@@ -249,20 +176,6 @@ struct BOARD_HEAD
 	std::mutex mutex_rw;
 	std::mutex mutex_rw_tag[MUTEXSIZE];
 	BOARD_INDEX_STRUCT index[INDEXSIZE];
-};
-
-struct BOARD_INFO
-{
-	int    totalsize;
-	int    remainsize;
-	int    tagcount_head;
-	int    tagcount_act;
-};
-
-struct TAG_META			// 必须和higplat.h中的定义一致
-{
-	int    itemsize;
-	int    typesize;
 };
 
 bool inserttab(const struct TABLE_MSG &tabmsg);

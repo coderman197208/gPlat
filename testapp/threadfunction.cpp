@@ -59,7 +59,9 @@ void threadFunction1() {
 	std::string eventname;
 	while (g_running) {  // 检查全局运行标志 {
 		char value[4096] = { 0 };
-		waitpostdata(conngplat, eventname, value, 4096, -1, &error); // 等待数据到达
+		char name[GPLAT_TAGNAME_SIZE];
+		waitpostdata(conngplat, name, sizeof(name), value, 4096, -1, &error); // 等待数据到达
+		eventname = name;
 
 		if (error != 0) {
 			printf("waitpostdata failed, eventname=%s, error=%d\n", eventname.c_str(), error);
@@ -82,7 +84,7 @@ void threadFunction1() {
 		if (eventname == "int1") {
 			int a = *((int*)value);
 			//printf("a=%d\n", a);
-			ret = readb(conngplat, "int1", &a, sizeof(a), &error); // 接收数据
+			ret = readb(conngplat, "int1", &a, sizeof(a), &error, nullptr); // 接收数据
 			if (!ret) {
 				printf("readb failed, error=%d\n", error);
 			}
@@ -91,24 +93,24 @@ void threadFunction1() {
 		else if (eventname == "int1_delay1000") {
 			a = *((int*)value);
 			//printf("int1_delay1000, a=%d\n", a);
-			ret = readb(conngplat, "int1", &a, sizeof(a), &error); // 接收数据
+			ret = readb(conngplat, "int1", &a, sizeof(a), &error, nullptr); // 接收数据
 			if (!ret) {
 				printf("int1_delay1000, readb failed, error=%d\n", error);
 			}
 			//printf("int1_delay1000, readb a=%d error=%d\n", a, error);
 		}
 		else if (eventname == "int2") {
-			ret = readb(conngplat, "int2", &a, sizeof(a), &error); // 接收数据
+			ret = readb(conngplat, "int2", &a, sizeof(a), &error, nullptr); // 接收数据
 			if (!ret) {
 				printf("readb failed, error=%d\n", error);
 			}
 		}
 		else if (eventname == "string1") {
-			std::string str2;
+			char str2[GPLAT_MAX_DATA_SIZE];
 			//printf("str2=%s\n", value);
-			ret = readb_string2(conngplat, "string1", str2, &error); // 接收数据
-			if (!ret) {		
-				printf("readb_string2 failed, error=%d\n", error);
+			ret = readb_string(conngplat, "string1", str2, sizeof(str2), &error, nullptr); // 接收数据
+			if (!ret) {
+				printf("readb_string failed, error=%d\n", error);
 			}
 			else {
 				//printf("readb_string2 str2=%s error=%d\n", str2.c_str(), error);

@@ -6,7 +6,7 @@
 #include <iostream>
 #include <string.h>
 
-#include "../include/higplat.h"
+#include "../include/gplat_connection.h"
 #include "../include/user_types.h"
 
 extern std::atomic<bool> g_running;  // 控制线程运行的标志
@@ -23,7 +23,9 @@ void threadFunction1() {
 	std::string eventname;
 	while (g_running) {  // 检查全局运行标志 {
 		char value[4096] = { 0 };
-		waitpostdata(conngplat, eventname, value, 4096, -1, &error); // 等待数据到达
+		char name[GPLAT_TAGNAME_SIZE];
+		waitpostdata(conngplat, name, sizeof(name), value, 4096, -1, &error); // 等待数据到达
+		eventname = name;
 
 		if (error != 0) {
 			printf("waitpostdata failed, eventname=%s, error=%d\n", eventname.c_str(), error);

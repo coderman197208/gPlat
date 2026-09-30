@@ -224,7 +224,7 @@ bool CLogicSocket::HandleWriteQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
 	bool ret;
 	[[maybe_unused]] char *data = (char *)pPkgHead + sizeof(PKGHEAD);
-	if ((ret = WriteQ(pPkgHead->qname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize)))
+	if ((ret = WriteQ(pPkgHead->qname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize, nullptr)))
 	{
 		pPkgHead->error = 0;
 	}
@@ -345,7 +345,7 @@ bool CLogicSocket::HandleWriteB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 
 	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
 	bool ret;
-	if ((ret = WriteB(pPkgHead->qname, pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize)))
+	if ((ret = WriteB(pPkgHead->qname, pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize, nullptr, 0)))
 	{
 		pPkgHead->error = 0;
 	}
@@ -401,7 +401,7 @@ bool CLogicSocket::HandleReadBString(lpngx_connection_t pConn, LPSTRUC_MSG_HEADE
 	CMemory *p_memory = CMemory::GetInstance();
 	char *p_sendbuf;
 	int strlen = 0; // 接收字符串的实际长度
-	if ((ret = ReadB_String2(pPkgHead->qname, pPkgHead->itemname, g_buffer, pPkgHead->datasize, strlen, &timestamp)))
+	if ((ret = ReadB_String2(pPkgHead->qname, pPkgHead->itemname, g_buffer, pPkgHead->datasize, &strlen, &timestamp)))
 	{
 		p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + strlen, false); // 准备发送的格式，这里是消息头+包头+包体
 
@@ -449,7 +449,7 @@ bool CLogicSocket::HandleWriteBString(lpngx_connection_t pConn, LPSTRUC_MSG_HEAD
 	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
 	bool ret;
 
-	if ((ret = WriteB_String(pPkgHead->qname, pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize)))
+	if ((ret = WriteB_String(pPkgHead->qname, pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize, nullptr, 0)))
 	{
 		pPkgHead->error = 0;
 	}
@@ -1304,8 +1304,8 @@ bool CLogicSocket::HandleGetResponse(lpngx_connection_t pConn, LPSTRUC_MSG_HEADE
 		error = ERROR_INVALID_PARAMETER;
 	}
 	// 借助 ReadB 校验两个 tag 存在且大小一致
-	else if (!ReadB("BOARD", req->requestTag.c_str(), g_buffer, requestSize) ||
-			 !ReadB("BOARD", req->responseTag.c_str(), g_buffer, req->responseSize))
+	else if (!ReadB("BOARD", req->requestTag.c_str(), g_buffer, requestSize, nullptr) ||
+			 !ReadB("BOARD", req->responseTag.c_str(), g_buffer, req->responseSize, nullptr))
 	{
 		error = GetLastErrorQ();
 	}
@@ -1376,7 +1376,7 @@ void CLogicSocket::StartRequest(PendingRequestPtr req)
 {
 	while (req)
 	{
-		if (WriteB("BOARD", req->requestTag.c_str(), req->requestData.data(), (int)req->requestData.size()))
+		if (WriteB("BOARD", req->requestTag.c_str(), req->requestData.data(), (int)req->requestData.size(), nullptr, 0))
 		{
 			NotifySubscriber(req->requestTag, req->requestData.data(), (unsigned short)req->requestData.size());
 			return;

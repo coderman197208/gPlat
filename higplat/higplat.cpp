@@ -26,6 +26,9 @@
 
 namespace fs = std::filesystem;
 
+static_assert(GPLAT_MAX_DATA_SIZE == MAXMSGLEN, "GPLAT_MAX_DATA_SIZE mismatch");
+static_assert(GPLAT_TAGNAME_SIZE == sizeof(MSGHEAD::itemname), "GPLAT_TAGNAME_SIZE mismatch");
+
 // error code system
 namespace {
 	// 线程内重入深度计数器
@@ -38,7 +41,8 @@ struct AutoErrorCheck {
 		g_api_depth++;
 	}
 
-	~AutoErrorCheck() noexcept(false) {
+	// The C API must not throw; GplatConnection turns Fatal codes into exceptions.
+	~AutoErrorCheck() {
 		g_api_depth--;
 		// only check error code when we're back to the outermost API call, 
 		// to avoid multiple checks during nested calls.
@@ -46,11 +50,6 @@ struct AutoErrorCheck {
 			ErrorInfo info = GetErrorInfo(*m_error);
 			if (info.level == ErrorLevel::Fatal) {
 				std::cout << "[higplat error: Fatal Error] " << info.message << " (Code: " << *m_error << ")\n";
-				// note: if the destructor is called during stack unwinding due to an exception, 
-				// we should not throw another exception, as it will call std::terminate.
-				if (std::uncaught_exceptions() == 0) {
-					throw std::runtime_error(info.message + std::string(" (Code: ") + std::to_string(*m_error) + ")");
-				}
 			} 
 			// else if (info.level == ErrorLevel::Deprecated) {
 			// 	std::cout << "[higplat error: Deprecated] " << info.message << " (Code: " << *m_error << ")\n";
@@ -64,6 +63,14 @@ struct AutoErrorCheck {
 		}
 	}
 };
+
+extern "C" bool IsFatalError(unsigned int error, const char** message)
+{
+	ErrorInfo info = GetErrorInfo(error);
+	if (message)
+		*message = info.message;
+	return info.level == ErrorLevel::Fatal;
+}
 
 enum EVENTID
 {
@@ -623,8 +630,8 @@ extern "C" void disconnectgplat(int sockfd)
 
 extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -684,8 +691,8 @@ extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, 
 
 extern "C" bool writeq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -779,7 +786,7 @@ extern "C" bool clearq(int sockfd, const char* qname, unsigned int* error)
 extern "C" bool readhead(int sockfd, const char* qname, QUEUE_HEAD* head, unsigned int* error)
 {
 	if (error == nullptr)
-		throw std::runtime_error("parameter error is null");
+		return false;
 
 	AutoErrorCheck _checker(error);
 	if (!qname || !head) {
@@ -826,7 +833,7 @@ extern "C" bool readhead(int sockfd, const char* qname, QUEUE_HEAD* head, unsign
 extern "C" bool peekq(int sockfd, const char* qname, int position, void* record, int actsize, RECORD_HEAD* recordhead, unsigned int* error)
 {
 	if (error == nullptr)
-		throw std::runtime_error("parameter error is null");
+		return false;
 
 	AutoErrorCheck _checker(error);
 	if (!qname || !record || actsize <= 0 || actsize > MAXMSGLEN - (int)RECORDHEADSIZE) {
@@ -880,7 +887,7 @@ extern "C" bool peekq(int sockfd, const char* qname, int position, void* record,
 extern "C" bool listq(int sockfd, char* names, int buffsize, int* count, unsigned int* error)
 {
 	if (error == nullptr)
-		throw std::runtime_error("parameter error is null");
+		return false;
 
 	AutoErrorCheck _checker(error);
 	if (!names || !count || buffsize <= 0) {
@@ -925,7 +932,7 @@ extern "C" bool listq(int sockfd, char* names, int buffsize, int* count, unsigne
 extern "C" bool listtags(int sockfd, int start, char* buff, int buffsize, int* bytes, int* count, int* next, unsigned int* error)
 {
 	if (error == nullptr)
-		throw std::runtime_error("parameter error is null");
+		return false;
 
 	AutoErrorCheck _checker(error);
 	if (!buff || !bytes || !count || !next || buffsize <= 0 || start < 0) {
@@ -972,8 +979,8 @@ extern "C" bool listtags(int sockfd, int start, char* buff, int buffsize, int* b
 
 extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error, timespec* timestamp)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -1041,8 +1048,8 @@ extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize,
 
 bool writeb_(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error, int postornot)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 
@@ -1114,8 +1121,8 @@ extern "C" bool writeb_notpost(int sockfd, const char* tagname, void* value, int
 
 extern "C" bool readb_string(int sockfd, const char* tagname, char* value, int buffersize, unsigned int* error, timespec* timestamp)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -1189,96 +1196,10 @@ extern "C" bool readb_string(int sockfd, const char* tagname, char* value, int b
 	return true;
 }
 
-extern "C" bool readb_string2(int sockfd, const char* tagname, std::string& value, unsigned int* error, timespec* timestamp = 0)
-{
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
-
-	AutoErrorCheck _checker(error);
-	//if (readb_string(sockfd, tagname, g_buffer, MAXMSGLEN, error, timestamp)) {
-	//	// 确保字符串以 null 结尾
-	//	g_buffer[MAXMSGLEN - 1] = '\0';
-	//	value.assign(g_buffer);  // 使用 std::string 的 assign 方法
-	//	return true;
-	//}
-
-	// 参数校验
-	if (!tagname) {
-		*error = ERROR_INVALID_PARAMETER;
-		return false;
-	}
-
-	// 初始化消息头
-	MSGSTRUCT msg{};
-	msg.head.id = READBSTRING;
-	msg.head.datasize = MAXMSGLEN;
-	msg.head.bodysize = 0;
-
-	// 安全拷贝字符串
-	strncpy(msg.head.qname, "BOARD", sizeof(msg.head.qname) - 1);
-	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
-
-	strncpy(msg.head.itemname, tagname, sizeof(msg.head.itemname) - 1);
-	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
-
-	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
-		return false;
-	}
-
-	// 读取响应头
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
-		return false;
-	}
-
-	// 检查错误码
-	*error = msg.head.error;
-	if (*error != 0) {
-		return false;
-	}
-
-	// 验证数据大小
-	// 目前这种情况不可能出现，因为服务器会确保数据体大小不超过buffersize，如果buffsize不够大，上面错误码不为零就会返回，不会走到这里
-	if (msg.head.bodysize > MAXMSGLEN) {
-		*error = ERROR_BUFFER_TOO_SMALL;
-		close(sockfd);
-		return false;
-	}
-
-	// 读取数据体（如果有）
-	if (msg.head.bodysize > 0) {
-		if (readn(sockfd, g_buffer, msg.head.bodysize) < 0) {
-			*error = errno;
-			close(sockfd);
-			return false;
-		}
-	}
-
-	// 确保字符串以 null 结尾
-	if (msg.head.bodysize < MAXMSGLEN) {
-		g_buffer[msg.head.bodysize] = '\0';  // 确保 null 结尾
-	}
-	else {
-		g_buffer[MAXMSGLEN - 1] = '\0';  // 防止溢出
-	}
-
-	// 返回时间戳（如果请求）
-	if (timestamp) {
-		*timestamp = msg.head.timestamp;
-	}
-
-	value.assign(g_buffer, msg.head.bodysize);  // 使用 std::string 的 assign 方法
-	return true;
-}
-
 bool writeb_string_(int sockfd, const char* tagname, const char* value, unsigned int* error, int postornot)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 
@@ -1346,27 +1267,10 @@ extern "C" bool writeb_string_notpost(int sockfd, const char* tagname, const cha
 	return writeb_string_(sockfd, tagname, value, error, 0);	// 不触发发布
 }
 
-extern "C" bool writeb_string2(int sockfd, const char* tagname, std::string value, unsigned int* error)
-{
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
-
-	AutoErrorCheck _checker(error);
-	// 确保字符串以 null 结尾
-	if (value.length() >= MAXMSGLEN) {
-		*error = ERROR_PARAMETER_SIZE;
-		return false;
-	}
-	// mark
-	// 直接传递 c_str()，因为 writeb_string 已经处理了字符串长度和 null 结尾问题
-	// 但是这样会损失效率，因为没有利用std::string的length()方法，length()方法比strlen()更快，因为它不需要遍历字符串
-	return writeb_string_(sockfd, tagname, value.c_str(), error, 1);		// 触发发布
-}
-
 extern "C" bool subscribe(int sockfd, const char* tagname, unsigned int* error)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -1421,8 +1325,8 @@ extern "C" bool subscribe(int sockfd, const char* tagname, unsigned int* error)
 
 extern "C" bool clearb(int sockfd, unsigned int* error)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 
@@ -1457,8 +1361,8 @@ extern "C" bool clearb(int sockfd, unsigned int* error)
 
 extern "C" bool readboardinfo(int sockfd, void* info, int infosize, unsigned int* error)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -1511,8 +1415,8 @@ extern "C" bool readboardinfo(int sockfd, void* info, int infosize, unsigned int
 
 extern "C" bool subscribedelaypost(int sockfd, const char* tagname, const char* eventname, int delaytime, unsigned int* error)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -1562,8 +1466,8 @@ extern "C" bool subscribedelaypost(int sockfd, const char* tagname, const char* 
 
 extern "C" bool createtag(int sockfd, const char* tagname, int tagsize, void* type, int typesize, unsigned int* error)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -1624,8 +1528,8 @@ extern "C" bool createtag(int sockfd, const char* tagname, int tagsize, void* ty
 
 extern "C" bool deletetag(int sockfd, const char* tagname, unsigned int* error)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -1664,17 +1568,17 @@ extern "C" bool deletetag(int sockfd, const char* tagname, unsigned int* error)
 	return (*error == 0);
 }
 
-extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int buffersize, int timeout, unsigned int* error)
+extern "C" bool waitpostdata(int sockfd, char* tagname, int tagnamesize, void* value, int buffersize, int timeout, unsigned int* error)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
-	if (sockfd < 0 || value == nullptr || buffersize <= 0 || timeout < -1) {
+	if (sockfd < 0 || tagname == nullptr || tagnamesize < GPLAT_TAGNAME_SIZE || value == nullptr || buffersize <= 0 || timeout < -1) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
 	}
-	tagname.clear();
+	tagname[0] = '\0';
 
 	//绝对不能在本地实现超时，否则容易出现问题
 	MSGSTRUCT msg{};
@@ -1724,7 +1628,7 @@ extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int 
 	*error = msg.head.error;  // 或 ntohl(msg.head.error)
 	if (*error != 0) {
 		if (*error == ERROR_WAIT_TIMEOUT) {
-			tagname = "WAIT_TIMEOUT";
+			strcpy(tagname, "WAIT_TIMEOUT");
 			return true;
 		}
 		close(sockfd);
@@ -1732,14 +1636,14 @@ extern "C" bool waitpostdata(int sockfd, std::string& tagname, void* value, int 
 	}
 
 	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
-	tagname = (msg.head.itemname[0] != '\0') ? msg.head.itemname : "";
+	strcpy(tagname, msg.head.itemname);
 	return true;
 }
 
 extern "C" bool createqueue(int sockfd, const char* queuename, int recordsize, int recordnum, int operatemode, void* type, int typesize, unsigned int* error)
 {
-	if (error == nullptr )
-		throw std::runtime_error("parameter error is null");
+	if (error == nullptr)
+		return false;
 
 	AutoErrorCheck _checker(error);
 	// 参数校验
@@ -1801,7 +1705,7 @@ extern "C" bool createqueue(int sockfd, const char* queuename, int recordsize, i
 extern "C" bool getresponse(int sockfd, const char* request_tag, void* request_value, int request_size, const char* response_tag, void* response_value, int response_size, unsigned int* error, int timeout_ms)
 {
 	if (error == nullptr)
-		throw std::runtime_error("parameter error is null");
+		return false;
 
 	AutoErrorCheck _checker(error);
 	if (sockfd < 0 || !request_tag || !response_tag || !request_value || !response_value ||
@@ -1915,9 +1819,10 @@ extern "C" bool CreateQ(const char* lpFileName,
 	strcat(dqFileName, lpFileName);
 
 	// 先查找同名文件删除之
-	if (fs::exists(dqFileName))
+	std::error_code ec;
+	if (fs::exists(dqFileName, ec))
 	{
-		if (!fs::remove(dqFileName)) {		//C++17
+		if (!fs::remove(dqFileName, ec)) {		//C++17
 			errorCode = ERROR_FILE_IN_USE;
 			return false;
 		}
@@ -1925,8 +1830,8 @@ extern "C" bool CreateQ(const char* lpFileName,
 
 	// 创建父目录（如果不存在）
 	fs::path path(dqFileName);
-	if (path.has_parent_path() && !fs::exists(path.parent_path())) {
-		if (!fs::create_directories(path.parent_path())) {
+	if (path.has_parent_path() && !fs::exists(path.parent_path(), ec)) {
+		if (!fs::create_directories(path.parent_path(), ec)) {
 			errorCode = ERROR_FILE_CREATE_FAILSURE;
 			return false;
 		}
@@ -3014,9 +2919,10 @@ extern "C" bool CreateB(const char* lpFileName, int size)
 	strcat(dqFileName, lpFileName);
 
 	// 先查找同名文件删除之
-	if (fs::exists(dqFileName))
+	std::error_code ec;
+	if (fs::exists(dqFileName, ec))
 	{
-		if (!fs::remove(dqFileName)) {		//C++17
+		if (!fs::remove(dqFileName, ec)) {		//C++17
 			errorCode = ERROR_FILE_IN_USE;
 			return false;
 		}
@@ -3024,8 +2930,8 @@ extern "C" bool CreateB(const char* lpFileName, int size)
 
 	// 创建父目录（如果不存在）
 	fs::path path(dqFileName);
-	if (path.has_parent_path() && !fs::exists(path.parent_path())) {
-		if (!fs::create_directories(path.parent_path())) {
+	if (path.has_parent_path() && !fs::exists(path.parent_path(), ec)) {
+		if (!fs::create_directories(path.parent_path(), ec)) {
 			errorCode = ERROR_FILE_CREATE_FAILSURE;
 			return false;
 		}
@@ -3331,7 +3237,7 @@ extern "C" bool ReadB_String(const char* lpBulletinName, const char* lpItemName,
 }
 
 //返回字符串的实际长度，不包括'\0'结尾	
-extern "C" bool ReadB_String2(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, int& strLength, timespec* timestamp)
+extern "C" bool ReadB_String2(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, int* strLength, timespec* timestamp)
 {
 	// Search bulletin in hash table.
 	struct TABLE_MSG tabmsg;
@@ -3393,7 +3299,7 @@ extern "C" bool ReadB_String2(const char* lpBulletinName, const char* lpItemName
 		*timestamp = pIndex[loc].timestamp;
 	}
 
-	strLength = pIndex[loc].strlenth; // 返回实际字符串长度，不包括'\0'结尾	
+	*strLength = pIndex[loc].strlenth; // 返回实际字符串长度，不包括'\0'结尾	
 	return true;
 }
 
@@ -4024,11 +3930,14 @@ extern "C" bool ListTags(const char* lpBoardName, int start, char* buff, int buf
 	return true;
 }
 
-extern "C" bool readtype(int sockfd, char* qbdname, char* tagname, void* inbuff, int buffsize, int* ptypesize, unsigned int* error)
+extern "C" bool readtype(int sockfd, const char* qbdname, const char* tagname, void* inbuff, int buffsize, int* ptypesize, unsigned int* error)
 {
+	if (error == nullptr)
+		return false;
+
 	AutoErrorCheck _checker(error);
 	// 参数校验
-	if ((!tagname && !qbdname) || !inbuff || !error || buffsize <= 0) {
+	if ((!tagname && !qbdname) || !inbuff || buffsize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
 	}
@@ -4265,10 +4174,10 @@ extern "C" bool registertag(int sockfd, const char* tagname, unsigned int* error
 	return true;
 }
 
-extern "C" bool write_plc_string(int sockfd, const char* tagname, std::string str, unsigned int* error)
+extern "C" bool write_plc_string(int sockfd, const char* tagname, const char* str, unsigned int* error)
 {
 	AutoErrorCheck _checker(error);
-	return writeb_string_plc(sockfd, tagname, str.c_str(), error);
+	return writeb_string_plc(sockfd, tagname, str, error);
 }
 
 extern "C" bool write_plc_bool(int sockfd, const char* tagname, bool value, unsigned int* error)

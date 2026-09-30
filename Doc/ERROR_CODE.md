@@ -28,7 +28,7 @@
 enum class ErrorLevel {
     Deprecated = -1, // 废弃：表示错误码已经不被使用
     Ignore = 0,      // 忽视：表示不需要特殊处理的错误，不打断程序执行流
-    Fatal = 1        // 致命：将抛出异常、退出进程或程序
+    Fatal = 1        // 致命：C 接口打印日志并返回错误码，GplatConnection 抛 std::runtime_error
 };
 ```
 
@@ -81,7 +81,7 @@ struct AutoErrorCheck {
         g_api_depth++;
     }
 
-    ~AutoErrorCheck() noexcept(false) {
+    ~AutoErrorCheck() {
         // 离开函数时减少深度计数器
         g_api_depth--;
 		// 只有当回到最外层 API 调用时，即 g_api_depth == 0 时，才检查错误码，避免在嵌套调用中多次检查
@@ -122,6 +122,8 @@ extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, 
 ### 3.2 客户端
 
 作为调用方，原有的包含 `&error` 参数的语句不需要做任何修改，错误码的监听和处理完全由库实现端的拦截器自动完成。
+
+`higplat.h` 是纯 C 接口，异常不得穿过库边界，因此拦截器只打印 Fatal 日志。需要异常语义的 C++ 调用方使用 `GplatConnection`，它通过导出的 `IsFatalError(error, &message)` 判断并在调用方侧抛 `std::runtime_error`。
 
 ## 4. 请求-响应错误码
 

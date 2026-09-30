@@ -81,11 +81,11 @@ void PrintBanner(const std::string& tagName, const std::string& label)
 void ReceivePosts(int conn, const TagTypes& types, const std::atomic<bool>& stopping, std::atomic<bool>& finished)
 {
 	std::vector<char> buffer(kPostBufferSize);
-	std::string tagName;
+	char tagName[GPLAT_TAGNAME_SIZE] = {};
 	unsigned int err = 0;
 	try
 	{
-		while (waitpostdata(conn, tagName, buffer.data(), (int)buffer.size(), -1, &err))
+		while (waitpostdata(conn, tagName, sizeof(tagName), buffer.data(), (int)buffer.size(), -1, &err))
 		{
 			const auto it = types.find(tagName);
 			if (it == types.end())
