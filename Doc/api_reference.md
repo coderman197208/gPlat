@@ -212,6 +212,33 @@ bool getresponse(int sockfd, const char* request_tag, void* request_value, int r
 
 ---
 
+## C++ 封装类 GplatConnection
+
+头文件 `include/gplat_connection.h`，header-only（全部 inline 转调上面的 `extern "C"` 接口），`libhigplat.so` 不导出任何 C++ 符号，因此不引入额外的 ABI 依赖；类布局变化只需用户重新编译。
+
+```cpp
+GplatConnection conn("127.0.0.1", 8777);   // 构造只保存地址，不连接
+if (!conn.open()) { /* 连接失败 */ }        // 已打开时直接返回 true
+int value = 100;
+unsigned int err = conn.writeb("temperature", &value, sizeof(value));   // 0 表示成功
+std::string s;
+err = conn.readb_string("name", s);
+conn.close();                              // 析构时也会自动关闭
+```
+
+- **与 C 接口的差异**: 去掉 `sockfd` 参数；去掉 `unsigned int* error`，改为返回值（`[[nodiscard]] unsigned int`，0 为成功）；名称参数为 `const std::string&`，写入缓冲区为 `const void*`
+- **重载**: `readb_string(tag, char*, int, timespec* = nullptr)` / `readb_string(tag, std::string&, timespec* = nullptr)`（对应 `readb_string2`）；`writeb_string` / `writeb_string_notpost` 均有 `const char*` 与 `const std::string&` 两个版本；`write_plc_*` 保留 `=delete` 模板，禁止隐式类型转换
+- **已封装**: `readq` `writeq` `clearq` `peekq` `readb` `writeb` `writeb_notpost` `readb_string` `writeb_string` `writeb_string_notpost` `subscribe` `subscribedelaypost` `waitpostdata` `getresponse` `write_plc_{string,bool,short,ushort,int,uint,float}`
+- **waitpostdata 超时**: 返回 `ERROR_WAIT_TIMEOUT`，`tagname` 置为 `"WAIT_TIMEOUT"`
+- **未连接**: 未 `open()` 或连接已断开时直接返回 `ERROR_SOCKET_NOT_CONNECTED`，不自动重连（重连会丢失订阅），需调用者重新 `open()` 并重新订阅
+- **断线识别**: C 接口在 I/O 失败等情况下会在内部 `close(sockfd)`，封装类按错误码判断并把连接标记为关闭（不会重复 close）：失败且 error 为 0、errno（< 1000）、`ERROR_SOCKET_NOT_CONNECTED`、`ERROR_INVALID_RESPONSE`、`ERROR_BUFFER_TOO_SMALL`；`subscribe` / `waitpostdata` 另外在任何服务端错误时（`ERROR_INVALID_PARAMETER`、`ERROR_WAIT_TIMEOUT` 除外）视为已断开。`is_open()` 只反映本地状态，对端关闭要到下一次调用失败才能感知
+- **异常**: Fatal 级错误（如 `ERROR_TAG_NOT_EXIST`、`ERROR_BUFFER_TOO_SMALL`）与 C 接口一样抛 `std::runtime_error`，抛出前已更新连接状态
+- **拷贝/移动**: 不可拷贝，可移动（被移动对象变为未连接）
+- **线程安全**: 不加锁，一个连接只能在一个线程中使用
+- **示例/测试**: `testapp6`
+
+---
+
 ## 错误码 (部分)
 
 ```cpp

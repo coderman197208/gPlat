@@ -58,6 +58,10 @@ Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `
 
 Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 
+## C++ Wrapper (`include/gplat_connection.h`)
+
+`GplatConnection(server, port)`: header-only inline wrapper over the network API (no C++ symbols exported from `libhigplat.so`). `open()`/`close()`/`is_open()`; methods drop `sockfd`, return the error code (`[[nodiscard]] unsigned int`, 0 = ok), take `const std::string&` names; `readb_string`/`writeb_string` overloads replace the `*2` variants. Not open → `ERROR_SOCKET_NOT_CONNECTED`, no auto-reconnect. Because C functions `close(sockfd)` internally on I/O/protocol errors, `call()` marks the fd closed by error-code heuristics (`closed_by_library`); Fatal-level exceptions pass through after that update. Non-copyable, movable, not thread-safe.
+
 ## Local API (direct mmap on QBD files, `higplat/higplat.cpp`)
 
 - Board: `CreateB`, `CreateItem`, `DeleteItem`, `ReadB`, `WriteB`, `ReadB_String`, `WriteB_String`, `WriteBOffSet`, `ClearB`, `ReadInfoB`, `ReadBoardInfo`, `ReadType`, `ListTags`
@@ -78,7 +82,7 @@ Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 |---|---|
 | `gplat/` | Server. Entry `nginx.cxx`; network `ngx_c_socket*`; logic `ngx_c_slogic.*`; `CSubscribe.*` |
 | `higplat/` | `libhigplat.so`: local mmap QBD ops + network client |
-| `include/` | Shared headers (`higplat.h`, `msg.h`, `timer_manager.h`, `podstring.h`, `type_code.h`, `struct_reflect.h`, `struct_registry.h`, `user_types.h`); also a header-compile test project |
+| `include/` | Shared headers (`higplat.h`, `gplat_connection.h`, `msg.h`, `timer_manager.h`, `podstring.h`, `type_code.h`, `struct_reflect.h`, `struct_registry.h`, `user_types.h`); also a header-compile test project |
 | `createq/`, `createb/` | CLI to create Queue / Board files |
 | `toolgplat/` | Interactive REPL client (readline, type-aware display). Scoped commands: global / board (`open board`) / queue (`open queue <name>`: desc, peek, last, clear, write). `export script [file]` rebuilds create commands from stored types (`export.cpp`); script files accept tag and queue create lines |
 | `testapp/` | Integration test (subscribe/read/write threads) |
@@ -86,6 +90,7 @@ Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 | `testapp3/` | Struct type test (`PodString`, arrays, nested) |
 | `testapp4/` | Subscribe/`waitpostdata` test |
 | `testapp5/` | `getresponse` request/response test (basic, pending events, concurrency, timeout); Makefile only |
+| `testapp6/` | `GplatConnection` wrapper test (`testapp6 [ip] [port]`); Makefile only |
 | `s7ioserver/` | PLC ↔ Board bridge |
 | `snap7/` | Snap7 source (`libsnap7.so`) |
 | `snap7.demo.cpp/` | Snap7 demo (VS only, not in Makefile) |
