@@ -127,11 +127,7 @@ ssize_t CSocekt::recvproc(lpngx_connection_t c, char* buff, ssize_t buflen)
 	if (n == 0)
 	{
 		//客户端关闭【应该是正常完成了4次挥手】，直接回收连接，关闭socket即可 
-		if (close(c->fd) == -1)
-		{
-			ngx_log_error_core(NGX_LOG_ALERT, errno, "CSocekt::recvproc()中close(%d)失败!", c->fd);
-		}
-		inRecyConnectQueue(c);
+		ngx_close_and_recycle(c);
 		return -1;
 	}
 
@@ -170,11 +166,7 @@ ssize_t CSocekt::recvproc(lpngx_connection_t c, char* buff, ssize_t buflen)
 
 		//这种真正的错误就要，直接关闭套接字，释放连接池中连接了
 		//ngx_close_connection(c);
-		if (close(c->fd) == -1)
-		{
-			ngx_log_error_core(NGX_LOG_ALERT, errno, "CSocekt::recvproc()中close_2(%d)失败!", c->fd);
-		}
-		inRecyConnectQueue(c);
+		ngx_close_and_recycle(c);
 		return -1;
 	}
 
@@ -273,7 +265,8 @@ ssize_t CSocekt::sendproc(lpngx_connection_t c, char* buff, ssize_t size)
 
 	for (;; )
 	{
-		n = send(c->fd, buff, size, 0); //send()系统函数， 最后一个参数flag，一般为0； 
+		//对端已重置时 send() 默认会产生 SIGPIPE 杀死整个 worker 进程，这里改为返回 EPIPE
+		n = send(c->fd, buff, size, MSG_NOSIGNAL);
 		if (n > 0) //成功发送了一些数据
 		{
 			//发送成功一些数据，但发送了多少，我们这里不关心，也不需要再次send
@@ -316,49 +309,52 @@ ssize_t CSocekt::sendproc(lpngx_connection_t c, char* buff, ssize_t size)
 void CSocekt::ngx_write_request_handler(lpngx_connection_t pConn)
 {
 	CMemory* p_memory = CMemory::GetInstance();
-
-	//这些代码的书写可以参照 void* CSocekt::ServerSendQueueThread(void* threadData)
-	ssize_t sendsize = sendproc(pConn, pConn->psendbuf, pConn->isendlen);
-
-	if (sendsize > 0 && sendsize != pConn->isendlen)
+	bool hasBacklog;
 	{
-		//没有全部发送完毕，数据只发出去了一部分，那么发送到了哪里，剩余多少，继续记录，方便下次sendproc()时使用
-		pConn->psendbuf = pConn->psendbuf + sendsize;
-		pConn->isendlen = pConn->isendlen - sendsize;
-		return;
-	}
-	else if (sendsize == -1)
-	{
-		//这不太可能，可以发送数据时通知我发送数据，我发送时你却通知我发送缓冲区满？
-		ngx_log_stderr(errno, "CSocekt::ngx_write_request_handler()时if(sendsize == -1)成立，这很怪异。"); //打印个日志，别的先不干啥
-		return;
-	}
+		CLock sendLock(&pConn->sendMutex);
 
-	if (sendsize > 0 && sendsize == pConn->isendlen) //成功发送完毕，做个通知是可以的；
-	{
-		//如果是成功的发送完毕数据，则把写事件通知从epoll中干掉吧；其他情况，那就是断线了，等着系统内核把连接从红黑树中干掉即可；
-		if (ngx_epoll_oper_event(
-			pConn->fd,          //socket句柄
-			EPOLL_CTL_MOD,      //事件类型，这里是修改【因为我们准备减去写通知】
-			EPOLLOUT,           //标志，这里代表要减去的标志,EPOLLOUT：可写【可写的时候通知我】
-			1,                  //对于事件类型为增加的，EPOLL_CTL_MOD需要这个参数, 0：增加   1：去掉 2：完全覆盖
-			pConn               //连接池中的连接
-		) == -1)
+		ssize_t sendsize = sendproc(pConn, pConn->psendbuf, pConn->isendlen);
+
+		if (sendsize > 0 && sendsize != pConn->isendlen)
 		{
-			//有这情况发生？这可比较麻烦，不过先do nothing
-			ngx_log_stderr(errno, "CSocekt::ngx_write_request_handler()中ngx_epoll_oper_event()失败。");
+			//没有全部发送完毕，数据只发出去了一部分，那么发送到了哪里，剩余多少，继续记录，方便下次sendproc()时使用
+			pConn->psendbuf = pConn->psendbuf + sendsize;
+			pConn->isendlen = pConn->isendlen - sendsize;
+			return;
 		}
+		else if (sendsize == -1)
+		{
+			//这不太可能，可以发送数据时通知我发送数据，我发送时你却通知我发送缓冲区满？
+			ngx_log_stderr(errno, "CSocekt::ngx_write_request_handler()时if(sendsize == -1)成立，这很怪异。"); //打印个日志，别的先不干啥
+			return;
+		}
+
+		if (sendsize > 0 && sendsize == pConn->isendlen) //成功发送完毕，做个通知是可以的；
+		{
+			//如果是成功的发送完毕数据，则把写事件通知从epoll中干掉吧；其他情况，那就是断线了，等着系统内核把连接从红黑树中干掉即可；
+			if (ngx_epoll_oper_event(
+				pConn->fd,          //socket句柄
+				EPOLL_CTL_MOD,      //事件类型，这里是修改【因为我们准备减去写通知】
+				EPOLLOUT,           //标志，这里代表要减去的标志,EPOLLOUT：可写【可写的时候通知我】
+				1,                  //对于事件类型为增加的，EPOLL_CTL_MOD需要这个参数, 0：增加   1：去掉 2：完全覆盖
+				pConn               //连接池中的连接
+			) == -1)
+			{
+				//有这情况发生？这可比较麻烦，不过先do nothing
+				ngx_log_stderr(errno, "CSocekt::ngx_write_request_handler()中ngx_epoll_oper_event()失败。");
+			}
+		}
+
+		//能走下来的，要么数据发送完毕了，要么对端断开了，那么执行收尾工作吧
+		p_memory->FreeMemory(pConn->psendMemPointer);  //释放内存
+		pConn->psendMemPointer = NULL;
+		--pConn->iThrowsendCount;
+		hasBacklog = pConn->iSendQueued > 0;
 	}
 
-	//能走下来的，要么数据发送完毕了，要么对端断开了，那么执行收尾工作吧
-	//数据发送完毕，或者把需要发送的数据干掉，都说明发送缓冲区可能有地方了，让发送线程往下走判断能否发送新数据
-	if (sem_post(&m_semEventSendQueue) == -1)
+	//必须在 iThrowsendCount 减完之后再唤醒发送线程，否则它可能看到旧值把积压消息放回队列，之后再无人唤醒
+	if (hasBacklog && sem_post(&m_semEventSendQueue) == -1)
 		ngx_log_stderr(0, "CSocekt::ngx_write_request_handler()中sem_post(&m_semEventSendQueue)失败.");
-
-	p_memory->FreeMemory(pConn->psendMemPointer);  //释放内存
-	pConn->psendMemPointer = NULL;
-	--pConn->iThrowsendCount;  //建议放在最后执行
-	return;
 }
 
 //消息处理线程主函数，专门处理各种接收到的TCP消息

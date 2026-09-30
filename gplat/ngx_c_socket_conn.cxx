@@ -25,17 +25,22 @@
 ngx_connection_s::ngx_connection_s()
 {
 	iCurrsequence = 0;
+	iSendQueued = 0;
 	pthread_mutex_init(&logicPorcMutex, NULL); //互斥量初始化
+	pthread_mutex_init(&sendMutex, NULL);
 }
 
 ngx_connection_s::~ngx_connection_s()
 {
 	pthread_mutex_destroy(&logicPorcMutex);    //互斥量释放
+	pthread_mutex_destroy(&sendMutex);
 }
 
 //分配出去一个连接的时候初始化一些内容,原来内容放在 ngx_get_connection()里，现在放在这里
 void ngx_connection_s::GetOneToUse()
 {
+	CLock sendLock(&sendMutex);
+
 	++iCurrsequence;
 
 	curStat = _PKG_HD_INIT;                   //收包状态处于 初始状态，准备接收数据包头【状态机】
@@ -46,6 +51,7 @@ void ngx_connection_s::GetOneToUse()
 
 	precvMemPointer = NULL;                   //既然没new内存，那自然指向的内存地址先给NULL
 	iThrowsendCount = 0;                      //原子的
+	iSendQueued = 0;                          //旧连接残留在发送队列里的消息序号已过期，会被直接丢弃且不再计数
 	psendMemPointer = NULL;                   //发送数据头指针记录
 	events = 0;                               //epoll事件先给0 
 
@@ -57,6 +63,8 @@ void ngx_connection_s::GetOneToUse()
 //回收回来一个连接的时候做一些事
 void ngx_connection_s::PutOneToFree()
 {
+	CLock sendLock(&sendMutex);
+
 	++iCurrsequence;
 	if (precvMemPointer != NULL)//我们曾经给这个连接分配过接收数据的内存，则要释放内存
 	{
@@ -162,10 +170,32 @@ void CSocekt::inRecyConnectQueue(lpngx_connection_t pConn)
 	CLock lock(&m_recyconnqueueMutex); //针对连接回收列表的互斥量，因为线程ServerRecyConnectionThread()也要访问回收列表；
 
 	pConn->inRecyTime = time(NULL);        //记录回收时间
-	++pConn->iCurrsequence;
 	m_recyconnectionList.push_back(pConn); //等待ServerRecyConnectionThread线程自会处理 
 	++m_totol_recyconnection_n;            //待释放连接队列大小+1
 	return;
+}
+
+//对端断开或出错时调用：关闭 socket 并放入回收队列
+//关闭和序号递增必须在 sendMutex 内完成，否则其他线程可能在已关闭、甚至已被新连接复用的 fd 上 send()
+void CSocekt::ngx_close_and_recycle(lpngx_connection_t pConn)
+{
+	{
+		CLock sendLock(&pConn->sendMutex);
+		if (close(pConn->fd) == -1)
+		{
+			ngx_log_error_core(NGX_LOG_ALERT, errno, "CSocekt::ngx_close_and_recycle()中close(%d)失败!", pConn->fd);
+		}
+		++pConn->iCurrsequence;
+
+		//fd 已关闭，不会再有 EPOLLOUT，等待续发的数据直接丢弃
+		if (pConn->iThrowsendCount > 0)
+		{
+			CMemory::GetInstance()->FreeMemory(pConn->psendMemPointer);
+			pConn->psendMemPointer = NULL;
+			pConn->iThrowsendCount = 0;
+		}
+	}
+	inRecyConnectQueue(pConn);
 }
 
 //处理连接回收的线程

@@ -232,10 +232,10 @@ gPlat 的核心数据结构，提供三种存储类型：
   └─ ThreadRecvProcFunc()
       └─ 处理业务逻辑（MSGID 命令）
 
-消息发送线程 (1个):
-  └─ ServerSendQueueThread()
-      └─ 从发送队列中取消息
-          └─ 写入 socket
+消息发送:
+  └─ msgSend()（任意线程调用，按连接加 sendMutex）
+      ├─ 连接无积压: 调用线程直接 send()，发不完的部分交给 EPOLLOUT
+      └─ 连接有积压: 排入发送队列，由 ServerSendQueueThread() (1个) 按序发送
 ```
 
 **关键文件:**

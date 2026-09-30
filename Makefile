@@ -129,6 +129,14 @@ TESTAPP6_BIN := $(BIN_DIR)/testapp6
 TESTAPP6_INCLUDES := -Iinclude
 TESTAPP6_LDFLAGS := -lpthread -L$(LIB_DIR) -lhigplat -Wl,-rpath,'$$ORIGIN/../lib'
 
+# --- Module: testapp7 (Tool) ---
+TESTAPP7_DIR := testapp7
+TESTAPP7_SRCS := $(wildcard $(TESTAPP7_DIR)/*.cpp)
+TESTAPP7_OBJS := $(patsubst $(TESTAPP7_DIR)/%.cpp, $(BUILD_DIR)/$(TESTAPP7_DIR)/%.o, $(TESTAPP7_SRCS))
+TESTAPP7_BIN := $(BIN_DIR)/testapp7
+TESTAPP7_INCLUDES := -Iinclude
+TESTAPP7_LDFLAGS := -lpthread -L$(LIB_DIR) -lhigplat -Wl,-rpath,'$$ORIGIN/../lib'
+
 # --- Module: snap7 (Third-party Shared Library) ---
 SNAP7_BUILD_DIR := snap7/build/linux
 SNAP7_UPSTREAM_LIB := snap7/build/bin/linux/libsnap7.so
@@ -148,11 +156,11 @@ S7IOSERVER_LDFLAGS := -lpthread -L$(LIB_DIR) -lhigplat -lsnap7 -Wl,-rpath,'$$ORI
 
 .PHONY: all clean directories help install \
 	gplat higplat createq createb toolgplat snap7 s7ioserver \
-	testapp testapp2 testapp3 testapp4 testapp5 testapp6 \
+	testapp testapp2 testapp3 testapp4 testapp5 testapp6 testapp7 \
 	clean-gplat clean-higplat clean-createq clean-createb clean-toolgplat clean-snap7 clean-s7ioserver \
-	clean-testapp clean-testapp2 clean-testapp3 clean-testapp4 clean-testapp5 clean-testapp6
+	clean-testapp clean-testapp2 clean-testapp3 clean-testapp4 clean-testapp5 clean-testapp6 clean-testapp7
 
-all: directories $(HIGPLAT_LIB) $(SNAP7_LIB) $(GPLAT_BIN) $(CREATEQ_BIN) $(CREATEB_BIN) $(TOOLGPLAT_BIN) $(S7IOSERVER_BIN) $(TESTAPP_BIN) $(TESTAPP2_BIN) $(TESTAPP3_BIN) $(TESTAPP4_BIN) $(TESTAPP5_BIN) $(TESTAPP6_BIN)
+all: directories $(HIGPLAT_LIB) $(SNAP7_LIB) $(GPLAT_BIN) $(CREATEQ_BIN) $(CREATEB_BIN) $(TOOLGPLAT_BIN) $(S7IOSERVER_BIN) $(TESTAPP_BIN) $(TESTAPP2_BIN) $(TESTAPP3_BIN) $(TESTAPP4_BIN) $(TESTAPP5_BIN) $(TESTAPP6_BIN) $(TESTAPP7_BIN)
 	@echo "OK"
 
 gplat: directories $(HIGPLAT_LIB) $(GPLAT_BIN)
@@ -186,6 +194,9 @@ testapp5: directories $(HIGPLAT_LIB) $(TESTAPP5_BIN)
 	@echo "OK"
 
 testapp6: directories $(HIGPLAT_LIB) $(TESTAPP6_BIN)
+	@echo "OK"
+
+testapp7: directories $(HIGPLAT_LIB) $(TESTAPP7_BIN)
 	@echo "OK"
 
 snap7: directories $(SNAP7_LIB)
@@ -307,6 +318,16 @@ $(BUILD_DIR)/$(TESTAPP6_DIR)/%.o: $(TESTAPP6_DIR)/%.cpp
 	@echo "Compiling $<"
 	@$(CXX) $(CXXFLAGS) $(TESTAPP6_INCLUDES) -c $< -o $@
 
+# --- Rules for testapp7 ---
+$(TESTAPP7_BIN): $(TESTAPP7_OBJS) $(HIGPLAT_LIB)
+	@echo "Linking $@"
+	@$(CXX) $(LDFLAGS) $(TESTAPP7_OBJS) $(TESTAPP7_LDFLAGS) -o $@
+
+$(BUILD_DIR)/$(TESTAPP7_DIR)/%.o: $(TESTAPP7_DIR)/%.cpp
+	@mkdir -p $(@D)
+	@echo "Compiling $<"
+	@$(CXX) $(CXXFLAGS) $(TESTAPP7_INCLUDES) -c $< -o $@
+
 # --- Rules for snap7 third-party ---
 $(SNAP7_LIB):
 	@echo "Building third-party snap7 via upstream makefile"
@@ -390,6 +411,12 @@ clean-testapp6:
 	@rm -rf $(BUILD_DIR)/$(TESTAPP6_DIR)
 	@echo "OK"
 
+clean-testapp7:
+	@echo "Cleaning testapp7 artifacts..."
+	@rm -f $(TESTAPP7_BIN)
+	@rm -rf $(BUILD_DIR)/$(TESTAPP7_DIR)
+	@echo "OK"
+
 clean-snap7:
 	@echo "Cleaning snap7 artifacts via upstream makefile"
 	@$(MAKE) -C $(SNAP7_BUILD_DIR) clean >/dev/null 2>&1 || true
@@ -419,7 +446,7 @@ help:
 	@echo "The compiled binaries will be located in the 'bin/' directory, and the shared library will be in 'lib/'."
 	@echo "And the dependency files (.d) and the object files (.o) will be located in 'build/'."
 	@echo "Available targets:"
-	@echo "  all                    : Build all modules (higplat, snap7, gplat, createq, createb, toolgplat, s7ioserver, testapp, testapp2, testapp3, testapp4, testapp5, testapp6)"
+	@echo "  all                    : Build all modules (higplat, snap7, gplat, createq, createb, toolgplat, s7ioserver, testapp, testapp2, testapp3, testapp4, testapp5, testapp6, testapp7)"
 	@echo "  gplat|s7ioserver|...   : Build a single target"
 	@echo "  clean                  : Remove build directories and binaries"
 	@echo "  clean-<target>         : clean one target (e.g. clean-gplat)"
@@ -438,4 +465,5 @@ help:
 -include $(TESTAPP4_OBJS:.o=.d)
 -include $(TESTAPP5_OBJS:.o=.d)
 -include $(TESTAPP6_OBJS:.o=.d)
+-include $(TESTAPP7_OBJS:.o=.d)
 -include $(S7IOSERVER_OBJS:.o=.d)

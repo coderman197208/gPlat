@@ -19,7 +19,8 @@ Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `
 
 - Master/worker processes (`ngx_master_process_cycle()`), `socketpair()` for exit signaling; daemon via `ngx_daemon()`
 - Epoll (LT) event loop; connection pool of `ngx_connection_s` with free-list and delayed recycling (`Sock_RecyConnectionWaitTime`, code default 60s)
-- `CThreadPool` consumes a message queue (pthread mutex/condvar); dedicated send thread dequeues `m_MsgSendQueue` via semaphore, EPOLLOUT fallback on partial sends
+- `CThreadPool` consumes a message queue (pthread mutex/condvar)
+- **Send path** (`msgSend()`, any thread): under per-connection `sendMutex`, sends directly (non-blocking, `MSG_NOSIGNAL`) when the connection has no backlog (`iSendQueued == 0 && iThrowsendCount == 0`); otherwise queues to `m_MsgSendQueue` for the send thread, which swaps the queue out and sends without holding the queue lock, deferring a connection's messages while it waits for EPOLLOUT. Partial send → remainder via EPOLLOUT (`ngx_write_request_handler`). `close(fd)` + `++iCurrsequence` happen under `sendMutex` (`ngx_close_and_recycle`). Lock order: `logicPorcMutex` → `sendMutex` → `m_sendMessageQueueMutex`
 - `TimerManager` (`include/timer_manager.h`): epoll + timerfd + min-heap, drift compensation
 - Singletons with nested `CGarhuishou` destructor: `CConfig`, `CMemory`. Globals in `nginx.cxx`: `g_socket` (CLogicSocket), `g_threadpool`, `g_tm`
 - `ngx_worker_process_init`: creates thread pool, starts 5 timers (`timer_500ms`, `timer_1s`, `timer_2s`, `timer_3s`, `timer_5s`) calling `NotifyTimerSubscriber()`, inits epoll and send/recycle threads
@@ -93,6 +94,7 @@ Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 | `testapp4/` | Subscribe/`waitpostdata` test |
 | `testapp5/` | `getresponse` request/response test (basic, pending events, concurrency, timeout); Makefile only |
 | `testapp6/` | `GplatConnection` wrapper test (`testapp6 [ip] [port]`); Makefile only |
+| `testapp7/` | Send-path test (`testapp7 [ip] [port]`, use ≥2 worker threads): small client rcvbuf/MSS forces partial sends; pipelined large READB with slow reader (EPOLLOUT/backlog/stall), repeated bursts at the buffer-full boundary (concurrent sends on one connection), POST while backlogged, disconnect while sending + fd reuse; Makefile only |
 | `s7ioserver/` | PLC ↔ Board bridge |
 | `snap7/` | Snap7 source (`libsnap7.so`) |
 | `snap7.demo.cpp/` | Snap7 demo (VS only, not in Makefile) |

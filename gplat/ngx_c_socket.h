@@ -74,7 +74,9 @@ struct ngx_connection_s
 
 	pthread_mutex_t           logicPorcMutex;                 //逻辑处理相关的互斥量      
 
-	//和发包有关
+	//和发包有关：下面的发送状态以及对 fd 的 send()/close() 都在 sendMutex 保护下进行
+	pthread_mutex_t           sendMutex;                      //串行化本连接的发送，任何线程都可能向本连接发送消息
+	int                       iSendQueued;                    //本连接在发送队列中尚未发出的消息数，>0 时新消息必须排队以保持顺序
 	std::atomic<int>          iThrowsendCount;                //发送消息，如果发送缓冲区满了，则需要通过epoll事件来驱动消息的继续发送，所以如果发送缓冲区满，则用这个变量标记
 	char* psendMemPointer;               //发送完成后释放用的，整个数据的头指针，其实是 消息头 + 包头 + 包体
 	char* psendbuf;                      //发送数据的缓冲区的头指针，开始 其实是包头+包体
@@ -158,7 +160,7 @@ public:
 	virtual void CancelRequest(lpngx_connection_t pConn) {};
 
 	//gyb 没办法，超时后要用CLogicSocket全局对象调用此方法发送数据，所以这里要公开	
-	void msgSend(char* psendbuf);											//把数据扔到待发送对列中 
+	void msgSend(char* psendbuf);											//发送一个消息：连接无积压时在调用线程直接发送，否则排入发送队列 
 
 private:
 	void ReadConf();														//专门用于读各种配置项	
@@ -171,6 +173,7 @@ private:
 	void ngx_read_request_handler(lpngx_connection_t pConn);				//设置数据来时的读处理函数
 	void ngx_write_request_handler(lpngx_connection_t pConn);				//设置数据发送时的写处理函数
 	void ngx_close_connection(lpngx_connection_t pConn);					//通用连接关闭函数，资源用这个函数释放【因为这里涉及到好几个要释放的资源，所以写成函数】
+	void ngx_close_and_recycle(lpngx_connection_t pConn);					//已建立的连接断开时关闭 socket 并放入回收队列
 
 	ssize_t recvproc(lpngx_connection_t pConn, char* buff, ssize_t buflen); //接收从客户端来的数据专用函数
 	void ngx_wait_request_handler_proc_p1(lpngx_connection_t pConn);		//包头收完整后的处理，我们称为包处理阶段1：写成函数，方便复用	                                                                   
@@ -178,6 +181,7 @@ private:
 	void clearMsgSendQueue();												//处理发送消息队列  
 
 	ssize_t sendproc(lpngx_connection_t c, char* buff, ssize_t size);		//将数据发送到客户端 
+	void sendMsgLocked(lpngx_connection_t pConn, char* pMsgBuf);			//调用者须持有 pConn->sendMutex
 
 	//获取对端信息相关                                              
 	size_t ngx_sock_ntop(struct sockaddr* sa, int port, u_char* text, size_t len);  //根据参数1给定的信息，获取地址端口字符串，返回这个字符串的长度

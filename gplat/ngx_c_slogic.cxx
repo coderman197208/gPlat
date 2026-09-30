@@ -678,6 +678,16 @@ void CLogicSocket::NotifySubscriber(std::string tagName, char *pPkgBody, unsigne
 					LPSTRUC_MSG_HEADER ptmpMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
 					lpngx_connection_t pconn = ptmpMsgHeader->pConn;
 					[[maybe_unused]] PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + sizeof(STRUC_MSG_HEADER));
+
+					// 定时器线程中执行，必须与 NotifySubscriber/HandlePostWait/超时回调互斥，否则一次 waitpostdata 可能收到两个包
+					CLock lock(&pconn->logicPorcMutex);
+					if (pconn->iCurrsequence != ptmpMsgHeader->iCurrsequence)
+					{
+						// 延时期间连接已断开或已被复用
+						CMemory::GetInstance()->FreeMemory(p_sendbuf);
+						return;
+					}
+
 					if (pconn->m_bWaitingTimeout)
 					{
 						pconn->m_bWaitingTimeout = false;

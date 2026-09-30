@@ -210,6 +210,7 @@ unsigned int TestThreadProc2(void* pParam)
 			//可以在这里执行周期类任务、控制线程退出等等
 			if (exitloop)
 				break;
+			continue;
 		}
 
 		DataChangedHandler(eventname, pdata, buffsize);
