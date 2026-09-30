@@ -114,9 +114,9 @@ bool CreateTagFromWords(int conn, const std::vector<std::string>& words)
 bool CreateQueue(int conn, const std::string& queueName, const std::string& typeName, int recordCount, bool shiftMode)
 {
 	ElementType type;
-	if (!ResolveStructType(typeName, type))
+	if (!ResolveTagType(typeName, type) || type.code != kStructTypeCode)
 	{
-		if (FindTypeByName(typeName))
+		if (FindTypeByName(typeName) || ToLower(typeName) == "string")
 			std::cout << "不支持创建简单和字符串类型的队列，请定义队列的数据结构！" << std::endl;
 		else
 			std::cout << "Unknown type '" << typeName << "'." << std::endl;
@@ -149,6 +149,24 @@ bool CreateQueue(int conn, const std::string& queueName, const std::string& type
 	return true;
 }
 
+bool CreateQueueFromWords(int conn, const std::vector<std::string>& words)
+{
+	const bool validMode = (words.size() == 5) || (words.size() == 6 && words[5] == "shift");
+	if (!validMode)
+	{
+		std::cout << "Usage: create queue <queueName> <typeName> <recordCount> [shift]" << std::endl;
+		return false;
+	}
+
+	int recordCount = 0;
+	if (!ParseInt(words[4], recordCount) || recordCount <= 0)
+	{
+		std::cout << "Record count must be a positive integer: " << words[4] << std::endl;
+		return false;
+	}
+	return CreateQueue(conn, words[2], words[3], recordCount, words.size() == 6);
+}
+
 void CreateTagsFromScriptFile(int conn, const std::string& path)
 {
 	std::ifstream file(path);
@@ -171,7 +189,9 @@ void CreateTagsFromScriptFile(int conn, const std::string& path)
 		if (words[0] != "create")
 			continue;
 
-		if (CreateTagFromWords(conn, words))
+		const bool ok = (words.size() > 1 && words[1] == "queue") ? CreateQueueFromWords(conn, words)
+			: CreateTagFromWords(conn, words);
+		if (ok)
 			++succeeded;
 		else
 			++failed;

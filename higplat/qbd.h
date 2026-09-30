@@ -259,6 +259,12 @@ struct BOARD_INFO
 	int    tagcount_act;
 };
 
+struct TAG_META			// 必须和higplat.h中的定义一致
+{
+	int    itemsize;
+	int    typesize;
+};
+
 bool inserttab(const struct TABLE_MSG &tabmsg);
 bool fetchtab(const char* dqname, struct TABLE_MSG &tabmsg);
 bool fetchtab1(const char* dqname, struct TABLE_MSG &tabmsg);

@@ -96,6 +96,15 @@ bool createtag(int sockfd, const char* tagname, int tagsize,
 ```
 - **功能**: 创建标签
 
+### listtags
+```cpp
+bool listtags(int sockfd, int start, char* buff, int buffsize,
+              int* bytes, int* count, int* next, unsigned int* error);
+```
+- **功能**: 分页列出 BOARD 中的 tag 元数据。`buff` 中依次存放 `count` 条记录（共 `bytes` 字节，不对齐）：`TAG_META{itemsize, typesize}` + 以 `'\0'` 结尾的 tag 名 + `typesize` 字节的类型描述符
+- **参数**: `start` - 首次为 0，之后传入上次返回的 `*next`；`*next == -1` 表示已全部列出；`buffsize` 建议为 MAXMSGLEN（16384）
+- **说明**: 每页在服务端持锁读取，页与页之间不保证快照一致
+
 ### readb
 ```cpp
 bool readb(int sockfd, const char* tagname, void* value, int actsize,

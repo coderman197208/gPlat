@@ -921,6 +921,55 @@ extern "C" bool listq(int sockfd, char* names, int buffsize, int* count, unsigne
 	return true;
 }
 
+// 每次返回一页 BOARD tag 元数据，首次 start=0，之后传入上次的 *next，直到 *next == -1
+extern "C" bool listtags(int sockfd, int start, char* buff, int buffsize, int* bytes, int* count, int* next, unsigned int* error)
+{
+	if (error == nullptr)
+		throw std::runtime_error("parameter error is null");
+
+	AutoErrorCheck _checker(error);
+	if (!buff || !bytes || !count || !next || buffsize <= 0 || start < 0) {
+		*error = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+
+	MSGSTRUCT msg{};
+	msg.head.id = LISTTAGS;
+	msg.head.start = start;
+	msg.head.bodysize = 0;
+	strncpy(msg.head.qname, "BOARD", sizeof(msg.head.qname) - 1);
+
+	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+
+	*error = msg.head.error;
+	if (*error != 0) {
+		return false;
+	}
+	if (msg.head.bodysize < 0 || msg.head.bodysize > buffsize) {
+		*error = ERROR_BUFFER_TOO_SMALL;
+		close(sockfd);
+		return false;
+	}
+	if (msg.head.bodysize > 0 && readn(sockfd, buff, msg.head.bodysize) < 0) {
+		*error = errno;
+		close(sockfd);
+		return false;
+	}
+	*bytes = msg.head.bodysize;
+	*count = msg.head.count;
+	*next = msg.head.start;
+	return true;
+}
+
 extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error, timespec* timestamp)
 {
 	if (error == nullptr )
@@ -3914,6 +3963,64 @@ extern "C" bool ReadBoardInfo(const char* lpBoardName, BOARD_INFO* boardinfo)
 
 	boardinfo->tagcount_act = j;
 
+	return true;
+}
+
+// 从索引槽 start 起列出 tag 元数据（格式见 TAG_META），缓冲区放不下时 *next 为下一页起始槽，全部列完为 -1
+extern "C" bool ListTags(const char* lpBoardName, int start, char* buff, int buffSize, int* bytes, int* count, int* next)
+{
+	*bytes = 0;
+	*count = 0;
+	*next = -1;
+	if (start < 0 || start > INDEXSIZE)
+	{
+		errorCode = ERROR_INVALID_PARAMETER;
+		return false;
+	}
+
+	struct TABLE_MSG tabmsg;
+	if (!fetchtab(lpBoardName, tabmsg))
+	{
+		return false;
+	}
+	char* lpMapAddress = (char*)tabmsg.lpMapAddress;
+	if (*(int*)lpMapAddress != BOARD_T)
+	{
+		errorCode = ERROR_OPERATE_PROHIBIT;
+		return false;
+	}
+	BOARD_HEAD* pHead = (BOARD_HEAD*)lpMapAddress;
+
+	std::lock_guard<std::mutex> lock(*tabmsg.pmutex_rw);
+	for (int i = start; i < INDEXSIZE; i++)
+	{
+		const BOARD_INDEX_STRUCT& item = pHead->index[i];
+		if (item.itemname[0] == '\0' || item.erased)
+			continue;
+
+		const TAG_META meta{ item.itemsize, item.typesize };
+		const int nameLen = (int)strnlen(item.itemname, MAXDQNAMELENTH - 1);
+		const int len = (int)sizeof(meta) + nameLen + 1 + meta.typesize;
+		if (*bytes + len > buffSize)
+		{
+			if (*count == 0)
+			{
+				errorCode = ERROR_BUFFER_TOO_SMALL;
+				return false;
+			}
+			*next = i;
+			return true;
+		}
+
+		char* p = buff + *bytes;
+		memcpy(p, &meta, sizeof(meta));
+		p += sizeof(meta);
+		memcpy(p, item.itemname, nameLen);
+		p[nameLen] = '\0';
+		memcpy(p + nameLen + 1, lpMapAddress + pHead->totalsize + item.typeaddr, meta.typesize);
+		*bytes += len;
+		(*count)++;
+	}
 	return true;
 }
 

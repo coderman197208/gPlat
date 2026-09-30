@@ -60,6 +60,7 @@ public:
 	bool HandleReadHead(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
 	bool HandlePeekQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
 	bool HandleListQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
+	bool HandleListTags(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
 
 	void NotifySubscriber(std::string tagName, char* pPkgBody, unsigned short iBodyLength);
 	void NotifyTimerSubscriber(std::string timerName, char* pPkgBody, unsigned short iBodyLength);

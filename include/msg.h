@@ -57,6 +57,7 @@ enum MSGID
 	CREATEQUEUE,
 	GETRESPONSE,
 	LISTQ,
+	LISTTAGS,
 };
 
 #pragma pack( push, enter_MSG_H_, 1)

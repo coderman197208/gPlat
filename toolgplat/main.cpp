@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -15,6 +16,7 @@
 #include "../include/higplat.h"
 #include "creation.h"
 #include "display.h"
+#include "export.h"
 #include "monitor.h"
 #include "record_input.h"
 #include "text_util.h"
@@ -284,24 +286,6 @@ void CmdQueues(Session& session, const Words&)
 }
 
 // create queue <queueName> <typeName> <recordCount> [shift]
-void CreateQueueFromWords(int conn, const Words& words)
-{
-	const bool validMode = (words.size() == 5) || (words.size() == 6 && words[5] == "shift");
-	if (!validMode)
-	{
-		std::cout << "Usage: create queue <queueName> <typeName> <recordCount> [shift]" << std::endl;
-		return;
-	}
-
-	int recordCount = 0;
-	if (!ParseInt(words[4], recordCount) || recordCount <= 0)
-	{
-		std::cout << "Record count must be a positive integer: " << words[4] << std::endl;
-		return;
-	}
-	CreateQueue(conn, words[2], words[3], recordCount, words.size() == 6);
-}
-
 void CmdCreate(Session& session, const Words& words)
 {
 	if (!RequireConnection(session))
@@ -333,6 +317,47 @@ void CmdCreate(Session& session, const Words& words)
 	}
 
 	CreateTagFromWords(session.conn, words);
+}
+
+// export script [fileName]
+void CmdExport(Session& session, const Words& words)
+{
+	if (!RequireConnection(session))
+		return;
+	if (words.size() < 2 || words.size() > 3 || ToLower(words[1]) != "script")
+	{
+		std::cout << "Usage: export script [fileName]" << std::endl;
+		return;
+	}
+
+	std::vector<std::string> queueNames;
+	unsigned int err = 0;
+	if (!ListQueues(session.conn, queueNames, err))
+	{
+		std::cout << "List queues failed, error code " << err << "." << std::endl;
+		return;
+	}
+	CreateScript script;
+	if (!CollectCreateScript(session.conn, queueNames, script))
+		return;
+
+	const std::string source = session.host + ":" + std::to_string(session.port);
+	if (words.size() == 2)
+	{
+		WriteCreateScript(std::cout, source, script);
+		return;
+	}
+
+	std::ofstream file(words[2], std::ios::trunc);
+	if (file)
+		WriteCreateScript(file, source, script);
+	if (!file)
+	{
+		std::cout << "无法写入文件: " << words[2] << std::endl;
+		return;
+	}
+	std::cout << "Script exported to " << words[2] << ": " << script.queueLines.size() << " queue(s), "
+		<< script.tagLines.size() << " tag(s)." << std::endl;
 }
 
 void CmdTypes(Session&, const Words&)
@@ -657,13 +682,21 @@ Description: Creates tags based on a s7ioserver configuration file (board contex
 Example: create tag from config file plc_tags.ini
 --------------------------------------------------------------------------
 Usage: create tag from script file <fileName>
-Description: Creates tags based on a script file (board context only).
+Description: Creates tags and queues based on a script file of create commands (board context only).
 Example: create tag from script file tags.txt
 --------------------------------------------------------------------------
 Usage: create queue <queueName> <typeName> <recordCount> [shift]
 Description: Creates a new queue of a registered struct type; it can be opened immediately.
 Example: create queue myqueue SensorData 10
 Example: create queue myqueue SensorData 10 shift
+)"},
+		{Scope::Global, {"export"}, CmdExport,
+R"(Usage: export script [fileName]
+Description: Exports create commands for all loaded queues and BOARD tags, rebuilt from their stored types.
+             Queues come first, then tags, each sorted by name. Objects without type info are
+             written as '#' comments. Without fileName the script is printed; an existing file is overwritten.
+             Run the script elsewhere with 'create tag from script file <fileName>' in board context.
+Example: export script objects.txt
 )"},
 		{Scope::Global, {"types"}, CmdTypes,
 R"(Usage: types

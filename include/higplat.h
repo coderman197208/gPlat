@@ -85,6 +85,13 @@ struct BOARD_INFO
 	int    tagcount_act;
 };
 
+// listtags/ListTags 输出的每条记录：TAG_META + 以 '\0' 结尾的 tag 名 + typesize 字节的类型描述符（不对齐）
+struct TAG_META
+{
+	int    itemsize;
+	int    typesize;
+};
+
 #pragma pack( pop, enter_qbdtype_h_ )
 
 #define SHIFT_MODE		1
@@ -104,6 +111,7 @@ extern "C" bool clearq(int sockfd, const char* qname, unsigned int* error);
 extern "C" bool readhead(int sockfd, const char* qname, QUEUE_HEAD* head, unsigned int* error);
 extern "C" bool peekq(int sockfd, const char* qname, int position, void* record, int actsize, RECORD_HEAD* recordhead, unsigned int* error);
 extern "C" bool listq(int sockfd, char* names, int buffsize, int* count, unsigned int* error);
+extern "C" bool listtags(int sockfd, int start, char* buff, int buffsize, int* bytes, int* count, int* next, unsigned int* error);
 extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error, timespec* timestamp = 0);
 extern "C" bool writeb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error);
 extern "C" bool writeb_notpost(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error);
@@ -160,6 +168,7 @@ extern "C" bool ClearB(const char* lpBoardName);
 extern "C" unsigned int GetLastErrorQ();
 extern "C" bool ReadType(const char* lpDqName, const char* lpItemName, void* inBuff, int buffSize, int* pTypeSize);
 extern "C" bool ReadBoardInfo(const char* lpBoardName, BOARD_INFO* boardinfo);
+extern "C" bool ListTags(const char* lpBoardName, int start, char* buff, int buffSize, int* bytes, int* count, int* next);
 
 template<typename T, typename CharT>
 T read_value(CharT* buffer) {

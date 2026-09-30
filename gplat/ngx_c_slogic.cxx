@@ -100,6 +100,7 @@ static const handler statusHandler[] =
 		&CLogicSocket::HandleCreateQueue,   // CREATEQUEUE
 		&CLogicSocket::HandleGetResponse,   // GETRESPONSE
 		&CLogicSocket::HandleListQ,         // LISTQ
+		&CLogicSocket::HandleListTags,      // LISTTAGS
 };
 
 #define AUTH_TOTAL_COMMANDS sizeof(statusHandler) / sizeof(handler) // 整个数组有多少个命令
@@ -1224,6 +1225,45 @@ bool CLogicSocket::HandleListQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsg
 		pPkgHead->error = GetLastErrorQ();
 		pPkgHead->bodysize = 0;
 		pPkgHead->count = 0;
+	}
+
+	CLock lock(&pConn->logicPorcMutex);
+	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader);
+	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader);
+	msgSend(p_sendbuf);
+
+	return true;
+}
+
+// 请求包：qname=BOARD, start=起始索引槽；响应包体：count 条 TAG_META 记录，start=下一页起始槽（-1 表示结束）
+bool CLogicSocket::HandleListTags(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
+{
+	if (pPkgHeader == NULL)
+	{
+		return false;
+	}
+
+	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
+	pPkgHead->qname[sizeof(pPkgHead->qname) - 1] = '\0';
+	CMemory* p_memory = CMemory::GetInstance();
+	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + MAXMSGLEN, false);
+
+	int bytes = 0;
+	int count = 0;
+	int next = -1;
+	if (ListTags(pPkgHead->qname, pPkgHead->start, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, MAXMSGLEN, &bytes, &count, &next))
+	{
+		pPkgHead->error = 0;
+		pPkgHead->bodysize = bytes;
+		pPkgHead->count = count;
+		pPkgHead->start = next;
+	}
+	else
+	{
+		pPkgHead->error = GetLastErrorQ();
+		pPkgHead->bodysize = 0;
+		pPkgHead->count = 0;
+		pPkgHead->start = -1;
 	}
 
 	CLock lock(&pConn->logicPorcMutex);
