@@ -120,6 +120,7 @@ struct ngx_connection_s
 
 	void StartTimeoutTimer(int dwMilliseconds);
 	void StopTimeoutTimer();
+	void ClearPostList();		// 调用者须持有 logicPorcMutex
 
 	std::list<std::string> m_listTag;		// 订阅的TAG列表
 	std::list<std::string> m_listPlcTag;	// 订阅的PLC TAG列表

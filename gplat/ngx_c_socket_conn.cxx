@@ -60,9 +60,13 @@ void ngx_connection_s::GetOneToUse()
 	m_timerID = -1;
 }
 
-//回收回来一个连接的时候做一些事
+//回收一个连接的时候做一些事
 void ngx_connection_s::PutOneToFree()
 {
+	CLock logicLock(&logicPorcMutex);
+	// 断开后仍在途的通知可能又入队了 POST
+	ClearPostList();
+
 	CLock sendLock(&sendMutex);
 
 	++iCurrsequence;
@@ -81,6 +85,16 @@ void ngx_connection_s::PutOneToFree()
 
 	//gyb
 	this->ClearTagList();
+}
+
+void ngx_connection_s::ClearPostList()
+{
+	CMemory* p_memory = CMemory::GetInstance();
+	for (char* p : m_listPost)
+	{
+		p_memory->FreeMemory(p);
+	}
+	m_listPost.clear();
 }
 
 //初始化连接池
