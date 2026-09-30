@@ -29,9 +29,12 @@ void CSocekt::ngx_read_request_handler(lpngx_connection_t pConn)
 {
 	//收包，注意我们用的第二个和第三个参数，我们用的始终是这两个参数，因此我们必须保证 c->precvbuf指向正确的收包位置，保证c->irecvlen指向正确的收包宽度
 	ssize_t reco = recvproc(pConn, pConn->precvbuf, pConn->irecvlen);
-	if (reco <= 0)
+	if (reco == 0)
+		return;
+
+	if (reco < 0)
 	{
-		//如果是recvproc()函数返回<=0，表示有问题发生了，可能是对方断开了连接，也可能是其他错误发生了；
+		//对方断开或出错，连接已在recvproc()中关闭并放入回收队列
 		
 		// 必须在持有 logicPorcMutex 之前调用，内部可能会通知订阅者（包括本连接）
 		CancelRequest(pConn);
@@ -118,7 +121,8 @@ void CSocekt::ngx_read_request_handler(lpngx_connection_t pConn)
 //参数c：连接池中相关连接
 //参数buff：接收数据的缓冲区
 //参数buflen：要接收的数据大小
-//返回值：-1，则是有问题发生并且在这里把问题处理完毕了，调用本函数的调用者一般是可以直接return
+//返回值：-1，对方断开或出错，连接已在这里关闭并放入回收队列
+//       0，EAGAIN/EINTR，本次没收到数据，连接仍然有效
 //       >0，则是表示实际收到的字节数
 ssize_t CSocekt::recvproc(lpngx_connection_t c, char* buff, ssize_t buflen)
 {
@@ -139,7 +143,7 @@ ssize_t CSocekt::recvproc(lpngx_connection_t c, char* buff, ssize_t buflen)
 		{
 			//我认为LT模式不该出现这个errno，而且这个其实也不是错误，所以不当做错误处理
 			ngx_log_stderr(errno, "CSocekt::recvproc()中errno == EAGAIN || errno == EWOULDBLOCK成立，出乎我意料！");//epoll为LT模式不应该出现这个返回值，所以直接打印出来瞧瞧
-			return -1; //不当做错误处理，只是简单返回
+			return 0; //不当做错误处理，只是简单返回
 		}
 		//EINTR错误的产生：当阻塞于某个慢系统调用的一个进程捕获某个信号且相应信号处理函数返回时，该系统调用可能返回一个EINTR错误。
 		//例如：在socket服务器端，设置了信号捕获机制，有子进程，当在父进程阻塞于慢系统调用时由父进程捕获到了一个有效信号时，内核会致使accept返回一个EINTR错误(被中断的系统调用)
@@ -147,7 +151,7 @@ ssize_t CSocekt::recvproc(lpngx_connection_t c, char* buff, ssize_t buflen)
 		{
 			//我认为LT模式不该出现这个errno，而且这个其实也不是错误，所以不当做错误处理
 			ngx_log_stderr(errno, "CSocekt::recvproc()中errno == EINTR成立，出乎我意料！");//epoll为LT模式不应该出现这个返回值，所以直接打印出来瞧瞧
-			return -1; //不当做错误处理，只是简单返回
+			return 0; //不当做错误处理，只是简单返回
 		}
 
 		//所有从这里走下来的错误，都认为异常：意味着我们要关闭客户端套接字要回收连接池中连接；
