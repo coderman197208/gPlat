@@ -2,20 +2,17 @@
 #include <chrono>
 #include <thread>       //std::this_thread::sleep_for   std::chrono::milliseconds
 #include <atomic>
-#include <signal.h>
 #include <iostream>
-#include <cassert>
 #include <list>
 #include <string.h>
 
 #include "../include/higplat.h"
 #include "../include/qbdtype.h"
 
-std::atomic<bool> g_running(true);  // 控制线程运行的标志
-
 // 外部变量声明（定义在 threadfunction.cpp)
 extern std::atomic<long> threadcount;
 extern bool exitloop;
+extern std::atomic<int> g_failures;
 
 // 前向声明线程函数
 unsigned int TestThreadProc1(void* pParam);
@@ -37,9 +34,15 @@ std::thread* BeginThread(unsigned int (*proc)(void*), void* param)
     });
 }
 
-void threadFunction1();
-void threadFunction2();
-void threadFunction3();
+#define CHECK(cond, ...)                                  \
+	do {                                                  \
+		if (!(cond)) {                                    \
+			printf("[FAIL] %s:%d ", __FILE__, __LINE__); \
+			printf(__VA_ARGS__);                          \
+			printf("\n");                                 \
+			g_failures++;                                 \
+		}                                                 \
+	} while (0)
 
 int main()
 {
@@ -67,13 +70,13 @@ int main()
 		{
 			sprintf(tagname[j], "tagint%02d_%02d", j, i);
 			ret = writeb(h, tagname[j], &value, sizeof(int), &err);
-			assert(ret);
+			CHECK(ret, "writeb %s failed, error=%u", tagname[j], err);
 		}
 	}
 	for (long long i = 0; i < 10; i++)
 	{
 		m_pThread = BeginThread(TestThreadProc2, (void*)i);
-		assert(m_pThread != NULL);
+		CHECK(m_pThread != NULL, "BeginThread TestThreadProc2 failed");
 		m_ThreadsList.push_front(m_pThread);
 	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -84,7 +87,7 @@ int main()
 	{
 		sprintf(tagname[j], "tagint%02d_00", j);
 		ret = writeb(h, tagname[j], &value, sizeof(int), &err);
-		assert(ret);
+		CHECK(ret, "writeb %s failed, error=%u", tagname[j], err);
 	}
 
 	while (true)
@@ -94,7 +97,7 @@ int main()
 		{
 			sprintf(tagname[j], "tagint%02d_10", j);
 			ret = readb(h, tagname[j], &value, sizeof(int), &err, nullptr);
-			assert(ret);
+			CHECK(ret, "readb %s failed, error=%u", tagname[j], err);
 
 			if (value != 0) break;
 		}
@@ -109,10 +112,7 @@ int main()
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-		long a;
-		a = threadcount.load();
-
-		if (a == 0) break;
+		if (threadcount.load() == 0) break;
 	}
 
 	tickcount = GetTickCount64();
@@ -120,7 +120,7 @@ int main()
 	for (long long i = 0; i < 10; i++)
 	{
 		m_pThread = BeginThread(TestThreadProc1, (void*)i);
-		assert(m_pThread != NULL);
+		CHECK(m_pThread != NULL, "BeginThread TestThreadProc1 failed");
 		m_ThreadsList.push_front(m_pThread);
 	}
 
@@ -128,10 +128,7 @@ int main()
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-		long a;
-		a = threadcount.load();
-
-		if (a == 0) break;
+		if (threadcount.load() == 0) break;
 	}
 
 	std::cout << "2阶段耗时：" << GetTickCount64() - tickcount << std::endl;
@@ -144,8 +141,12 @@ int main()
 	}
 	m_ThreadsList.clear();
 
-	printf("exit\n");
-	//getchar();
+	disconnectgplat(h);
 
-	return 0;
+	if (g_failures == 0)
+		printf("ALL PASSED\n");
+	else
+		printf("%d FAILURE(S)\n", g_failures.load());
+
+	return g_failures == 0 ? 0 : 1;
 }

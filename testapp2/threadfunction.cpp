@@ -1,17 +1,13 @@
 ﻿#include <thread>
 #include <string>
 #include <cstdio>
-#include <cstdlib>
 #include <atomic>
 #include <iostream>
-#include <cassert>
 #include <chrono>
 #include <string.h>
 
 #include "../include/higplat.h"
 #include "../include/user_types.h"
-
-extern std::atomic<bool> g_running;  // 控制线程运行的标志
 
 using namespace std;
 
@@ -22,13 +18,23 @@ inline unsigned long long GetTickCount64()
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-#define OFFSET(structure, member) ((int64_t)&((structure*)0)->member) // 64位系统
-
 thread_local int serverHandle;
 
 std::atomic<long> threadcount(0);
 
 bool exitloop = false;
+
+std::atomic<int> g_failures(0);
+
+#define CHECK(cond, ...)                                  \
+	do {                                                  \
+		if (!(cond)) {                                    \
+			printf("[FAIL] %s:%d ", __FILE__, __LINE__); \
+			printf(__VA_ARGS__);                          \
+			printf("\n");                                 \
+			g_failures++;                                 \
+		}                                                 \
+	} while (0)
 
 #define LOOPCOUNT   50
 
@@ -37,7 +43,6 @@ unsigned int TestThreadProc1(void* pParam)
 	int h;
 	unsigned int  err;
 	bool   ret;
-	string input;
 	int i, j;
 
 	++threadcount;
@@ -48,6 +53,7 @@ unsigned int TestThreadProc1(void* pParam)
 	if (h < 0)
 	{
 		printf("连接失败\n");
+		--threadcount;
 		return 0;
 	}
 
@@ -62,7 +68,7 @@ unsigned int TestThreadProc1(void* pParam)
 	tagBigData1.b = 666;
 	tagBigData1.c = 5.55f;
 	ret = writeb(h, "TagBigData1", &tagBigData1, sizeof(TagBigData), &err);
-	assert(ret);
+	CHECK(ret, "writeb TagBigData1 failed, error=%u", err);
 
 	string str1(10000, 'A');
 	unsigned long long tickcount1 = GetTickCount64();
@@ -71,14 +77,13 @@ unsigned int TestThreadProc1(void* pParam)
 		for (j = 0; j < 100; j++)
 		{
 			ret = writeb(h, tagname[j], &i, sizeof(int), &err);
-			//ret = writeb(h, "tagint00_00", &i, sizeof(int), &err);
-			assert(ret);
+			CHECK(ret, "writeb %s failed, error=%u", tagname[j], err);
 
 			ret = writeb(h, "TagBigData1", &tagBigData1, sizeof(TagBigData), &err);
-			assert(ret);
+			CHECK(ret, "writeb TagBigData1 failed, error=%u", err);
 
 			ret = writeb_string(h, "string1", str1.c_str(), &err);
-			assert(ret);
+			CHECK(ret, "writeb_string string1 failed, error=%u", err);
 		}
 	}
 	unsigned long long tickcount2 = GetTickCount64();
@@ -87,14 +92,14 @@ unsigned int TestThreadProc1(void* pParam)
 	TagBigData tagBigData2;
 	tagBigData2.b = -1;
 	ret = readb(h, "TagBigData1", &tagBigData2, sizeof(TagBigData), &err, nullptr);
-	assert(ret);
-	assert(tagBigData1.b == tagBigData2.b);
+	CHECK(ret, "readb TagBigData1 failed, error=%u", err);
+	CHECK(tagBigData1.b == tagBigData2.b, "TagBigData1.b mismatch: expected=%lld got=%lld", tagBigData1.b, tagBigData2.b);
 
 	char buffer[10001]{};	//读的时候要多一个字符空间，用于存放字符串结束符
 	ret = readb_string(h, "string1", buffer, 10001, &err, nullptr);
-	assert(ret);
+	CHECK(ret, "readb_string string1 failed, error=%u", err);
 	string str2(buffer);
-	assert(str1 == str2);
+	CHECK(str1 == str2, "string1 content mismatch");
 
 	disconnectgplat(h);
 
@@ -113,7 +118,7 @@ void SubscribeEvent(int threadIndex)
 		char tagname[32];
 		sprintf(tagname, "tagint%02d_%02d", i, threadIndex);
 		ret = subscribe(serverHandle, tagname, &err);
-		assert(ret);
+		CHECK(ret, "subscribe %s failed, error=%u", tagname, err);
 	}
 }
 
@@ -131,18 +136,17 @@ void DataChangedHandler(string& eventname, void* pdata, int datasize)
 
 	int oldvalue;
 	ret = readb(serverHandle, tagname, &oldvalue, sizeof(int), &err, nullptr);
-	assert(ret);
+	CHECK(ret, "readb %s failed, error=%u", tagname, err);
 	if (newvalue - oldvalue != 1)
 	{
 		cout << "验证失败" << endl;
 	}
 	ret = writeb(serverHandle, tagname, &newvalue, sizeof(int), &err);
-	assert(ret);
+	CHECK(ret, "writeb %s failed, error=%u", tagname, err);
 }
 
 unsigned int TestThreadProc2(void* pParam)
 {
-	string input;
 	unsigned int  errorcode;
 
 	++threadcount;
@@ -151,6 +155,7 @@ unsigned int TestThreadProc2(void* pParam)
 	if (serverHandle < 0)
 	{
 		cout << "连接失败" << endl;
+		--threadcount;
 		return 0;
 	}
 
