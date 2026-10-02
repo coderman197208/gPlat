@@ -115,8 +115,16 @@ TEST("stress.concurrent_connections", TAG_STRESS | TAG_BOARD | TAG_ASAN)
     const uint64_t deadline = now_nanos() + 10000000000ull;
     while (ready.load() < static_cast<int>(threads.size()) && now_nanos() < deadline) usleep(2000);
     bool allReady = ready.load() == clients;
-    bool sampled = sampler.tick();
-    int held = sampler.fd_last();
+    bool sampled = false;
+    int held = -1;
+    // connect() 返回只代表握手完成（连接仍在 accept 队列），worker 的 accept 可能尚未追上；等待 fd 数到位。
+    const uint64_t acceptDeadline = now_nanos() + 2000000000ull;
+    do {
+        sampled = sampler.tick();
+        held = sampler.fd_last();
+        if (!sampled || held >= baseline + clients - 2) break;
+        usleep(1000);
+    } while (now_nanos() < acceptDeadline);
     uint64_t at = now_nanos();
     start = true;
     for (auto& thread : threads) thread.join();
