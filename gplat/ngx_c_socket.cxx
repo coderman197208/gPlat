@@ -194,6 +194,8 @@ void CSocekt::ReadConf()
 	m_worker_connections = p_config->GetIntDefault("worker_connections", m_worker_connections);              //epoll连接的最大项数
 	m_ListenPortCount = p_config->GetIntDefault("ListenPortCount", m_ListenPortCount);                    //取得要监听的端口数量
 	m_RecyConnectionWaitTime = p_config->GetIntDefault("Sock_RecyConnectionWaitTime", m_RecyConnectionWaitTime); //等待这么些秒后才回收连接
+	int maxPost = p_config->GetIntDefault("Sock_MaxPendingPost", ngx_connection_s::kDefaultMaxPendingPost); //每连接待发事件队列上限
+	ngx_connection_s::s_maxPendingPost = maxPost > 0 ? maxPost : ngx_connection_s::kDefaultMaxPendingPost;
 	return;
 }
 

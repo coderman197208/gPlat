@@ -58,6 +58,8 @@ void ngx_connection_s::GetOneToUse()
 	m_bWaitingPost = false;
 	m_bWaitingTimeout = false;
 	m_timerID = -1;
+	m_droppedPost = 0;
+	m_lastDropLog = 0;
 }
 
 //回收一个连接的时候做一些事
@@ -95,6 +97,26 @@ void ngx_connection_s::ClearPostList()
 		p_memory->FreeMemory(p);
 	}
 	m_listPost.clear();
+}
+
+bool ngx_connection_s::EnqueuePost(char* postbuf, const char* tagname)
+{
+	if ((int)m_listPost.size() < s_maxPendingPost.load(std::memory_order_relaxed))
+	{
+		m_listPost.push_back(postbuf);
+		return true;
+	}
+
+	CMemory::GetInstance()->FreeMemory(postbuf);
+	++m_droppedPost;
+	time_t now = time(NULL);
+	if (now - m_lastDropLog >= 5) // 风暴期间限频，避免日志本身成为负担
+	{
+		m_lastDropLog = now;
+		ngx_log_stderr(0, "WARN:连接待发事件队列已满(%d)，丢弃最新事件 tag=%s，本连接累计丢弃=%lu，请检查是否存在事件风暴或订阅者不取事件",
+			s_maxPendingPost.load(), tagname ? tagname : "", m_droppedPost);
+	}
+	return false;
 }
 
 //初始化连接池

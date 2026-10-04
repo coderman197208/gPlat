@@ -633,16 +633,8 @@ void CLogicSocket::NotifySubscriber(std::string tagName, char *pPkgBody, unsigne
 {
 	std::list<EventNode> subscribers = m_subscriber.GetSubscriber(tagName);
 
-	int usernumber = (int)subscribers.size();
-
-	// mark ?
-	if (usernumber > 500)
-	{
-		ngx_log_stderr(0, "ERROR:可能产生了事件风暴，请检查应用程序");
-		exit(1);
-	}
-
-	if (usernumber > 0)
+	// 事件风暴保护由每连接待发队列上限（ngx_connection_s::EnqueuePost）负责，这里不限制订阅者数量
+	if (!subscribers.empty())
 	{
 		for (auto subscriber : subscribers)
 		{
@@ -686,7 +678,7 @@ void CLogicSocket::NotifySubscriber(std::string tagName, char *pPkgBody, unsigne
 				}
 				else
 				{
-					pConn->m_listPost.push_back(p_sendbuf);
+					pConn->EnqueuePost(p_sendbuf, tagName.c_str());
 				}
 				break;
 			case EVENTID::POST_DELAY:
@@ -721,7 +713,7 @@ void CLogicSocket::NotifySubscriber(std::string tagName, char *pPkgBody, unsigne
 					}
 					else
 					{
-						pconn->m_listPost.push_back(p_sendbuf);
+						pconn->EnqueuePost(p_sendbuf, pPkgHead->itemname);
 					} }, p_sendbuf);
 				break;
 			default:
@@ -778,7 +770,7 @@ void CLogicSocket::NotifyTimerSubscriber(std::string timerName, char *pPkgBody, 
 		}
 		else
 		{
-			pConn->m_listPost.push_back(p_sendbuf);
+			pConn->EnqueuePost(p_sendbuf, timerName.c_str());
 		}
 	}
 }
@@ -1065,7 +1057,7 @@ void CLogicSocket::NotifyPlcIoSever(std::string tagName, char *pPkgBody, unsigne
 			}
 			else
 			{
-				pConn->m_listPost.push_back(p_sendbuf);
+				pConn->EnqueuePost(p_sendbuf, tagName.c_str());
 			}
 	}
 	else

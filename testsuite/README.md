@@ -74,7 +74,7 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 
 断言宏（`framework/assertions.h`）：`CHECK`（软）/ `ASSERT`（硬，中止用例）/ `EXPECT_OK` / `EXPECT_ERR`（错误码专用）/ `REQUIRE_OK`（前置条件）/ **`BUG_CHECK`**（XFAIL 专用，只豁免这一个检查；其它断言失败仍是 FAIL）。
 
-> 规模：当前共 **77** 个用例。常规 `make test` 全绿，仅 `G1` 记 XFAIL、ASan 专用 `mem.*` 在非 ASan 下 SKIP。
+> 规模：当前共 **78** 个用例。常规 `make test` 全绿，仅 `G1` 记 XFAIL、ASan 专用 `mem.*` 在非 ASan 下 SKIP。
 
 ---
 
@@ -85,7 +85,6 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 
 | ID | 位置 | 现象 | 覆盖用例 |
 |---|---|---|---|
-| P2 | `NotifySubscriber>500` | 事件风暴保护 `exit(1)` 打崩整个 server | `pubsub.subscribe_storm_exit` |
 | B1 | `DeleteItem` memmove | 不持条带锁，与 readb 竞态 → 撕裂读 | `board_churn.concurrent_delete_race` |
 | G1 | `m_mapResponseOwner` | 永不 erase → response_tag 无法复用、无界累积 | `getresp.response_owner_never_erased` |
 
@@ -94,7 +93,7 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 | ID | 现象 | 覆盖用例 |
 |---|---|---|
 | M1 | 连接池 free-list 抽空即 new、按峰值撑大不缩 | `mem.connpool_hwm_trend` |
-| P3 | 只订不取 → `m_listPost` 无界堆积 | `pubsub.listpost_unbounded_trend` |
+| P3 | 只订不取 → `m_listPost` 堆积（已由 `Sock_MaxPendingPost` 封顶，默认 1000，满后丢弃最新事件；`pubsub.pending_queue_capped` 门控上限，本用例仅观察 RSS） | `pubsub.listpost_unbounded_trend` |
 | L1 | 致命启动失败的退出码（当前实测已为 1） | `persist.corrupt_exit_code` |
 
 ---

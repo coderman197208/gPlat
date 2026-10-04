@@ -3,6 +3,7 @@
 
 #include <vector>       //vector
 #include <list>         //list
+#include <algorithm>    //std::find
 #include <sys/epoll.h>  //epoll
 #include <sys/socket.h>
 #include <pthread.h>    //多线程
@@ -110,7 +111,8 @@ struct ngx_connection_s
 
 	void Attach(std::string tagname)
 	{
-		m_listTag.push_back(tagname);
+		if (std::find(m_listTag.begin(), m_listTag.end(), tagname) == m_listTag.end())
+			m_listTag.push_back(tagname);
 	}
 
 	void AttachPlcTag(std::string tagname)
@@ -121,10 +123,17 @@ struct ngx_connection_s
 	void StartTimeoutTimer(int dwMilliseconds);
 	void StopTimeoutTimer();
 	void ClearPostList();		// 调用者须持有 logicPorcMutex
+	// 事件入队（事件风暴保护）。队列已达上限时丢弃新事件：释放 postbuf 并返回 false。调用者须持有 logicPorcMutex
+	bool EnqueuePost(char* postbuf, const char* tagname);
+
+	static constexpr int kDefaultMaxPendingPost = 1000;
+	inline static std::atomic<int> s_maxPendingPost{ kDefaultMaxPendingPost };	// 每连接待发事件上限，Sock_MaxPendingPost
 
 	std::list<std::string> m_listTag;		// 订阅的TAG列表
 	std::list<std::string> m_listPlcTag;	// 订阅的PLC TAG列表
 	std::list<char*> m_listPost;			// 待发送的事件列表
+	unsigned long m_droppedPost{ 0 };		// 因队列满而丢弃的事件数（本连接累计）
+	time_t m_lastDropLog{ 0 };				// 上次记录丢弃日志的时间，用于限频
 
 private:
 	int m_timerID{ -1 };	// 定时器ID

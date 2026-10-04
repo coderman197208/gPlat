@@ -14,6 +14,7 @@
 // 共享 server 纪律：订阅随连接断开被 CancelSubscribe 清理（见 ngx_c_socket_request.cxx:44），
 //   故每个用例用全新 ScopedConn 订阅、退出即净；只 writeb 夹具 tag TAG_POST，不碰其它夹具。
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -197,7 +198,7 @@ TEST("pubsub.delaypost", TAG_PUBSUB)
     CHECK(ctx, r.ms >= 100.0, "delaypost delivered too early: %.1f ms (delay=%d)", r.ms, DELAY);
 }
 
-// --- [B] 重复订阅同 tag（无去重）→ 一次 writeb 收到两份 ---------------------
+// --- [B] 重复订阅同 tag：服务端按 (连接, 事件类型[, eventname, eventarg]) 去重 → 一次 writeb 只收到一份 ---
 TEST("pubsub.duplicate_subscribe", TAG_PUBSUB)
 {
     ScopedConn sub(ctx.server()), pub(ctx.server());
@@ -205,20 +206,22 @@ TEST("pubsub.duplicate_subscribe", TAG_PUBSUB)
     unsigned err = 0;
     Rng rng(ctx.seed);
 
-    // 同连接订阅两次同一 tag：实现不去重 → 两个 EventNode。
-    REQUIRE_OK(ctx, subscribe(sub.fd(), fx::TAG_POST, &err), err);
-    REQUIRE_OK(ctx, subscribe(sub.fd(), fx::TAG_POST, &err), err);
-    publish(ctx, pub.fd(), 88, rng, /*post=*/true);  // 一次 writeb → 两份投递
+    // 同连接订阅同一 tag 三次（DEFAULT）+ 相同的延时订阅两次（POST_DELAY）：各自只保留一个 EventNode。
+    for (int i = 0; i < 3; i++) REQUIRE_OK(ctx, subscribe(sub.fd(), fx::TAG_POST, &err), err);
+    for (int i = 0; i < 2; i++) REQUIRE_OK(ctx, subscribedelaypost(sub.fd(), fx::TAG_POST, "EVT_DUP", 50, &err), err);
+    publish(ctx, pub.fd(), 88, rng, /*post=*/true);
 
-    for (int i = 0; i < 2; i++) {
-        Recv r = receive(sub.fd(), 1500);
-        CHECK(ctx, r.ok && r.err == 0 && strcmp(r.tag, fx::TAG_POST) == 0,
-              "duplicate delivery %d: ret=%d err=%u(%s) tag=%s", i, (int)r.ok, r.err, err_name(r.err), r.tag);
+    int defaults = 0, delayed = 0;
+    for (;;) {
+        Recv r = receive(sub.fd(), 500);
+        ASSERT(ctx, r.ok, "waitpostdata failed: err=%u(%s)", r.err, err_name(r.err));
+        if (r.err == ERROR_WAIT_TIMEOUT) break;
+        if (strcmp(r.tag, fx::TAG_POST) == 0) defaults++;
+        else if (strcmp(r.tag, "EVT_DUP") == 0) delayed++;
+        if (defaults + delayed > 4) break;
     }
-    // 不应有第三份：再等一个短超时应 WAIT_TIMEOUT。
-    Recv r3 = receive(sub.fd(), 200);
-    CHECK(ctx, r3.ok && r3.err == ERROR_WAIT_TIMEOUT, "expected exactly 2 deliveries; 3rd err=%u(%s)",
-          r3.err, err_name(r3.err));
+    CHECK(ctx, defaults == 1, "DEFAULT deliveries=%d want 1 (duplicate subscribe must be deduped)", defaults);
+    CHECK(ctx, delayed == 1, "POST_DELAY deliveries=%d want 1 (duplicate subscribe must be deduped)", delayed);
 }
 
 // --- [B] 订阅不存在的 tag：应校验并拒绝，置 TAG_NOT_EXIST（原 P1，已修复）-----
@@ -232,38 +235,69 @@ TEST("pubsub.subscribe_nonexistent", TAG_PUBSUB)
           "nonexistent subscription accepted (ret=%d err=%u)", ok, err);
 }
 
-// --- [X][XFAIL P2] 单连接订阅 >500 → NotifySubscriber 触发 server exit(1) ------
-// 机理（ngx_c_slogic.cxx:620）：NotifySubscriber 里 `if (usernumber > 500) { ...; exit(1); }`
-//   作为“事件风暴保护”，但它直接 exit 整个 worker → master 收 SIGCHLD 一并退出（无重生）。
-//   单条连接订阅同一 tag 501 次（HandleSubscribe 不去重、不限量），一次 writeb 即令 usernumber=501。
-// 断言正确行为：订阅过多不应打崩整个 server（应拒绝新订阅或仅记日志）。今日必崩 → XFAIL。
-TEST_XFAIL("pubsub.subscribe_storm_exit", TAG_PUBSUB | TAG_DESTRUCTIVE, BUG_P2)
+// --- [B] 大量订阅者：>500 个连接订阅同一 tag，一次 writeb 不得打崩 server（原 P2，已修复）-----
+// 原缺陷：NotifySubscriber 里 `usernumber > 500` 直接 exit(1)。修复后不再限制订阅者数量，
+//   事件风暴保护改由每连接待发队列上限（Sock_MaxPendingPost）承担。
+TEST("pubsub.many_subscribers_no_exit", TAG_PUBSUB | TAG_DESTRUCTIVE)
 {
     ServerConfig cfg;
     cfg.threads = 2;
     cfg.asan = ctx.expectAsan;
-    cfg.allowAsanErrors = true;
-    cfg.allowLeaks = true;
     ServerFixture srv(cfg);
     ASSERT(ctx, srv.start(), "private fixture start failed: %s", srv.startup_error().c_str());
 
     unsigned err = 0;
-    ScopedConn sub(srv);
-    ASSERT(ctx, sub.ok(), "subscriber connect failed");
-    // 同一连接订阅同一 tag 501 次 → GetSubscriber(TAG_POST).size()==501。
-    for (int i = 0; i < 501; i++) {
-        REQUIRE_OK(ctx, subscribe(sub.fd(), fx::TAG_POST, &err), err);
+    const int N = 501;
+    std::vector<std::unique_ptr<ScopedConn>> subs;
+    for (int i = 0; i < N; i++) {
+        subs.emplace_back(new ScopedConn(srv));
+        ASSERT(ctx, subs.back()->ok(), "subscriber %d connect failed", i);
+        REQUIRE_OK(ctx, subscribe(subs.back()->fd(), fx::TAG_POST, &err), err);
     }
-    // 另一连接 writeb(TAG_POST) → NotifySubscriber(usernumber=501>500) → exit(1)。
-    {
-        ScopedConn pub(srv);
-        ASSERT(ctx, pub.ok(), "publisher connect failed");
-        std::vector<char> payload(POST_SZ, 0x5A);
-        writeb(pub.fd(), fx::TAG_POST, payload.data(), POST_SZ, &err);  // 触发风暴保护
+    ScopedConn pub(srv);
+    ASSERT(ctx, pub.ok(), "publisher connect failed");
+    Rng rng(ctx.seed);
+    publish(ctx, pub.fd(), 1, rng, /*post=*/true);
+
+    CHECK(ctx, !srv.wait_stopped(1000), "server exited with %d subscribers on one tag", N);
+    Recv r = receive(subs.back()->fd(), 2000);
+    std::string perr;
+    CHECK(ctx, r.ok && r.err == 0 && strcmp(r.tag, fx::TAG_POST) == 0 && check_payload(r.val.data(), POST_SZ, 1, &perr),
+          "last subscriber did not get the post: ret=%d err=%u(%s) tag='%s' %s", (int)r.ok, r.err, err_name(r.err),
+          r.tag, perr.c_str());
+}
+
+// --- [B] 事件风暴保护：只订不取 + 持续写入 → 每连接待发队列封顶，丢弃最新事件，server 存活 --------
+// 默认上限 1000（Sock_MaxPendingPost）：写 1100 条后，应恰好取出最早的 1000 条（seq 0..999，FIFO），
+//   之后 waitpostdata 超时；seq 1000..1099 因队列满被丢弃。
+TEST("pubsub.pending_queue_capped", TAG_PUBSUB | TAG_DESTRUCTIVE)
+{
+    ServerConfig cfg;
+    cfg.threads = 2;
+    cfg.asan = ctx.expectAsan;
+    ServerFixture srv(cfg);
+    ASSERT(ctx, srv.start(), "private fixture start failed: %s", srv.startup_error().c_str());
+
+    unsigned err = 0;
+    ScopedConn sub(srv), pub(srv);
+    ASSERT(ctx, sub.ok() && pub.ok(), "connect failed");
+    REQUIRE_OK(ctx, subscribe(sub.fd(), fx::TAG_POST, &err), err);
+
+    const int CAP = 1000, TOTAL = 1100;
+    Rng rng(ctx.seed);
+    for (int i = 0; i < TOTAL; i++) publish(ctx, pub.fd(), (uint32_t)i, rng, /*post=*/true);
+    CHECK(ctx, srv.running(), "server died under event storm");
+
+    int got = 0;
+    for (;; got++) {
+        Recv r = receive(sub.fd(), 500);
+        ASSERT(ctx, r.ok, "waitpostdata failed: err=%u(%s)", r.err, err_name(r.err));
+        if (r.err == ERROR_WAIT_TIMEOUT) break;
+        std::string perr;
+        CHECK(ctx, check_payload(r.val.data(), POST_SZ, got, &perr), "event #%d (want seq %d): %s", got, got, perr.c_str());
+        if (got > CAP + 10) break;
     }
-    bool died = srv.wait_stopped(3000);
-    BUG_CHECK(ctx, !died,
-              "P2: >500 subscribers triggered server exit(1) —— 事件风暴保护打崩整个 server");
+    CHECK(ctx, got == CAP, "drained %d events, want exactly %d (newest dropped when queue full)", got, CAP);
 }
 
 // --- [内存][P3 特征化] 只订不取 → m_listPost 无界堆积（RSS 趋势，仅报告）---------

@@ -3,6 +3,8 @@
 #include <map>  
 #include <string>  
 #include <shared_mutex>  
+#include <cstring>
+#include <utility>
 #include <mutex> // Add this header to fix the 'unique_lock' issue  
 
 enum EVENTID  
@@ -33,16 +35,28 @@ public:
     ~CSubscribe() {};  
 
     // 增加订阅者  
+    // 同一连接重复订阅同一 tag 时去重：
+    //   DEFAULT 以 (连接, eventid) 为键；其余事件（如 POST_DELAY）以 (连接, eventid, eventname, eventarg) 为键
     void Attach(std::string tagname, EventNode observer)
     {  
         std::unique_lock<std::shared_mutex> lock(mutex_rw);  
-        m_mapSubject[tagname].push_back(observer);  
+        auto& nodes = m_mapSubject[tagname];
+        observer.eventname[sizeof(observer.eventname) - 1] = '\0';
+        for (const EventNode& n : nodes)
+        {
+            if (n.subscriber != observer.subscriber || n.eventid != observer.eventid)
+                continue;
+            if (n.eventid == EVENTID::DEFAULT ||
+                (n.eventarg == observer.eventarg && strncmp(n.eventname, observer.eventname, sizeof(n.eventname)) == 0))
+                return;
+        }
+        nodes.push_back(observer);
     }
 
     void Attach(std::string tagname, void* observer)
     {  
-        std::unique_lock<std::shared_mutex> lock(mutex_rw);  
-        m_mapSubject[tagname].push_back(EventNode{ observer,"",EVENTID::DEFAULT,0 });  
+        EventNode node{ observer,"",EVENTID::DEFAULT,0 };
+        Attach(std::move(tagname), node);
     }
 
     // 移除订阅者  
