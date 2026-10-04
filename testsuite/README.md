@@ -74,7 +74,7 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 
 断言宏（`framework/assertions.h`）：`CHECK`（软）/ `ASSERT`（硬，中止用例）/ `EXPECT_OK` / `EXPECT_ERR`（错误码专用）/ `REQUIRE_OK`（前置条件）/ **`BUG_CHECK`**（XFAIL 专用，只豁免这一个检查；其它断言失败仍是 FAIL）。
 
-> 规模：当前共 **76** 个用例。常规 `make test` 全绿，仅 `P1`/`G1` 记 XFAIL、ASan 专用 `mem.*` 在非 ASan 下 SKIP。
+> 规模：当前共 **77** 个用例。常规 `make test` 全绿，仅 `P1`/`G1` 记 XFAIL、ASan 专用 `mem.*` 在非 ASan 下 SKIP。
 
 ---
 
@@ -85,11 +85,6 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 
 | ID | 位置 | 现象 | 覆盖用例 |
 |---|---|---|---|
-| C1 | `createtag` typesize==0 | `send_all(type,0)` 返回 0 被判失败 → 恒失败且 close(socket) | `board.createtag_typesize_zero` |
-| C2 | `createtag` 负 tagsize | server `CreateItem` memset 超大长度 → 崩溃（公网 API DoS） | `board.createtag_negative_tagsize` |
-| C3 | `createtag` 负 typesize | 客户端 `send_all` 超大 len 越界读 / 挂死 / 流错位 | `board.createtag_negative_typesize` |
-| C4 | `writeb_string` value==NULL | 判空前就 `strlen(NULL)` → 客户端崩溃 | `string.writeb_string_null_value` |
-| C5 | `clearq` error==NULL | 判空分支里 `*error=...` 写空指针 → 崩溃 | `queue.clearq_null_error` |
 | C6 | `unblock_connect` | fd≥1024 时 `FD_SET` 越界 → 栈金丝雀 abort（需 ASan 才运行） | `conn_churn.fdset_overflow` |
 | S1 | `bodysize` 截断为 u16 | 65536 → 0 长派发 → 同连接流错位 | `protocol.bodysize_u16_truncation` |
 | S2 | `e_pkgLen>MAXMSGLEN` | 丢头但不关连接 → 同连接流错位 | `protocol.oversize_frame_desync` |

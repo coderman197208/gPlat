@@ -8,11 +8,11 @@
 namespace ts {
 
 enum XfailBug {
-    BUG_C1 = 1,   // createtag typesize==0：永远失败且 close(socket)
-    BUG_C2 = 2,   // createtag 负 tagsize：server memset 超大长度崩溃
-    BUG_C3 = 3,   // createtag 负 typesize：客户端越界读 + 服务端流错位
-    BUG_C4 = 4,   // writeb_string value==NULL：客户端 strlen(NULL) 崩溃
-    BUG_C5 = 5,   // clearq error==NULL：空指针解引用崩溃
+    BUG_C1 = 1,   // （已修复，保留编号）createtag typesize==0
+    BUG_C2 = 2,   // （已修复，保留编号）createtag 负 tagsize：server memset 超大长度崩溃
+    BUG_C3 = 3,   // （已修复，保留编号）createtag 负 typesize：客户端越界读 + 服务端流错位
+    BUG_C4 = 4,   // （已修复，保留编号）writeb_string value==NULL：客户端 strlen(NULL) 崩溃
+    BUG_C5 = 5,   // （已修复，保留编号）clearq error==NULL：空指针解引用崩溃
     BUG_C6 = 6,   // unblock_connect：writefds 未初始化 / fd≥1024 栈溢出
     BUG_S1 = 7,   // bodysize 截断为 u16：body==65536 → 0 长派发
     BUG_S2 = 8,   // e_pkgLen>16384：丢头不关连接 → 流错位

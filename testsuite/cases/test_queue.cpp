@@ -247,18 +247,13 @@ TEST("queue.big_record_roundtrip", TAG_QUEUE)
     CHECK(ctx, check_payload(rd.data(), SZ, 42, &perr), "big record: %s", perr.c_str());
 }
 
-// --- [I][XFAIL C5] clearq(error==NULL)：空指针解引用崩溃 -----------------------
-// 机理（higplat.cpp:745）：clearq 未先判 `error==nullptr` 即进入
-//   `if (!qname || !error) { *error = ERROR_INVALID_PARAMETER; ... }`——当 error==NULL 时，
-//   `*error = ...` 正是对空指针写入 → SIGSEGV。公网 API 的客户端侧崩溃。
-// 断言正确行为：error==NULL 应被安全处理（返回 false，不崩溃）。fork 隔离。
-TEST_XFAIL("queue.clearq_null_error", TAG_QUEUE | TAG_DESTRUCTIVE, BUG_C5)
+// --- [I] clearq(error==NULL)：安全返回 false，不崩溃 ---------------------------
+// （原缺陷 C5 已修复：clearq 以前在 error==NULL 时仍执行 `*error = ...`。）fork 隔离，防止回归时拖垮套件。
+TEST("queue.clearq_null_error", TAG_QUEUE | TAG_DESTRUCTIVE)
 {
     ServerConfig cfg;
     cfg.threads = 2;
     cfg.asan = ctx.expectAsan;
-    cfg.allowAsanErrors = true;
-    cfg.allowLeaks = true;
     ServerFixture srv(cfg);
     ASSERT(ctx, srv.start(), "private fixture start failed: %s", srv.startup_error().c_str());
     const std::string ip = srv.ip();
@@ -267,11 +262,11 @@ TEST_XFAIL("queue.clearq_null_error", TAG_QUEUE | TAG_DESTRUCTIVE, BUG_C5)
     ForkResult r = run_in_fork([&]() {
         int fd = connectgplat(ip.c_str(), port);
         if (fd < 0) _exit(77);
-        bool ok = clearq(fd, fx::Q_NORMAL_BIN, nullptr);  // *error 写空指针 → 崩溃
-        _exit(ok ? 2 : 0);  // 正确行为：安全返回 false（不崩溃）
+        bool ok = clearq(fd, fx::Q_NORMAL_BIN, nullptr);
+        _exit(ok ? 2 : 0);
     }, 4000);
 
     ASSERT(ctx, !(r.exited && r.exit_code == 77), "C5 child could not connect");
-    BUG_CHECK(ctx, r.exited && r.exit_code == 0,
-              "C5: clearq(error=NULL) dereferenced a null pointer —— %s", r.describe());
+    CHECK(ctx, r.exited && r.exit_code == 0,
+          "clearq(error=NULL) not handled safely —— %s", r.describe());
 }

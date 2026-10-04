@@ -3,7 +3,7 @@
 // 覆盖 API：writeb_string / writeb_string_notpost / readb_string。
 // 字符串 tag（fx::）：S_CAP1(1) S_CAP16(16) S_CAP64(64) S_CAPMAX(16384)。
 // 注意：writeb_string 无显式长度参数，按 strlen(value) 发送；readb_string 读进 buffersize 缓冲。
-//   value==NULL 会在客户端 strlen(NULL) 崩溃（登记 C4），属破坏性，放 test_protocol，不在此文件。
+//   value==NULL 会在客户端 strlen(NULL) 崩溃（原缺陷 C4，已修复），属破坏性，放 test_protocol，不在此文件。
 //
 // 共享 server 纪律：这些 tag 专供字符串用例；用例间顺序执行、各自覆盖写，互不影响。
 #include <unistd.h>
@@ -166,18 +166,13 @@ TEST("string.upper_limit", TAG_STRING)
     }
 }
 
-// --- [I][XFAIL C4] writeb_string(value==NULL)：客户端 strlen(NULL) 崩溃 ---------
-// 机理（higplat.cpp:1199）：writeb_string_ 在判空之前就执行 `int strlength = strlen(value);`，
-//   value==NULL → strlen(NULL) 解引用空指针 → SIGSEGV。公网 API 的客户端侧崩溃。
-// 断言正确行为：value==NULL 应被干净拒绝（false + INVALID_PARAMETER），不崩溃。fork 隔离。
-TEST_XFAIL("string.writeb_string_null_value", TAG_STRING | TAG_DESTRUCTIVE, BUG_C4)
+// --- [I] writeb_string(value==NULL)：干净拒绝（false + INVALID_PARAMETER），不崩溃 ---
+// （原缺陷 C4 已修复：writeb_string_ 以前在判空之前就 strlen(value)。）fork 隔离，防止回归时拖垮套件。
+TEST("string.writeb_string_null_value", TAG_STRING | TAG_DESTRUCTIVE)
 {
-    // 崩溃发生在 strlen(value)，早于任何 socket 使用；给个有效 fd 以贴近真实调用。
     ServerConfig cfg;
     cfg.threads = 2;
     cfg.asan = ctx.expectAsan;
-    cfg.allowAsanErrors = true;  // 子进程崩溃留下的半开连接/报告不应拖垮本用例
-    cfg.allowLeaks = true;
     ServerFixture srv(cfg);
     ASSERT(ctx, srv.start(), "private fixture start failed: %s", srv.startup_error().c_str());
     const std::string ip = srv.ip();
@@ -187,11 +182,11 @@ TEST_XFAIL("string.writeb_string_null_value", TAG_STRING | TAG_DESTRUCTIVE, BUG_
         int fd = connectgplat(ip.c_str(), port);
         if (fd < 0) _exit(77);
         unsigned err = 0;
-        bool ok = writeb_string(fd, fx::STR_64, nullptr, &err);  // strlen(NULL) → 崩溃
+        bool ok = writeb_string(fd, fx::STR_64, nullptr, &err);
         _exit((!ok && err == ERROR_INVALID_PARAMETER) ? 0 : 2);
     }, 4000);
 
     ASSERT(ctx, !(r.exited && r.exit_code == 77), "C4 child could not connect");
-    BUG_CHECK(ctx, r.exited && r.exit_code == 0,
-              "C4: writeb_string(NULL) crashed the client (strlen(NULL)) —— %s", r.describe());
+    CHECK(ctx, r.exited && r.exit_code == 0,
+          "writeb_string(NULL) not rejected cleanly —— %s", r.describe());
 }

@@ -101,6 +101,7 @@ bool createtag(int sockfd, const char* tagname, int tagsize,
                void* type, int typesize, unsigned int* error);
 ```
 - **功能**: 创建标签
+- **说明**: `typesize` 必须在 1~100 之间；`typesize == 0`（或 > 100）返回 `false` 且 `*error = ERROR_PARAMETER_SIZE`，不会关闭 socket
 
 ### listtags
 ```cpp

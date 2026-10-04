@@ -744,9 +744,12 @@ extern "C" bool writeq(int sockfd, const char* qname, void* record, int actsize,
 
 extern "C" bool clearq(int sockfd, const char* qname, unsigned int* error)
 {
+	if (error == nullptr)
+		return false;
+
 	AutoErrorCheck _checker(error);
 	// 参数校验
-	if (!qname || !error) {
+	if (!qname) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
 	}
@@ -1203,13 +1206,13 @@ bool writeb_string_(int sockfd, const char* tagname, const char* value, unsigned
 
 	AutoErrorCheck _checker(error);
 
-	int strlength = strlen((const char*)value);
-
-	// 参数校验
+	// 参数校验（必须先于 strlen，避免 value==NULL 时解引用空指针）
 	if (!tagname || !value) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
 	}
+
+	int strlength = strlen((const char*)value);
 
 	if (strlength > MAXMSGLEN) {
 		*error = ERROR_PARAMETER_SIZE;
@@ -1476,7 +1479,9 @@ extern "C" bool createtag(int sockfd, const char* tagname, int tagsize, void* ty
 		return false;
 	}
 
-	if (typesize > 100) {  // 类型数据大小限制
+	// 类型数据大小限制；typesize<=0 在发送前拒绝：==0 会使 send_all 返回 0 被误判为发送失败而关闭连接，
+	// <0 会让 send_all 以超大 size_t 越界读
+	if (tagsize < 0 || typesize <= 0 || typesize > 100) {
 		*error = ERROR_PARAMETER_SIZE;
 		return false;
 	}
@@ -3684,7 +3689,8 @@ F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F---F-F*/
 extern "C" bool CreateItem(const char* lpBoardName, const char* lpItemName, int itemSize, void* pType, int typeSize)
 {
 	//目前看是不可能，因为只传入一个C++类型名
-	if (typeSize > TYPEMAXSIZE)
+	// 负数会绕过下面的剩余空间检查并使 memset/memcpy 长度变成超大 size_t（server 经网络可达）
+	if (itemSize < 0 || typeSize < 0 || typeSize > TYPEMAXSIZE)
 	{
 		errorCode = ERROR_PARAMETER_SIZE;
 		return false;
@@ -4011,9 +4017,12 @@ extern "C" bool readtype(int sockfd, const char* qbdname, const char* tagname, v
 
 bool writeb_plc(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error)
 {
+	if (error == nullptr)
+		return false;
+
 	AutoErrorCheck _checker(error);
 	// 参数校验
-	if (!tagname || !value || !error || actsize <= 0) {
+	if (!tagname || !value || actsize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
 	}
@@ -4069,14 +4078,18 @@ bool writeb_plc(int sockfd, const char* tagname, void* value, int actsize, unsig
 
 bool writeb_string_plc(int sockfd, const char* tagname, const char* value, unsigned int* error)
 {
-	AutoErrorCheck _checker(error);
-	int strlength = strlen((const char*)value);
+	if (error == nullptr)
+		return false;
 
-	// 参数校验
-	if (!tagname || !value || !error) {
+	AutoErrorCheck _checker(error);
+
+	// 参数校验（必须先于 strlen，避免 value==NULL 时解引用空指针）
+	if (!tagname || !value) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
 	}
+
+	int strlength = strlen((const char*)value);
 
 	if (strlength > MAXMSGLEN) {
 		*error = ERROR_PARAMETER_SIZE;
@@ -4125,9 +4138,12 @@ bool writeb_string_plc(int sockfd, const char* tagname, const char* value, unsig
 
 extern "C" bool registertag(int sockfd, const char* tagname, unsigned int* error)
 {
+	if (error == nullptr)
+		return false;
+
 	AutoErrorCheck _checker(error);
 	// 参数校验
-	if (!tagname || !error) {
+	if (!tagname) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
 	}

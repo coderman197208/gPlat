@@ -88,7 +88,7 @@ struct ChurnModel {
 std::string board_file(ServerFixture& srv) { return srv.qbd_path() + "/" + fx::BOARD; }
 
 // —— 建一个 churn tag：createtag(带随机类型 blob) + writeb(self-checking payload)，并登记影子 ——
-// 注意：网络 createtag 的 typesize 必须 ≥1（typesize==0 命中缺陷 C1 会关 socket），故恒带类型。
+// 注意：网络 createtag 的 typesize 必须 ≥1（typesize==0 会被客户端以 ERROR_PARAMETER_SIZE 拒绝），故恒带类型。
 bool churn_create(TestContext& ctx, int fd, ChurnModel& m, const std::string& name,
                   int dataSize, int typeSize, Rng& rng)
 {
@@ -268,7 +268,7 @@ TEST("board_churn.random_rounds", TAG_CHURN | TAG_WHITEBOX)
             char nm[GPLAT_TAGNAME_SIZE];
             snprintf(nm, sizeof(nm), "CH_%06d", uid++);
             int ds = rng.range(16, 1024);   // >=16 以容纳 PayloadTag
-            int ts = rng.range(1, 40);      // 类型 blob 长度（>=1 绕开 C1）
+            int ts = rng.range(1, 40);      // 类型 blob 长度（需 >=1）
             if (!churn_create(ctx, fd, m, nm, ds, ts, rng)) { round = ROUNDS; break; }
         }
         // —— 删 j 个（随机子集，至多半数）——

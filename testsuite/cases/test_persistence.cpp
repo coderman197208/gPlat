@@ -233,7 +233,7 @@ TEST("persist.kill9_crash", TAG_PERSIST)
 }
 
 // --- [B] 运行时建 tag 后崩溃 → 重启后该 tag 可读 ---------------------------
-// 说明：网络 createtag 在 typesize==0 时会关 socket（已登记缺陷 C1），故这里传一个
+// 说明：网络 createtag 在 typesize==0 时会被拒绝（ERROR_PARAMETER_SIZE），故这里传一个
 //   最小非空类型描述符（1 字节哑值）——CreateItem 只原样存储描述符、不解析，
 //   tag 本身是 4 字节二进制项，writeb/readb 原始字节不受影响。
 TEST("persist.create_tag_then_crash", TAG_PERSIST)
@@ -246,7 +246,7 @@ TEST("persist.create_tag_then_crash", TAG_PERSIST)
         ScopedConn c(srv);
         ASSERT(ctx, c.ok(), "connect before create failed");
         unsigned err = 0;
-        char typeDummy = 0x01;  // 绕开 C1：typesize 必须 > 0
+        char typeDummy = 0x01;  // typesize 必须 > 0
         EXPECT_OK(ctx, createtag(c.fd(), NEWTAG, (int)sizeof(int32_t), &typeDummy, 1, &err), err);
         REQUIRE_OK(ctx, writeb(c.fd(), NEWTAG, &val, sizeof(val), &err), err);
     }

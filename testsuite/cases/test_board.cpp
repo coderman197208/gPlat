@@ -151,7 +151,7 @@ TEST("board.write_oversize", TAG_BOARD)
 }
 
 // ===========================================================================
-// 破坏性 createtag 边界（方案 §7.2[X]；登记表 C1/C2/C3）。全部自建私有 server，
+// 破坏性 createtag 边界（方案 §7.2[X]；原登记表 C2/C3，均已修复）。全部自建私有 server，
 // 绝不碰共享实例；会打崩 server 的用例让私有实例随 teardown 回收。
 // ===========================================================================
 
@@ -166,12 +166,9 @@ TEST("board.write_oversize", TAG_BOARD)
     ServerFixture SRV(SRV##_cfg);                                              \
     ASSERT(ctx, SRV.start(), "private fixture start failed: %s", SRV.startup_error().c_str())
 
-// --- [X][XFAIL C1] createtag(typesize==0)：恒失败且 close(socket) --------------
-// 机理：无类型描述符时 typesize==0 本应合法（CLAUDE.md: createtag 的类型描述符可选）。
-//   但 higplat.cpp:1505 `send_all(sockfd, type, 0)` 返回 0 → `0 <= 0` 被判为发送失败 →
-//   置 *error=errno 并 close(socket)、return false。于是“不带类型建 tag”永远建不成。
-// 断言正确行为：typesize==0 应能成功建 tag。今日必失败 → XFAIL。
-TEST_XFAIL("board.createtag_typesize_zero", TAG_BOARD | TAG_DESTRUCTIVE, BUG_C1)
+// --- [X] createtag(typesize==0)：客户端参数校验拒绝，返回 ERROR_PARAMETER_SIZE 且不关 socket ---
+// （原缺陷 C1 已修复：以前 send_all(type,0) 返回 0 被误判为发送失败并 close(socket)。）
+TEST("board.createtag_typesize_zero", TAG_BOARD | TAG_DESTRUCTIVE)
 {
     PRIVATE_BOARD_SERVER(srv, /*ALLOW_CRASH=*/false);
     int fd = srv.open_conn();
@@ -179,43 +176,58 @@ TEST_XFAIL("board.createtag_typesize_zero", TAG_BOARD | TAG_DESTRUCTIVE, BUG_C1)
 
     unsigned err = 0;
     char dummy = 0;
-    bool ok = createtag(fd, "C1_NOTYPE", 16, &dummy, 0, &err);
-    if (ok) disconnectgplat(fd);  // 修复后 fd 仍开，手动断开；bug 下 createtag 已 close(fd)
-    BUG_CHECK(ctx, ok && err == 0,
-              "C1: createtag(typesize=0) always fails & closes socket (ret=%d err=%u(%s))",
-              (int)ok, err, err_name(err));
+    EXPECT_ERR(ctx, createtag(fd, "C1_NOTYPE", 16, &dummy, 0, &err), err, ERROR_PARAMETER_SIZE);
+
+    // socket 必须仍可用：同一连接上带类型的 createtag 应成功。
+    char type = 1;
+    EXPECT_OK(ctx, createtag(fd, "C1_WITHTYPE", 16, &type, 1, &err), err);
+    disconnectgplat(fd);
 }
 
-// --- [X][XFAIL C2] createtag(负 tagsize)：server 端 memset 超大长度 → 崩溃 --------
-// 机理：server HandleCreateItem → CreateItem(itemSize<0)：`pHead->remain < itemSize` 对负数为假 →
-//   放行，末尾 `memset(dst, 0, itemSize)` 的 size_t 参数由负 int 变成超大值 → SIGSEGV。
-//   worker 段错误 → master 收 SIGCHLD 一并退出（无 worker 重生，见 ngx_process_cycle.cxx）。
-// 这是**公网 API 即可打崩 server** 的 DoS。断言正确行为：server 不应因非法入参崩溃。
-TEST_XFAIL("board.createtag_negative_tagsize", TAG_BOARD | TAG_DESTRUCTIVE, BUG_C2)
+// --- [X] createtag(负 tagsize)：客户端参数校验拒绝，返回 ERROR_PARAMETER_SIZE 且不关 socket ---
+// （原缺陷 C2 已修复：CreateItem 对负 itemSize 放行 → memset 超大长度使 server 崩溃。）
+TEST("board.createtag_negative_tagsize", TAG_BOARD | TAG_DESTRUCTIVE)
 {
-    PRIVATE_BOARD_SERVER(srv, /*ALLOW_CRASH=*/true);
-    {
-        int fd = srv.open_conn();
-        ASSERT(ctx, fd >= 0, "connect failed");
-        unsigned err = 0;
-        char type = 1;
-        // 客户端必然失败（server 崩溃使 readn 失败），返回值不关心；createtag 内部会 close(fd)。
-        createtag(fd, "C2_NEG", -1, &type, 1, &err);
-    }
-    // 等待崩溃传导到 master 退出。
-    bool died = srv.wait_stopped(3000);
-    BUG_CHECK(ctx, !died,
-              "C2: negative tagsize crashed the server (public-API DoS) —— CreateItem memset 超大长度");
+    PRIVATE_BOARD_SERVER(srv, /*ALLOW_CRASH=*/false);
+    int fd = srv.open_conn();
+    ASSERT(ctx, fd >= 0, "connect failed");
+
+    unsigned err = 0;
+    char type = 1;
+    EXPECT_ERR(ctx, createtag(fd, "C2_NEG", -1, &type, 1, &err), err, ERROR_PARAMETER_SIZE);
+    EXPECT_OK(ctx, createtag(fd, "C2_OK", 16, &type, 1, &err), err);
+    disconnectgplat(fd);
+    CHECK(ctx, srv.running(), "server died after negative tagsize");
 }
 
-// --- [X][XFAIL C3] createtag(负 typesize)：客户端 send 超大长度 → 越界/挂死 -------
-// 机理：typesize<0 未被校验（仅挡 >100）→ `send_all(sockfd, type, (size_t)负数)` 以超大 len 循环 send，
-//   从 1 字节的 type 缓冲越界读并把垃圾灌给 server（server 按 u16 截断后丢头、流错位）。
-//   客户端可能崩溃/长时间发垃圾/挂死。fork 隔离，看门狗兜底。
-// 断言正确行为：负 typesize 应被干净拒绝（false + PARAMETER_SIZE），不崩溃/不挂死。
-TEST_XFAIL("board.createtag_negative_typesize", TAG_BOARD | TAG_DESTRUCTIVE, BUG_C3)
+// --- [X] 裸协议绕过客户端校验：CREATEITEM(recsize<0) → server 自身必须拒绝，不得崩溃 ---
+TEST("board.createtag_negative_tagsize_raw", TAG_BOARD | TAG_DESTRUCTIVE)
 {
-    PRIVATE_BOARD_SERVER(srv, /*ALLOW_CRASH=*/true);
+    PRIVATE_BOARD_SERVER(srv, /*ALLOW_CRASH=*/false);
+    int fd = raw_connect(srv.ip(), srv.port(), 2000);
+    ASSERT(ctx, fd >= 0, "raw connect failed");
+
+    char type = 1;
+    MSGHEAD h = make_head(CREATEITEM, "BOARD", "C2_RAW");
+    h.recsize = -1;
+    h.bodysize = 1;
+    ASSERT(ctx, send_msg(fd, h, &type, 1), "send CREATEITEM failed");
+
+    MSGHEAD out{};
+    std::vector<char> body;
+    RecvStatus rs = recv_msg(fd, out, body);
+    close(fd);
+    CHECK(ctx, rs == RecvStatus::OK, "no response to negative-recsize CREATEITEM (status=%d)", (int)rs);
+    CHECK(ctx, out.error == ERROR_PARAMETER_SIZE, "expected ERROR_PARAMETER_SIZE, got %u", (unsigned)out.error);
+    CHECK(ctx, srv.running(), "server died on negative recsize (public-API DoS)");
+}
+
+// --- [X] createtag(负 typesize)：客户端参数校验干净拒绝（false + PARAMETER_SIZE），不崩溃/不挂死 ---
+// （原缺陷 C3 已修复：以前 typesize<0 未校验，send_all 以超大 size_t 越界读。）
+// fork 隔离 + 看门狗，防止回归时拖垮套件。
+TEST("board.createtag_negative_typesize", TAG_BOARD | TAG_DESTRUCTIVE)
+{
+    PRIVATE_BOARD_SERVER(srv, /*ALLOW_CRASH=*/false);
     const std::string ip = srv.ip();
     const int port = srv.port();
 
@@ -225,11 +237,11 @@ TEST_XFAIL("board.createtag_negative_typesize", TAG_BOARD | TAG_DESTRUCTIVE, BUG
         unsigned err = 0;
         char type = 1;
         bool ok = createtag(fd, "C3_NEG", 16, &type, -1, &err);
-        // 唯一“正确”结局：明确拒绝。其它（崩溃/挂死/发垃圾后别的错）都算 bug。
         _exit((!ok && err == ERROR_PARAMETER_SIZE) ? 0 : 2);
     }, 4000);
 
     ASSERT(ctx, !(r.exited && r.exit_code == 77), "C3 child could not connect");
-    BUG_CHECK(ctx, r.exited && r.exit_code == 0,
-              "C3: negative typesize mishandled client-side (%s)", r.describe());
+    CHECK(ctx, r.exited && r.exit_code == 0,
+          "negative typesize mishandled client-side (%s)", r.describe());
+    CHECK(ctx, srv.running(), "server died after negative typesize");
 }

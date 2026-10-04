@@ -100,7 +100,7 @@ void crud_round(TestContext& ctx, ServerFixture& srv, Rng& rng, int round)
     // ---- createtag / deletetag churn：每轮建一个唯一名、写读、删（类型 blob 分配/释放路径）----
     char newtag[GPLAT_TAGNAME_SIZE];
     snprintf(newtag, sizeof(newtag), "T_MEM_%06d", round);
-    char typeDummy = 0x01;  // typesize>0 绕开 C1
+    char typeDummy = 0x01;  // typesize 必须 > 0
     EXPECT_OK(ctx, createtag(fd, newtag, (int)sizeof(int32_t), &typeDummy, 1, &err), err);
     int32_t tv = (int32_t)rng.next_u32();
     REQUIRE_OK(ctx, writeb(fd, newtag, &tv, sizeof(tv), &err), err);
