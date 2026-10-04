@@ -85,7 +85,7 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 
 | ID | 位置 | 现象 | 覆盖用例 |
 |---|---|---|---|
-| B1 | `DeleteItem` memmove | 不持条带锁，与 readb 竞态 → 撕裂读 | `board_churn.concurrent_delete_race` |
+| B1（已修复） | `DeleteItem` memmove | 原不持条带锁，与 readb 竞态 → 撕裂读；现持全部条带锁，读写者先持条带锁再放全局锁 | `board_churn.concurrent_delete_race` |
 | G1 | `m_mapResponseOwner` | 永不 erase → response_tag 无法复用、无界累积 | `getresp.response_owner_never_erased` |
 
 **特征化报告（非 XFAIL，RSS 趋势不适合作门控）**：

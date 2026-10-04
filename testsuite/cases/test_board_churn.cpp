@@ -15,8 +15,8 @@
 //   [B] equal_charsum_cluster  —— 等字符和名字簇（相同探测序列）建删，压探测链/墓碑跳过
 //   [B] delete_to_empty_refill —— 删空（回到 fixture 基线）再建满，验数据/类型区回缩
 //   [B] tombstone_reuse        —— 交替建删同名 tag，验墓碑槽被复用（不泄漏槽）
-//   [XFAIL B1] concurrent_delete_race —— 多连接并发建删 + 读，DeleteItem 的 8MB memmove 不持
-//                                        条带锁 → 与 readb 竞态 → 撕裂读（破坏性，默认不跑）
+//   [B1 已修复] concurrent_delete_race —— 多连接并发建删 + 读，DeleteItem 的 8MB memmove 须与
+//                                        readb 互斥，否则撕裂读（破坏性，默认不跑）
 //
 // 关于 B1 的检测方式（已核对源码）：DeleteItem 仅持全局板锁、ReadB/WriteB 持条带锁，二者不互斥；
 //   且 DeleteItem 每次 memmove 长度 = totalsize-sizeof(BOARD_HEAD)-pos-itemsize ≈ 整个 8MB 数据区，
@@ -463,7 +463,7 @@ TEST("board_churn.tombstone_reuse", TAG_CHURN | TAG_WHITEBOX)
 }
 
 // ===========================================================================
-// [XFAIL B1][destructive] 并发建删 + 读 —— DeleteItem 的 8MB memmove 不持条带锁 → 撕裂读
+// [B1 已修复][destructive] 并发建删 + 读 —— DeleteItem 持全部条带锁后 memmove，读写不再撕裂
 // ===========================================================================
 // 布局：POOL 个 256B tag，分区给 Nmut 个 mutator 线程独占（各自建/删自己那份，无跨线程协调）；
 //   Nread 个 reader 线程随机 readb 任一 tag，对读回字节做 **seq 无关** 的 check_payload：
@@ -471,8 +471,8 @@ TEST("board_churn.tombstone_reuse", TAG_CHURN | TAG_WHITEBOX)
 //   - 返回 TAG_NOT_EXIST（恰被并发删）→ 跳过（非错误）；
 //   - 返回 OK 但 payload 自校验失败 → **撕裂读**（命中 B1）。
 // 每次 delete 触发 ~8MB memmove（覆盖整个数据区）→ 并发 readb 极易读到搬移中途的字节。
-// 预期：torn>0（或服务端在竞态中死亡）→ 用例“失败”→ 运行器记为 XFAIL(#B1)。
-TEST_XFAIL("board_churn.concurrent_delete_race", TAG_CHURN | TAG_DESTRUCTIVE, BUG_B1)
+// 预期：torn==0 且服务端存活。
+TEST("board_churn.concurrent_delete_race", TAG_CHURN | TAG_DESTRUCTIVE)
 {
     PRIVATE_SERVER_T(srv, 4);  // ≥2 worker 线程才能让 delete 与 read 真正并发
     const std::string bf = board_file(srv);
@@ -541,8 +541,10 @@ TEST_XFAIL("board_churn.concurrent_delete_race", TAG_CHURN | TAG_DESTRUCTIVE, BU
             unsigned err = 0;
             if (readb(fd, tag_name(idx).c_str(), buf.data(), TAGSZ, &err, nullptr)) {
                 reads.fetch_add(1, std::memory_order_relaxed);
+                // createtag 与首次 writeb 之间 tag 全零，属合法中间态而非撕裂
+                bool allZero = std::all_of(buf.begin(), buf.end(), [](char c) { return c == 0; });
                 std::string pe;
-                if (!check_payload(buf.data(), TAGSZ, -1, &pe))
+                if (!allZero && !check_payload(buf.data(), TAGSZ, -1, &pe))
                     torn.fetch_add(1, std::memory_order_relaxed);  // 撕裂读
             }
             // readb 失败多为 TAG_NOT_EXIST（并发删）——非错误，忽略。
@@ -564,11 +566,10 @@ TEST_XFAIL("board_churn.concurrent_delete_race", TAG_CHURN | TAG_DESTRUCTIVE, BU
     printf("    [info] race: %ld reads, %ld mutations, %ld torn reads; server alive=%d\n",
            reads.load(), mutations.load(), torn.load(), (int)srv.running());
 
-    // B1 实锤：出现撕裂读，或服务端在竞态中死亡。二者任一即判失败 → XFAIL(#B1)。
-    // 用 BUG_CHECK 豁免这两种“已登记缺陷”的表现；netError 属测试基建问题，保持硬 CHECK。
-    BUG_CHECK(ctx, torn.load() == 0,
+    // B1 回归：出现撕裂读或服务端在竞态中死亡即失败。
+    CHECK(ctx, torn.load() == 0,
           "B1: %ld torn reads out of %ld (DeleteItem 的 memmove 不持条带锁，与 readb 竞态撕裂数据)",
           torn.load(), reads.load());
-    BUG_CHECK(ctx, srv.running(), "B1: server died during concurrent create/delete race");
+    CHECK(ctx, srv.running(), "B1: server died during concurrent create/delete race");
     CHECK(ctx, !netError.load(), "B1: client connection setup failed during race");
 }

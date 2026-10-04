@@ -3136,9 +3136,9 @@ extern "C" bool ReadB(const char* lpBulletinName, const char* lpItemName, void* 
 		return false;
 	}
 
-	tabmsg.pmutex_rw->unlock();
-
+	// 先持条带锁再释放全局锁，避免 DeleteItem 在两锁之间搬移/擦除该 tag
 	std::lock_guard<std::mutex> lock(pHead->mutex_rw_tag[loc & (MUTEXSIZE - 1)]);
+	tabmsg.pmutex_rw->unlock();
 
 	memcpy(lpItem, (char*)lpMapAddress + sizeof(BOARD_HEAD) + pIndex[loc].startpos, actSize);
 	if (timestamp != 0)
@@ -3252,9 +3252,8 @@ extern "C" bool ReadB_String(const char* lpBulletinName, const char* lpItemName,
 		return false;
 	}
 
-	tabmsg.pmutex_rw->unlock();
-
 	std::lock_guard<std::mutex> lock(pHead->mutex_rw_tag[loc & (MUTEXSIZE - 1)]);
+	tabmsg.pmutex_rw->unlock();
 
 	//ZeroMemory(lpItem, actSize);
 	//mark 确保返回的字符串是以'\0'结尾的，但当缓冲区长度刚好等于实际字符串长度的时候，不能保证'\0'结尾
@@ -3317,9 +3316,8 @@ extern "C" bool ReadB_String2(const char* lpBulletinName, const char* lpItemName
 		return false;
 	}
 
-	tabmsg.pmutex_rw->unlock();
-
 	std::lock_guard<std::mutex> lock(pHead->mutex_rw_tag[loc & (MUTEXSIZE - 1)]);
+	tabmsg.pmutex_rw->unlock();
 
 	//ZeroMemory(lpItem, actSize);
 	//mark 确保返回的字符串是以'\0'结尾的，但当缓冲区长度刚好等于实际字符串长度的时候，不能保证'\0'结尾
@@ -3434,12 +3432,9 @@ extern "C" bool WriteB(const char* lpBulletinName, const char* lpItemName, void*
 		tabmsg.pmutex_rw->unlock();
 		*/
 	}
-	else
-	{
-		tabmsg.pmutex_rw->unlock();
-	}
 
 	std::unique_lock<std::mutex> lock(pHead->mutex_rw_tag[loc & (MUTEXSIZE - 1)]);
+	tabmsg.pmutex_rw->unlock();
 
 	if (lpSubItem == 0)
 	{
@@ -3504,12 +3499,9 @@ extern "C" bool WriteB_String(const char* lpBulletinName, const char* lpItemName
 		tabmsg.pmutex_rw->unlock();
 		return false;
 	}
-	else
-	{
-		tabmsg.pmutex_rw->unlock();
-	}
 
 	std::unique_lock<std::mutex> lock(pHead->mutex_rw_tag[loc & (MUTEXSIZE - 1)]);
+	tabmsg.pmutex_rw->unlock();
 
 	if (lpSubItem == 0)
 	{
@@ -3560,6 +3552,22 @@ extern "C" bool WriteBOffSet(const char* lpBulletinName, const char* lpItemName,
 	return WriteB(lpBulletinName, lpItemName, lpItem, actSize, (char*)lpItem + offSet, actSubSize);
 }
 
+// 持有板的全部条带锁（调用者须已持全局锁）；用于会搬移/重置数据区的操作
+struct StripeLockAll
+{
+	explicit StripeLockAll(BOARD_HEAD* h) : head(h)
+	{
+		for (int i = 0; i < MUTEXSIZE; i++) head->mutex_rw_tag[i].lock();
+	}
+	~StripeLockAll()
+	{
+		for (int i = MUTEXSIZE - 1; i >= 0; i--) head->mutex_rw_tag[i].unlock();
+	}
+	StripeLockAll(const StripeLockAll&) = delete;
+	StripeLockAll& operator=(const StripeLockAll&) = delete;
+	BOARD_HEAD* head;
+};
+
 extern "C" bool ClearB(const char* lpBoardName)
 {
 	// 从哈希表中查找该数据队列。
@@ -3577,6 +3585,7 @@ extern "C" bool ClearB(const char* lpBoardName)
 	if (pHead->qbdtype != BOARD_T) return false;
 
 	std::unique_lock<std::mutex> lock(*tabmsg.pmutex_rw);
+	StripeLockAll stripes(pHead);
 
 	int totalsize = pHead->totalsize;
 	int typesize = pHead->typesize;
@@ -3626,6 +3635,9 @@ extern "C" bool DeleteItem(const char* lpBoardName, const char* lpItemName)
 
 	//WaitForSingleObject(hMutex, INFINITE);
 	std::unique_lock<std::mutex> lock(*tabmsg.pmutex_rw);
+
+	// memmove 会搬移其它 tag 的数据，必须排除所有持条带锁的读写者（锁序：全局锁 → 条带锁 0..N-1）
+	StripeLockAll stripes(pHead);
 
 	// search table in DB's index(hash table)
 	int loc, c;
