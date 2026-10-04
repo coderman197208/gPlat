@@ -85,9 +85,6 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 
 | ID | 位置 | 现象 | 覆盖用例 |
 |---|---|---|---|
-| C6 | `unblock_connect` | fd≥1024 时 `FD_SET` 越界 → 栈金丝雀 abort（需 ASan 才运行） | `conn_churn.fdset_overflow` |
-| S1 | `bodysize` 截断为 u16 | 65536 → 0 长派发 → 同连接流错位 | `protocol.bodysize_u16_truncation` |
-| S2 | `e_pkgLen>MAXMSGLEN` | 丢头但不关连接 → 同连接流错位 | `protocol.oversize_frame_desync` |
 | P1 | `HandleSubscribe` | 不校验 tag 是否存在 | `pubsub.subscribe_nonexistent` |
 | P2 | `NotifySubscriber>500` | 事件风暴保护 `exit(1)` 打崩整个 server | `pubsub.subscribe_storm_exit` |
 | B1 | `DeleteItem` memmove | 不持条带锁，与 readb 竞态 → 撕裂读 | `board_churn.concurrent_delete_race` |

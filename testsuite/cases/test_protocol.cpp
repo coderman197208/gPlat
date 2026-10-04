@@ -4,14 +4,12 @@
 //   [N] unknown_msgid_dropped  —— 未注册 MSGID → 服务端静默丢包；客户端应**超时**而非挂死，
 //                                 且服务端仍存活、仍能为其它连接正常服务。
 //   [N] partial_header_abort   —— 只发半个包头随即 RST → 服务端不得崩溃，仍能服务。
-//   [XFAIL S2] oversize_frame_desync —— bodysize 声明 > _PKG_MAX_LENGTH：服务端“丢头但不关连接”
-//                                 （ngx_c_socket_request.cxx:204），随后客户端按协议发出的包体被
-//                                 当作新包头解析 → **同一连接的流永久错位**。断言“正确行为”=该连接
-//                                 后续的合法请求仍能得到响应（或连接被干净关闭），今日必错位 → XFAIL。
-//   [XFAIL S1] bodysize_u16_truncation —— bodysize 字段在线协议是 int，但服务端用 unsigned short
-//                                 读取（e_pkgLen = pPkgHeader->bodysize）。发 bodysize=65536 →
-//                                 截断为 0 → 服务端按“无包体”立即派发，而客户端已按 65536 发出包体
-//                                 → 同连接流错位。断言同上 → XFAIL。
+//   [S2] oversize_frame_desync —— bodysize 声明 > _PKG_MAX_LENGTH：服务端必须关闭该连接
+//                                 （原缺陷 S2 已修复：以前“丢头但不关连接”，随后的包体被当作新包头
+//                                 解析 → 同一连接流永久错位）。断言：连接被干净关闭（或仍同步），服务端存活。
+//   [S1] bodysize_u16_truncation —— bodysize 在线协议是 int，服务端须用 int 读取
+//                                 （原缺陷 S1 已修复：以前用 unsigned short，65536 截断为 0 → 0 长派发 → 流错位）。
+//                                 发 bodysize=65536 → 超限 → 连接被关闭。
 //
 // 隔离纪律：每个用例自建私有 ServerFixture（独立 sandbox + 自动空闲端口，绝不碰 8777）。
 // 破坏性门控：全部标 TAG_PROTOCOL | TAG_DESTRUCTIVE，默认隐藏，仅 `make test-destructive` 运行。
@@ -122,9 +120,9 @@ TEST("protocol.partial_header_abort", TAG_PROTOCOL | TAG_DESTRUCTIVE)
 }
 
 // ===========================================================================
-// [XFAIL S2] bodysize > _PKG_MAX_LENGTH：丢头不关连接 → 同连接流错位
+// [S2] bodysize > _PKG_MAX_LENGTH：必须关闭连接，不得留下错位的流
 // ===========================================================================
-TEST_XFAIL("protocol.oversize_frame_desync", TAG_PROTOCOL | TAG_DESTRUCTIVE, BUG_S2)
+TEST("protocol.oversize_frame_desync", TAG_PROTOCOL | TAG_DESTRUCTIVE)
 {
     PRIVATE_PROTO_SERVER(srv);
 
@@ -132,20 +130,20 @@ TEST_XFAIL("protocol.oversize_frame_desync", TAG_PROTOCOL | TAG_DESTRUCTIVE, BUG
     ASSERT(ctx, fd >= 0, "raw connect failed");
 
     // 声明一个超限包体（16385 > _PKG_MAX_LENGTH=MAXMSGLEN=16384），并按协议把这些“包体”字节真的发出去。
-    // 服务端在 ngx_wait_request_handler_proc_p1 命中 e_pkgLen>_PKG_MAX_LENGTH：
-    //   复位状态机、**不关连接**、也不消费这 16385 字节 → 这些字节被当作后续包头解析（流错位）。
+    // 服务端在 ngx_wait_request_handler_proc_p1 命中 e_pkgLen>_PKG_MAX_LENGTH 应关闭连接；
+    // 此后客户端继续发送包体可能因对端已关闭而失败（EPIPE/RST），属预期，不作断言。
     const int OVER = MAXMSGLEN + 1;  // 16385；16385 % 180 != 0 → 确定性错位
     MSGHEAD h = make_head(WRITEB, "BOARD", fx::TAG_BINMAX);
     h.datasize = OVER;
     h.bodysize = OVER;
     ASSERT(ctx, raw_send(fd, &h, sizeof(h)), "send oversize header failed");
     std::vector<char> blob(OVER, (char)0xFF);  // 0xFF 包体：被当包头时 bodysize=0xFFFF>MAX → 继续丢，稳定错位
-    ASSERT(ctx, raw_send(fd, blob.data(), (int)blob.size()), "send oversize body failed");
+    raw_send(fd, blob.data(), (int)blob.size());
 
     // 服务端存活（丢头不崩溃）——可靠断言。
     CHECK(ctx, srv.running(), "server died on oversize frame (unexpected: should just drop)");
 
-    // 核心：同一连接后续的合法请求应仍可得到响应（或连接被干净关闭）。今日因流错位 → 超时。
+    // 核心：连接被干净关闭（或仍同步），而非流错位超时。
     MSGHEAD h2 = make_head(READBOARDINFO, "BOARD", "");
     h2.datasize = sizeof(BOARD_INFO);
     h2.bodysize = 0;
@@ -160,36 +158,33 @@ TEST_XFAIL("protocol.oversize_frame_desync", TAG_PROTOCOL | TAG_DESTRUCTIVE, BUG
     // 另起连接确认服务端整体仍健康（与“单连接错位”解耦）。
     CHECK(ctx, fresh_server_ok(srv), "server no longer serves fresh connections after oversize frame");
 
-    BUG_CHECK(ctx, well_defined,
-              "S2: oversize frame desynced the connection (status=%d id=%d) —— 丢头不关连接，流错位",
+    CHECK(ctx, well_defined,
+              "S2 regression: oversize frame desynced the connection (status=%d id=%d)",
               (int)rs, (int)out.id);
 }
 
 // ===========================================================================
-// [XFAIL S1] bodysize 被截断为 u16：65536 → 0 长派发 → 同连接流错位
+// [S1] bodysize 不得被截断为 u16：65536 应判超限并关闭连接
 // ===========================================================================
-TEST_XFAIL("protocol.bodysize_u16_truncation", TAG_PROTOCOL | TAG_DESTRUCTIVE, BUG_S1)
+TEST("protocol.bodysize_u16_truncation", TAG_PROTOCOL | TAG_DESTRUCTIVE)
 {
     PRIVATE_PROTO_SERVER(srv);
 
     int fd = raw_connect(srv.ip(), srv.port(), 1500);
     ASSERT(ctx, fd >= 0, "raw connect failed");
 
-    // bodysize=65536：int 层面 > MAXMSGLEN（正确实现应拒绝），但服务端用 unsigned short 读 →
-    //   e_pkgLen = (u16)65536 = 0 → 按“无包体”立即派发；而我们随后按 65536 发出的包体被当作后续
-    //   包头流解析 → 同连接错位。
+    // bodysize=65536：int 层面 > MAXMSGLEN，应被拒绝并关闭连接（原先被截断为 0 → 0 长派发 → 错位）。
     const int BODY = 65536;  // 65536 % 180 = 16 → 确定性错位
     MSGHEAD h = make_head(READB, "BOARD", fx::TAG_BINMAX);
     h.datasize = BODY;
     h.bodysize = BODY;
     ASSERT(ctx, raw_send(fd, &h, sizeof(h)), "send truncating header failed");
     std::vector<char> blob(BODY, (char)0xFF);
-    ASSERT(ctx, raw_send(fd, blob.data(), (int)blob.size()), "send truncated-intent body failed");
+    raw_send(fd, blob.data(), (int)blob.size());  // 服务端可能已关闭连接，发送失败属预期
 
     CHECK(ctx, srv.running(), "server died on u16-truncated bodysize (unexpected)");
 
-    // 排空服务端可能已因“0 长 READB”立即回出的响应，再探测流是否同步。
-    // 正确行为：同连接合法往返得到 READBOARDINFO 响应，或连接被干净关闭；今日 → 流错位超时。
+    // 正确行为：连接被干净关闭，或同连接合法往返得到 READBOARDINFO 响应；不得流错位超时。
     MSGHEAD h2 = make_head(READBOARDINFO, "BOARD", "");
     h2.datasize = sizeof(BOARD_INFO);
     h2.bodysize = 0;
@@ -197,7 +192,7 @@ TEST_XFAIL("protocol.bodysize_u16_truncation", TAG_PROTOCOL | TAG_DESTRUCTIVE, B
     bool got_boardinfo = false;
     RecvStatus rs = RecvStatus::CLOSED;
     if (sent) {
-        // 最多读两帧：第一帧可能是被截断派发的 READB 残响，第二帧才是我们期望的 READBOARDINFO。
+        // 最多读两帧，容忍可能先到的其它响应帧。
         for (int i = 0; i < 2; i++) {
             MSGHEAD out{};
             std::vector<char> body;
@@ -211,7 +206,7 @@ TEST_XFAIL("protocol.bodysize_u16_truncation", TAG_PROTOCOL | TAG_DESTRUCTIVE, B
 
     CHECK(ctx, fresh_server_ok(srv), "server no longer serves fresh connections after truncated frame");
 
-    BUG_CHECK(ctx, well_defined,
-              "S1: bodysize u16 truncation desynced the connection (status=%d) —— 65536→0 长派发",
+    CHECK(ctx, well_defined,
+              "S1 regression: bodysize u16 truncation desynced the connection (status=%d)",
               (int)rs);
 }

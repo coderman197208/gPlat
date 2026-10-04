@@ -177,7 +177,8 @@ private:
 	void ngx_close_and_recycle(lpngx_connection_t pConn);					//已建立的连接断开时关闭 socket 并放入回收队列
 
 	ssize_t recvproc(lpngx_connection_t pConn, char* buff, ssize_t buflen); //接收从客户端来的数据专用函数
-	void ngx_wait_request_handler_proc_p1(lpngx_connection_t pConn);		//包头收完整后的处理，我们称为包处理阶段1：写成函数，方便复用	                                                                   
+	bool ngx_wait_request_handler_proc_p1(lpngx_connection_t pConn);		//包头收完整后的处理，我们称为包处理阶段1：写成函数，方便复用；返回false表示包头非法，连接已关闭回收
+	void ngx_cleanup_closed_connection(lpngx_connection_t pConn);			//连接被关闭后清理请求/订阅/超时定时器状态	                                                                   
 	void ngx_wait_request_handler_proc_plast(lpngx_connection_t pConn);		//收到一个完整包后的处理，放到一个函数中，方便调用	
 	void clearMsgSendQueue();												//处理发送消息队列  
 

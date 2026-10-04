@@ -82,6 +82,7 @@ RecvStatus raw_recv(int fd, void* buf, size_t len)
         if (n < 0) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) return RecvStatus::TIMEOUT;
+            if (errno == ECONNRESET) return RecvStatus::CLOSED;  // 对端关闭时仍有未读数据 → RST，等同被关闭
             return RecvStatus::PROTO_ERR;
         }
         p += n;

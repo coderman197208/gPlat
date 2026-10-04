@@ -20,6 +20,7 @@
 #include <sys/ioctl.h>
 #include <string.h>
 #include <netinet/tcp.h>  //TCP_NODELAY
+#include <poll.h>
 
 #include "../include/msg.h"
 #include "qbd.h"
@@ -416,6 +417,8 @@ int unblock_connect(const char* ip, int port, int time)
 	address.sin_port = htons(port);
 
 	int sockfd = socket(PF_INET, SOCK_STREAM, 0);
+	if (sockfd < 0)
+		return -1;
 	int fdopt = setnonblocking(sockfd);
 
 	//Nagle 算法（发送方缓冲合并小包）
@@ -442,20 +445,20 @@ int unblock_connect(const char* ip, int port, int time)
 	else if (errno != EINPROGRESS)
 	{
 		printf("unblock connect not support\n");
+		close(sockfd);
 		return -1;
 	}
 
-	fd_set readfds;
-	fd_set writefds;
-	struct timeval timeout;
+	struct pollfd pfd;
+	pfd.fd = sockfd;
+	pfd.events = POLLOUT;
+	pfd.revents = 0;
 
-	FD_ZERO(&readfds);
-	FD_SET(sockfd, &writefds);
-
-	timeout.tv_sec = time;
-	timeout.tv_usec = 0;
-
-	ret = select(sockfd + 1, NULL, &writefds, NULL, &timeout);
+	// poll 无 FD_SETSIZE 限制（select/FD_SET 在 fd>=1024 时越界）
+	do
+	{
+		ret = poll(&pfd, 1, time * 1000);
+	} while (ret < 0 && errno == EINTR);
 	if (ret <= 0)
 	{
 		printf("connection time out\n");
@@ -463,7 +466,7 @@ int unblock_connect(const char* ip, int port, int time)
 		return -1;
 	}
 
-	if (!FD_ISSET(sockfd, &writefds))
+	if (!(pfd.revents & (POLLOUT | POLLERR | POLLHUP)))
 	{
 		printf("no events on sockfd found\n");
 		close(sockfd);

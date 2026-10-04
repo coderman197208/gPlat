@@ -7,9 +7,9 @@
 //   [B] rst_abort     —— 用 SO_LINGER{1,0} 让客户端 close 发 RST（而非 FIN），压 recvproc 对
 //                        RST/RDHUP/EAGAIN/EINTR 的处理（近期提交刚修过 EAGAIN/EINTR）；
 //                        断言服务端存活、仍能正常服务、无 fd 泄漏。
-//   [XFAIL C6][destructive] fdset_overflow —— 单进程把客户端 fd 顶到 ≥1024，connectgplat 内部
-//                        unblock_connect 用 select+FD_SET(sockfd)，sockfd≥1024 时 FD_SET 写越界
-//                        （fd_set 仅 1024 位）→ 栈溢出崩溃。fork 隔离，预期子进程崩溃 → XFAIL。
+//   [C6][destructive] fdset_overflow —— 单进程把客户端 fd 顶到 ≥1024 后 connectgplat 必须正常建连
+//                        （原缺陷 C6 已修复：unblock_connect 以前用 select+FD_SET，fd≥1024 时越界崩溃，
+//                        现改用 poll）。fork 隔离，防止回归时拖垮套件。
 //
 // 隔离纪律：每个用例自建私有 ServerFixture（独立 sandbox + 自动空闲端口，绝不碰 8777）。
 #include <fcntl.h>         // open
@@ -197,20 +197,18 @@ TEST("conn_churn.rst_abort", TAG_CONN)
 }
 
 // ===========================================================================
-// [XFAIL C6][destructive] 客户端 fd≥1024 → unblock_connect 的 FD_SET 栈溢出崩溃
+// [C6][destructive] 客户端 fd≥1024 时 connectgplat 仍应正常建连（原 FD_SET 栈溢出已修复）
 // ===========================================================================
-// 机理（方案 §7.11[X] / 登记表 C6）：connectgplat 非阻塞 connect 后用 select 等可写，
-//   `FD_SET(sockfd, &wset)`。fd_set 只有 FD_SETSIZE(1024) 位；sockfd≥1024 时 FD_SET 写到
-//   fds_bits[] 数组之外（栈上），破坏栈 → 崩溃（常见 *** stack smashing detected *** SIGABRT，
-//   或 SIGSEGV）。这是公网 API 在客户端进程 fd 偏高时的真实隐患。
+// 原机理：connectgplat 非阻塞 connect 后用 select + FD_SET 等可写，fd_set 只有 FD_SETSIZE(1024) 位，
+//   sockfd≥1024 时越界写栈 → 崩溃。现 unblock_connect 改用 poll，无 fd 上限。
 // 用 fork 隔离：子进程先抬高 RLIMIT_NOFILE、打开占位 fd 把下一个 fd 顶到 ≥1024，再 connectgplat。
-TEST_XFAIL("conn_churn.fdset_overflow", TAG_CONN | TAG_DESTRUCTIVE, BUG_C6)
+TEST("conn_churn.fdset_overflow", TAG_CONN | TAG_DESTRUCTIVE)
 {
     if (!ctx.expectAsan) {
-        ctx.skip("C6 requires ASan; a non-crashing out-of-bounds FD_SET is not proof of a fix");
+        ctx.skip("C6 requires ASan to detect an out-of-bounds FD_SET regression");
         return;
     }
-    // 可行性前置：需要能打开 fd≥1024。硬上限过低则无法复现 → skip（避免误报 XPASS）。
+    // 可行性前置：需要能打开 fd≥1024。硬上限过低则无法覆盖 → skip。
     struct rlimit rl{};
     if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_max < 1100) {
         ctx.skip("RLIMIT_NOFILE hard limit < 1100, cannot reach fd>=1024 to trigger C6");
@@ -237,9 +235,8 @@ TEST_XFAIL("conn_churn.fdset_overflow", TAG_CONN | TAG_DESTRUCTIVE, BUG_C6)
             last = d;
         }
         if (last < 1100) _exit(77);
-        // 此刻下一个 socket() 将返回 >=1101 的 fd。connectgplat 内部 FD_SET(该 fd) 越界。
+        // 此刻下一个 socket() 将返回 >=1101 的 fd。connectgplat 必须在高 fd 下正常建连。
         int fd = connectgplat(ip.c_str(), port);
-        // 若未崩溃（bug 已修 / 越界恰好无害）：清理并正常退出（父进程将判为未崩溃 → XPASS 提醒复核）。
         if (fd < 0) _exit(2);
         disconnectgplat(fd);
         _exit(0);
@@ -247,15 +244,7 @@ TEST_XFAIL("conn_churn.fdset_overflow", TAG_CONN | TAG_DESTRUCTIVE, BUG_C6)
 
     printf("    [info] fork result: %s\n", r.describe());
 
-    // 预期：子进程因 FD_SET 越界崩溃。FD_SET(fd>=1024) 写到 fd_set 的 fds_bits[] 之外，
-    //   通常先触发 -fstack-protector 的栈金丝雀 → __stack_chk_fail → abort(SIGABRT)；
-    //   也可能是 SIGSEGV，或（ASan 构建下）stack-buffer-overflow 报告。三者皆算“如期崩溃”。
-    //   写成“期望干净退出”的 BUG_CHECK，现实现必崩 → XFAIL(#C6)；若修复（fd 改 poll/ppoll 或
-    //   校验上限）则子进程干净退出 → XPASS 提醒更新登记表。
     ASSERT(ctx, !r.timed_out && !(r.exited && r.exit_code == 77), "C6 setup/watchdog failed: %s", r.describe());
-    ASSERT(ctx, (r.exited && r.exit_code == 0) || r.crashed(),
-           "C6 unexpected failure: %s\n%s", r.describe(), r.diagnostics.c_str());
-    BUG_CHECK(ctx, r.exited && r.exit_code == 0,
-          "C6: client crashed in connectgplat with fd>=1024 (%s) —— unblock_connect 的 FD_SET 栈溢出",
-          r.describe());
+    CHECK(ctx, r.exited && r.exit_code == 0,
+          "C6 regression: connectgplat failed/crashed with fd>=1024 (%s)\n%s", r.describe(), r.diagnostics.c_str());
 }

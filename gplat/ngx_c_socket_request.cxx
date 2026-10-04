@@ -24,6 +24,24 @@
 #include "ngx_c_lockmutex.h"  //自动释放互斥量的一个类
 #include <iostream>
 
+//连接已被关闭并放入回收队列后，清理该连接上的请求/订阅/超时定时器状态
+void CSocekt::ngx_cleanup_closed_connection(lpngx_connection_t pConn)
+{
+	// 必须在持有 logicPorcMutex 之前调用，内部可能会通知订阅者（包括本连接）
+	CancelRequest(pConn);
+
+	CLock lock(&pConn->logicPorcMutex);
+
+	CancelSubscribe(pConn, pConn->GetTagList(), pConn->GetPlcTagList());
+	pConn->ClearPostList();
+
+	if (pConn->m_bWaitingTimeout)
+	{
+		pConn->m_bWaitingTimeout = false;
+		pConn->StopTimeoutTimer();
+	}
+}
+
 //来数据时候的处理，当连接上有数据来的时候，本函数会被ngx_epoll_process_events()所调用  ,官方的类似函数为ngx_http_wait_request_handler();
 void CSocekt::ngx_read_request_handler(lpngx_connection_t pConn)
 {
@@ -35,21 +53,7 @@ void CSocekt::ngx_read_request_handler(lpngx_connection_t pConn)
 	if (reco < 0)
 	{
 		//对方断开或出错，连接已在recvproc()中关闭并放入回收队列
-		
-		// 必须在持有 logicPorcMutex 之前调用，内部可能会通知订阅者（包括本连接）
-		CancelRequest(pConn);
-
-		CLock lock(&pConn->logicPorcMutex);
-
-		CancelSubscribe(pConn, pConn->GetTagList(), pConn->GetPlcTagList());
-		pConn->ClearPostList();
-	
-		if (pConn->m_bWaitingTimeout)
-		{
-			pConn->m_bWaitingTimeout = false;
-			pConn->StopTimeoutTimer();
-		}
-
+		ngx_cleanup_closed_connection(pConn);
 		return;
 	}
 
@@ -60,7 +64,8 @@ void CSocekt::ngx_read_request_handler(lpngx_connection_t pConn)
 		// fix: Comparison of integer expressions of different signedness
 		if (reco == static_cast<ssize_t>(m_iLenPkgHeader))
 		{
-			ngx_wait_request_handler_proc_p1(pConn); //那就调用专门针对包头处理完整的函数去处理把。
+			if (!ngx_wait_request_handler_proc_p1(pConn)) //那就调用专门针对包头处理完整的函数去处理把。
+				ngx_cleanup_closed_connection(pConn);
 		}
 		else
 		{
@@ -74,7 +79,8 @@ void CSocekt::ngx_read_request_handler(lpngx_connection_t pConn)
 	{
 		if (pConn->irecvlen == reco)			//要求收到的宽度和我实际收到的宽度相等
 		{
-			ngx_wait_request_handler_proc_p1(pConn); //包头收完整了，那就调用专门针对包头处理完整的函数去处理把。
+			if (!ngx_wait_request_handler_proc_p1(pConn)) //包头收完整了，那就调用专门针对包头处理完整的函数去处理把。
+				ngx_cleanup_closed_connection(pConn);
 		}
 		else
 		{
@@ -180,36 +186,22 @@ ssize_t CSocekt::recvproc(lpngx_connection_t c, char* buff, ssize_t buflen)
 
 
 //包头收完整后的处理，我们称为包处理阶段1【p1】：写成函数，方便复用
-void CSocekt::ngx_wait_request_handler_proc_p1(lpngx_connection_t pConn)
+bool CSocekt::ngx_wait_request_handler_proc_p1(lpngx_connection_t pConn)
 {
 	CMemory* p_memory = CMemory::GetInstance();
 
 	PMSGHEAD pPkgHeader;
 	pPkgHeader = (PMSGHEAD)pConn->dataHeadInfo; //正好收到包头时，包头信息肯定是在dataHeadInfo里；
 
-	unsigned short e_pkgLen;
-	//e_pkgLen = ntohs(pPkgHeader->pkgLen);  //注意这里网络序转本机序，所有传输到网络上的2字节数据，都要用htons()转成网络序，所有从网络上收到的2字节数据，都要用ntohs()转成本机序
-	e_pkgLen = pPkgHeader->bodysize;	//包体的大小，不含包头MSGHEAD的大小
+	// bodysize 在线协议里是 int，必须用 int 接收，否则 65536 会被截断成 0
+	int e_pkgLen = pPkgHeader->bodysize;	//包体的大小，不含包头MSGHEAD的大小
 
-	if (e_pkgLen < 0)
+	if (e_pkgLen < 0 || e_pkgLen > (_PKG_MAX_LENGTH))
 	{
-		//废包
-		//状态和接收位置都复原，这些值都有必要，因为有可能在其他状态比如_PKG_HD_RECVING状态调用这个函数；
-		pConn->curStat = _PKG_HD_INIT;
-		pConn->precvbuf = pConn->dataHeadInfo;
-		pConn->irecvlen = m_iLenPkgHeader;
-
-		//gyb 这里难道不断开连接吗？还要继续收下一个包？还是说直接断开连接？我觉得应该断开连接，直接关闭socket，释放连接池中连接
-	}
-	else if (e_pkgLen > (_PKG_MAX_LENGTH))
-	{
-		//包太大，认定非法用户，废包
-		//状态和接收位置都复原，这些值都有必要，因为有可能在其他状态比如_PKG_HD_RECVING状态调用这个函数；
-		pConn->curStat = _PKG_HD_INIT;
-		pConn->precvbuf = pConn->dataHeadInfo;
-		pConn->irecvlen = m_iLenPkgHeader;
-
-		//gyb 这里难道不断开连接吗？还要继续收下一个包？还是说直接断开连接？我觉得应该断开连接，直接关闭socket，释放连接池中连接
+		//非法包长（负数或过大）：丢弃包头后无法重新同步字节流，只能关闭连接
+		ngx_log_stderr(0, "CSocekt::ngx_wait_request_handler_proc_p1()中bodysize=%d非法，关闭连接!", e_pkgLen);
+		ngx_close_and_recycle(pConn);
+		return false;
 	}
 	else
 	{
@@ -241,7 +233,7 @@ void CSocekt::ngx_wait_request_handler_proc_p1(lpngx_connection_t pConn)
 		}
 	}
 
-	return;
+	return true;
 }
 
 //收到一个完整包后的处理【plast表示最后阶段】，放到一个函数中，方便调用
