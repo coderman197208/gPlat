@@ -523,18 +523,37 @@ bool CLogicSocket::HandleSubscribe(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER 
 	}
 
 	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
+	pPkgHead->itemname[sizeof(pPkgHead->itemname) - 1] = '\0';
+	pPkgHead->qname[sizeof(pPkgHead->qname) - 1] = '\0';
+
+	// 定时器是虚拟 tag（不在 Board 中），其余 tag 必须存在
+	static const char *const kTimerTags[] = {"timer_500ms", "timer_1s", "timer_2s", "timer_3s", "timer_5s"};
+	bool isTimerTag = false;
+	for (const char *t : kTimerTags)
+	{
+		if (strcmp(pPkgHead->itemname, t) == 0)
+		{
+			isTimerTag = true;
+			break;
+		}
+	}
+	bool tagOk = isTimerTag || ExistsB("BOARD", pPkgHead->itemname);
+	unsigned int subError = tagOk ? 0 : ERROR_TAG_NOT_EXIST;
 
 	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-	pConn->Attach(pPkgHead->itemname);
+	if (tagOk)
+	{
+		pConn->Attach(pPkgHead->itemname);
 
-	EventNode eventnode;
-	eventnode.subscriber = pConn;
-	eventnode.eventid = (EVENTID)(pPkgHead->eventid);
-	eventnode.eventarg = pPkgHead->eventarg;
-	strcpy(eventnode.eventname, pPkgHead->qname); // 用qname字段保存用户定义的事件名！
-	m_subscriber.Attach(pPkgHead->itemname, eventnode);
+		EventNode eventnode;
+		eventnode.subscriber = pConn;
+		eventnode.eventid = (EVENTID)(pPkgHead->eventid);
+		eventnode.eventarg = pPkgHead->eventarg;
+		strcpy(eventnode.eventname, pPkgHead->qname); // 用qname字段保存用户定义的事件名！
+		m_subscriber.Attach(pPkgHead->itemname, eventnode);
+	}
 
-	pPkgHead->error = 0;
+	pPkgHead->error = subError;
 	pPkgHead->bodysize = 0;
 
 	int iLenPkgBody = 0;

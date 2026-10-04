@@ -171,6 +171,7 @@ bool ReadB_String2(const char* lpBulletinName, const char* lpItemName, void* lpI
 bool WriteB(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, void* lpSubItem, int actSubSize);
 bool WriteB_String(const char* lpBulletinName, const char* lpItemName, void* lpItem, int actSize, void* lpSubItem, int actSubSize);
 bool ClearB(const char* lpBoardName);
+bool ExistsB(const char* lpBoardName, const char* lpItemName);
 unsigned int GetLastErrorQ(void);
 bool ReadType(const char* lpDqName, const char* lpItemName, void* inBuff, int buffSize, int* pTypeSize);
 bool ReadBoardInfo(const char* lpBoardName, BOARD_INFO* boardinfo);

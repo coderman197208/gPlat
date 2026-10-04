@@ -221,19 +221,15 @@ TEST("pubsub.duplicate_subscribe", TAG_PUBSUB)
           r3.err, err_name(r3.err));
 }
 
-// --- [B] 订阅不存在的 tag：应校验并拒绝（现实现不校验，接受）→ XFAIL#P1 -----
-// 断言的是“正确行为”：订阅不存在 tag 应失败并置 TAG_NOT_EXIST。
-// 现实现 HandleSubscribe 不校验、直接 Attach 并回成功 → 今日必失败 → 记 XFAIL；
-// 一旦服务端补上校验 → 转 XPASS，提醒更新登记表。
-TEST_XFAIL("pubsub.subscribe_nonexistent", TAG_PUBSUB, BUG_P1)
+// --- [B] 订阅不存在的 tag：应校验并拒绝，置 TAG_NOT_EXIST（原 P1，已修复）-----
+TEST("pubsub.subscribe_nonexistent", TAG_PUBSUB)
 {
     ScopedConn sub(ctx.server());
     ASSERT(ctx, sub.ok(), "connect failed");
     unsigned err = 0;
     bool ok = subscribe(sub.fd(), "NO_SUCH_TAG_PQR", &err);
-    ASSERT(ctx, ok || err == ERROR_TAG_NOT_EXIST, "unexpected subscribe error %u", err);
-    BUG_CHECK(ctx, !ok && err == ERROR_TAG_NOT_EXIST,
-              "P1: nonexistent subscription accepted (ret=%d err=%u)", ok, err);
+    CHECK(ctx, !ok && err == ERROR_TAG_NOT_EXIST,
+          "nonexistent subscription accepted (ret=%d err=%u)", ok, err);
 }
 
 // --- [X][XFAIL P2] 单连接订阅 >500 → NotifySubscriber 触发 server exit(1) ------

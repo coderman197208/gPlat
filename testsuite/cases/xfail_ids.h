@@ -16,7 +16,7 @@ enum XfailBug {
     BUG_C6 = 6,   // （已修复，保留编号）unblock_connect fd≥1024 FD_SET 栈溢出
     BUG_S1 = 7,   // （已修复，保留编号）bodysize 截断为 u16：body==65536 → 0 长派发
     BUG_S2 = 8,   // （已修复，保留编号）e_pkgLen>16384：丢头不关连接 → 流错位
-    BUG_P1 = 9,   // HandleSubscribe：不校验 tag 存在 / eventid 合法
+    BUG_P1 = 9,   // （已修复，保留编号）HandleSubscribe 不校验 tag 存在
     BUG_P2 = 10,  // NotifySubscriber >500：server exit(1)
     BUG_P3 = 11,  // m_listPost 无界：只订不取 / 定时器订阅堆积
     BUG_G1 = 12,  // m_mapResponseOwner：永不 erase

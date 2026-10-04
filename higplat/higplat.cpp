@@ -3149,6 +3149,32 @@ extern "C" bool ReadB(const char* lpBulletinName, const char* lpItemName, void* 
 	return true;
 }
 
+extern "C" bool ExistsB(const char* lpBulletinName, const char* lpItemName)
+{
+	struct TABLE_MSG tabmsg;
+	if (!fetchtab(lpBulletinName, tabmsg))
+	{
+		return false;
+	}
+
+	BOARD_HEAD* pHead = static_cast<BOARD_HEAD*>(tabmsg.lpMapAddress);
+	BOARD_INDEX_STRUCT* pIndex = pHead->index;
+
+	int loc = hash1(lpItemName);
+	int c = hash2(lpItemName);
+	std::lock_guard<std::mutex> lock(*tabmsg.pmutex_rw);
+	while (pIndex[loc].itemname[0] != '\0' && strcmp(pIndex[loc].itemname, lpItemName))
+	{
+		loc = (loc + c) % INDEXSIZE;
+	}
+	if (pIndex[loc].itemname[0] == '\0' || pIndex[loc].erased)
+	{
+		errorCode = ERROR_TAG_NOT_EXIST;
+		return false;
+	}
+	return true;
+}
+
 extern "C" int GetStringLength(const char* lpBulletinName, const char* lpItemName)
 {
 	// Search bulletin in hash table.

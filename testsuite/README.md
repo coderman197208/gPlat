@@ -74,7 +74,7 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 
 断言宏（`framework/assertions.h`）：`CHECK`（软）/ `ASSERT`（硬，中止用例）/ `EXPECT_OK` / `EXPECT_ERR`（错误码专用）/ `REQUIRE_OK`（前置条件）/ **`BUG_CHECK`**（XFAIL 专用，只豁免这一个检查；其它断言失败仍是 FAIL）。
 
-> 规模：当前共 **77** 个用例。常规 `make test` 全绿，仅 `P1`/`G1` 记 XFAIL、ASan 专用 `mem.*` 在非 ASan 下 SKIP。
+> 规模：当前共 **77** 个用例。常规 `make test` 全绿，仅 `G1` 记 XFAIL、ASan 专用 `mem.*` 在非 ASan 下 SKIP。
 
 ---
 
@@ -85,7 +85,6 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 
 | ID | 位置 | 现象 | 覆盖用例 |
 |---|---|---|---|
-| P1 | `HandleSubscribe` | 不校验 tag 是否存在 | `pubsub.subscribe_nonexistent` |
 | P2 | `NotifySubscriber>500` | 事件风暴保护 `exit(1)` 打崩整个 server | `pubsub.subscribe_storm_exit` |
 | B1 | `DeleteItem` memmove | 不持条带锁，与 readb 竞态 → 撕裂读 | `board_churn.concurrent_delete_race` |
 | G1 | `m_mapResponseOwner` | 永不 erase → response_tag 无法复用、无界累积 | `getresp.response_owner_never_erased` |
