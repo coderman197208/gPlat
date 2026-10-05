@@ -876,6 +876,7 @@ bool CLogicSocket::HandleDeleteItem(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER
 	if ((ret = DeleteItem(pPkgHead->qname, pPkgHead->itemname)))
 	{
 		pPkgHead->error = 0;
+		ForgetDeletedTag(pPkgHead->itemname);
 	}
 	else
 	{
@@ -1486,6 +1487,25 @@ void CLogicSocket::OnRequestTimeout(const std::weak_ptr<PendingRequest>& weakReq
 	if (next)
 	{
 		StartRequest(next);
+	}
+}
+
+// tag 被删除后清理 m_mapResponseOwner：作为 response_tag 的条目；作为 request_tag 且没有挂起请求时其名下的条目
+void CLogicSocket::ForgetDeletedTag(const char* tagName)
+{
+	std::lock_guard<std::mutex> lock(m_reqMutex);
+
+	bool requestPending = m_mapReqChannel.find(tagName) != m_mapReqChannel.end();
+	for (auto it = m_mapResponseOwner.begin(); it != m_mapResponseOwner.end();)
+	{
+		if (it->first == tagName || (!requestPending && it->second == tagName))
+		{
+			it = m_mapResponseOwner.erase(it);
+		}
+		else
+		{
+			++it;
+		}
 	}
 }
 

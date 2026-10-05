@@ -211,7 +211,7 @@ bool getresponse(int sockfd, const char* request_tag, void* request_value, int r
 - **参数**: `request_size` / `response_size` 必须等于对应 tag 的大小（tag 需事先 `createtag`）；`timeout_ms` 必须 > 0（建议 2000，GplatConnection 默认值），计时包含服务端排队时间
 - **返回**: 超时返回 false，`error = ERROR_RESPONSE_TIMEOUT`；同名请求排队超过 64 个返回 `ERROR_REQUEST_QUEUE_FULL`
 - **服务端语义**:
-  - 同一 `request_tag` 同一时刻只处理 1 个请求，其余排队；一个 `response_tag` 只能对应一个 `request_tag`，否则返回 `ERROR_INVALID_PARAMETER`
+  - 同一 `request_tag` 同一时刻只处理 1 个请求，其余排队；一个 `response_tag` 只能对应一个 `request_tag`，否则返回 `ERROR_INVALID_PARAMETER`；该绑定在 `response_tag`（或其 `request_tag`，且无挂起请求时）经 `deletetag` 删除后解除
   - 等待期间本连接其它订阅事件在服务端排队，`getresponse` 返回后再由 `waitpostdata` 取得
   - 出现过的 `response_tag` 被 `writeb` 时只写 Board、投递给等待的请求方，不通知普通订阅者；无人等待时丢弃并记日志（响应方 `writeb` 仍返回成功）。`writeb_notpost` / `writeb_string` 不触发投递
   - 请求方断开连接时释放其请求并继续处理排队中的下一个

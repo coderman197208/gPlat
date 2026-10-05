@@ -83,6 +83,7 @@ private:
 	void StartRequest(PendingRequestPtr req);
 	bool DeliverResponse(const char* responseTag, char* pData, int iDataLen);
 	void OnRequestTimeout(const std::weak_ptr<PendingRequest>& weakReq);
+	void ForgetDeletedTag(const char* tagName);
 	bool DetachRequestLocked(const PendingRequestPtr& req, PendingRequestPtr& next);
 	void SendGetResponseReply(const PendingRequestPtr& req, unsigned int error, const char* pBody, int iBodyLen);
 

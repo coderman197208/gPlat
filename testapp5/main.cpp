@@ -19,6 +19,10 @@ static const char* RSP_TAG = "TEST5_RSP";
 static const char* SLOW_REQ_TAG = "TEST5_SLOW_REQ";
 static const char* SLOW_RSP_TAG = "TEST5_SLOW_RSP";
 
+static const char* DEL_REQ_A = "TEST5_DEL_REQ_A";
+static const char* DEL_REQ_B = "TEST5_DEL_REQ_B";
+static const char* DEL_RSP = "TEST5_DEL_RSP";
+
 static const int SLOW_TIMEOUT_MS = 500;		// 慢请求的 getresponse 超时
 static const int SLOW_DELAY_MS = 1500;		// 响应方故意延迟，超过超时时间
 
@@ -268,6 +272,41 @@ static void testTimeout()
 	disconnectgplat(conn);
 }
 
+// 删除 response_tag 后，其与旧 request_tag 的绑定应被清除
+static void testDeleteTag()
+{
+	printf("[5] deletetag clears response_tag binding\n");
+	int conn = connectgplat(SERVER_IP, SERVER_PORT);
+	CHECK(conn >= 0, "connect failed");
+	if (conn < 0) return;
+
+	CHECK(ensureTag(conn, DEL_REQ_A, "Request", sizeof(Request)) &&
+		ensureTag(conn, DEL_REQ_B, "Request", sizeof(Request)) &&
+		ensureTag(conn, DEL_RSP, "Response", sizeof(Response)), "create tags failed");
+
+	Request req = makeRequest(1000);
+	Response rsp{};
+	unsigned int error = 0;
+
+	// 无响应方，超时即可，目的是让服务端记住 DEL_RSP -> DEL_REQ_A
+	bool ok = getresponse(conn, DEL_REQ_A, &req, sizeof(req), DEL_RSP, &rsp, sizeof(rsp), &error, 200);
+	CHECK(!ok && error == ERROR_RESPONSE_TIMEOUT, "expected timeout, ok=%d error=%u", ok, error);
+
+	ok = getresponse(conn, DEL_REQ_B, &req, sizeof(req), DEL_RSP, &rsp, sizeof(rsp), &error, 200);
+	CHECK(!ok && error == ERROR_INVALID_PARAMETER, "expected invalid parameter, ok=%d error=%u", ok, error);
+
+	CHECK(deletetag(conn, DEL_RSP, &error), "deletetag failed, error=%u", error);
+	CHECK(ensureTag(conn, DEL_RSP, "Response", sizeof(Response)), "recreate tag failed");
+
+	ok = getresponse(conn, DEL_REQ_B, &req, sizeof(req), DEL_RSP, &rsp, sizeof(rsp), &error, 200);
+	CHECK(!ok && error == ERROR_RESPONSE_TIMEOUT, "expected timeout after deletetag, ok=%d error=%u", ok, error);
+
+	CHECK(deletetag(conn, DEL_REQ_A, &error), "deletetag req_a failed, error=%u", error);
+	CHECK(deletetag(conn, DEL_REQ_B, &error), "deletetag req_b failed, error=%u", error);
+	CHECK(deletetag(conn, DEL_RSP, &error), "deletetag rsp failed, error=%u", error);
+	disconnectgplat(conn);
+}
+
 int main()
 {
 	int conn = connectgplat(SERVER_IP, SERVER_PORT);
@@ -296,6 +335,7 @@ int main()
 	testPendingEvents();
 	testConcurrent();
 	testTimeout();
+	testDeleteTag();
 
 	g_running = false;
 	responder.join();

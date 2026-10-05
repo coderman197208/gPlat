@@ -270,13 +270,12 @@ TEST("getresp.concurrency_queue_full", TAG_GETRESP)
     CHECK(ctx, nOther.load() == 0, "unexpected other outcomes: %d", nOther.load());
 }
 
-// --- [内存][XFAIL G1] m_mapResponseOwner 永不 erase（确定性探针，非 RSS 趋势）-----
-// 机理（ngx_c_slogic.cxx:1350）：StartRequest 写 `m_mapResponseOwner[responseTag]=requestTag`，
-//   但全文件再无任何 .erase —— 请求即便已解决（响应/超时）该归属也永久保留。后果有二：
-//   ① 该 response_tag 再不能被别的 request_tag 复用；② 不同 response_tag 无界累积（LSan 看不见）。
-// 本探针用“复用性”做**确定性**判定（优于 RSS）：第一请求解决后，RSP_A 理应可被新 REQ_B 复用。
-// 断言正确行为：复用不应因陈旧归属被拒。今日必被 INVALID_PARAMETER 拒绝 → XFAIL。
-TEST_XFAIL("getresp.response_owner_never_erased", TAG_GETRESP | TAG_MEMORY, BUG_G1)
+// --- [N][G1 已修复] response_tag 归属：设计上永久绑定，deletetag 后解除 -----------
+// 设计（Doc/commits/260926-05.md）：一个 response_tag 只对应一个 request_tag，服务端在进程期内记住归属，
+//   即使第一次请求已解决，其它 request_tag 复用该 response_tag 仍返回 INVALID_PARAMETER（强制检查）。
+// 清理（ngx_c_slogic.cxx: ForgetDeletedTag）：HandleDeleteItem 成功后，删除以该 tag 为 response_tag 的归属条目，
+//   以及它作为 request_tag（且无挂起请求）名下的条目。因此 deletetag 后同名 tag 重建即可被新 request_tag 使用。
+TEST("getresp.response_owner_cleared_on_deletetag", TAG_GETRESP | TAG_MEMORY)
 {
     ServerConfig cfg;
     cfg.threads = 2;
@@ -289,22 +288,29 @@ TEST_XFAIL("getresp.response_owner_never_erased", TAG_GETRESP | TAG_MEMORY, BUG_
     unsigned err = 0;
     std::vector<char> req(REQ_SZ, 0x11), rsp(REQ_SZ, 0);
 
-    // 第一次请求无响应方 → 由服务端定时器判超时解决；但 StartRequest 已登记 RSP_A→REQ_A。
+    // 第一次请求无响应方 → 超时解决；服务端已登记 RSP→REQ。
     bool ok1 = getresponse(c.fd(), fx::REQ_TAG, req.data(), REQ_SZ, fx::RSP_TAG,
                            rsp.data(), REQ_SZ, &err, 300);
     ASSERT(ctx, !ok1 && err == ERROR_RESPONSE_TIMEOUT,
            "first request should time out (no responder): ok=%d err=%u(%s)", (int)ok1, err, err_name(err));
 
-    // 新建第二个 request tag（与 RSP_A 同尺寸 256），尝试复用 RSP_A 作为响应 tag。
     char type = 1;
     REQUIRE_OK(ctx, createtag(c.fd(), "G1_REQ_B", REQ_SZ, &type, 1, &err), err);
 
+    // 设计行为：请求已解决，归属仍保留，复用被拒。
     unsigned err2 = 0;
     bool ok2 = getresponse(c.fd(), "G1_REQ_B", req.data(), REQ_SZ, fx::RSP_TAG,
                            rsp.data(), REQ_SZ, &err2, 300);
-    // 若已修复（归属在解决后释放）：REQ_B 复用 RSP_A 应进入等待并最终超时（无响应方）。
-    ASSERT(ctx, !ok2, "second request unexpectedly succeeded");
-    BUG_CHECK(ctx, err2 != ERROR_INVALID_PARAMETER,
-              "G1: RSP_A still owned by REQ_A after the first request resolved "
-              "(m_mapResponseOwner never erased); err=%u(%s)", err2, err_name(err2));
+    ASSERT(ctx, !ok2 && err2 == ERROR_INVALID_PARAMETER,
+           "reuse before deletetag should be rejected: ok=%d err=%u(%s)", (int)ok2, err2, err_name(err2));
+
+    // deletetag + 重建 response tag 后归属应已清除：REQ_B 进入等待并超时（无响应方）。
+    EXPECT_OK(ctx, deletetag(c.fd(), fx::RSP_TAG, &err), err);
+    REQUIRE_OK(ctx, createtag(c.fd(), fx::RSP_TAG, REQ_SZ, &type, 1, &err), err);
+
+    unsigned err3 = 0;
+    bool ok3 = getresponse(c.fd(), "G1_REQ_B", req.data(), REQ_SZ, fx::RSP_TAG,
+                           rsp.data(), REQ_SZ, &err3, 300);
+    CHECK(ctx, !ok3 && err3 == ERROR_RESPONSE_TIMEOUT,
+          "reuse after deletetag should time out, not be rejected: ok=%d err=%u(%s)", (int)ok3, err3, err_name(err3));
 }

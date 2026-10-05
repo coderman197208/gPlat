@@ -74,7 +74,7 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 
 断言宏（`framework/assertions.h`）：`CHECK`（软）/ `ASSERT`（硬，中止用例）/ `EXPECT_OK` / `EXPECT_ERR`（错误码专用）/ `REQUIRE_OK`（前置条件）/ **`BUG_CHECK`**（XFAIL 专用，只豁免这一个检查；其它断言失败仍是 FAIL）。
 
-> 规模：当前共 **78** 个用例。常规 `make test` 全绿，仅 `G1` 记 XFAIL、ASan 专用 `mem.*` 在非 ASan 下 SKIP。
+> 规模：当前共 **78** 个用例。常规 `make test` 全绿，无 XFAIL、ASan 专用 `mem.*` 在非 ASan 下 SKIP。
 
 ---
 
@@ -86,7 +86,7 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 | ID | 位置 | 现象 | 覆盖用例 |
 |---|---|---|---|
 | B1（已修复） | `DeleteItem` memmove | 原不持条带锁，与 readb 竞态 → 撕裂读；现持全部条带锁，读写者先持条带锁再放全局锁 | `board_churn.concurrent_delete_race` |
-| G1 | `m_mapResponseOwner` | 永不 erase → response_tag 无法复用、无界累积 | `getresp.response_owner_never_erased` |
+| G1（已修复） | `m_mapResponseOwner` | 归属条目永不清理，tag 被 `deletetag` 后残留（response_tag 与 request_tag 一一绑定本是设计）；现 `deletetag` 成功后由 `ForgetDeletedTag` 清理 | `getresp.response_owner_cleared_on_deletetag` |
 
 **特征化报告（非 XFAIL，RSS 趋势不适合作门控）**：
 
