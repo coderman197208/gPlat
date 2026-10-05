@@ -101,6 +101,7 @@ extern "C" bool new_command(
 - 接收响应 (recvmsg)
 - 解析响应
 - 返回结果
+- 收发统一用 `send_request` / `recv_response`，响应错位用 `fail_connection(sockfd, error, ERROR_INVALID_RESPONSE)`，包体比缓冲区大用 `discard_body`；不得 `close(sockfd)`，fd 归调用方（见 `Doc/ERROR_CODE.md` 2.2）
 
 ### 5. 测试
 

@@ -9,7 +9,8 @@
   - `GPLAT_ERRCAT_USAGE`（1）：编程错误，如 `ERROR_INVALID_PARAMETER`、`ERROR_RECORDSIZE`、`STRING_TOO_LONG`、`ERROR_BUFFER_TOO_SMALL`
   - `GPLAT_ERRCAT_CONNECTION`（2）：连接不可用：errno（< `MY_ERR_OFFSET`，send/recv 失败）、`ERROR_SOCKET_NOT_CONNECTED`、`ERROR_INVALID_RESPONSE`
 - `bool IsFatalError(unsigned int error, const char** message)`：兼容旧接口，等价于 `GetErrorCategory(error, message) == GPLAT_ERRCAT_USAGE`
-- `void SetErrorHook(GPLAT_ERROR_HOOK hook, void* user)`：设置错误钩子 `void (*)(unsigned int error, int category, const char* message, const char* func, void* user)`。带 `unsigned int* error` 的网络 API 返回时若错误码非 0（含 `waitpostdata` 超时），就调用一次钩子；`func` 为 API 函数名，`message` 和 `func` 只在回调期间有效。默认钩子把 USAGE 和 CONNECTION 类错误整行写到 stderr（如 `[higplat usage] writeb: record size invalid (code 1014)`），`hook` 传 NULL 关闭输出。线程安全；钩子可能在多个线程上并发执行，不得抛异常
+- `void SetErrorHook(GPLAT_ERROR_HOOK hook, void* user)`：设置错误钩子 `void (*)(unsigned int error, int category, const char* message, const char* func, void* user)`。带 `unsigned int* error` 的网络 API 返回时若错误码非 0（含 `waitpostdata` 超时），就调用一次钩子；`connectgplat` 失败时也调用一次（`error` 为 errno 或 `ERROR_INVALID_PARAMETER`，`message` 附带 host:port）；`func` 为 API 函数名，`message` 和 `func` 只在回调期间有效。默认钩子把 USAGE 和 CONNECTION 类错误整行写到 stderr（如 `[higplat usage] writeb: record size invalid (code 1014)`），`hook` 传 NULL 关闭输出。线程安全；钩子可能在多个线程上并发执行，不得抛异常
+- **fd 所有权**：`sockfd` 始终归调用方，网络 API 失败时从不 `close` 它。返回 CONNECTION 类错误时库已 `shutdown` 该连接（服务端随即断开并清理订阅），之后该 fd 上的调用都以 CONNECTION 类错误失败，调用方应 `disconnectgplat` 后重连并重新订阅；RESULT 和 USAGE 类错误不影响连接。`send` 使用 `MSG_NOSIGNAL`，对端断开不会以 SIGPIPE 终止进程
 
 ```c
 static void my_hook(unsigned int error, int category, const char* message, const char* func, void* user)
@@ -27,14 +28,14 @@ SetErrorHook(my_hook, NULL);    // 进程启动时设置一次
 int connectgplat(const char* server, int port);
 ```
 - **功能**: 连接到 gPlat 服务器
-- **返回**: socket 文件描述符（失败返回 -1）
+- **返回**: socket 文件描述符；失败返回 -1 并设置 errno（2 秒超时为 `ETIMEDOUT`），同时经错误钩子上报一次
 - **示例**: `int sockfd = connectgplat("127.0.0.1", 8777);`
 
 ### disconnectgplat
 ```cpp
 void disconnectgplat(int sockfd);
 ```
-- **功能**: 断开连接
+- **功能**: 断开连接；任何网络 API 失败后（包括 CONNECTION 类错误）都由调用方用它关闭 fd
 
 ---
 
@@ -115,7 +116,7 @@ bool createtag(int sockfd, const char* tagname, int tagsize,
                void* type, int typesize, unsigned int* error);
 ```
 - **功能**: 创建标签
-- **说明**: `typesize` 必须在 1~100 之间；`typesize == 0`（或 > 100）返回 `false` 且 `*error = ERROR_PARAMETER_SIZE`，不会关闭 socket
+- **说明**: `typesize` 必须在 1~100 之间；`typesize == 0`（或 > 100）返回 `false` 且 `*error = ERROR_PARAMETER_SIZE`
 
 ### listtags
 ```cpp
@@ -187,6 +188,7 @@ bool cleartb(int sockfd, const char* tablename, unsigned int* error);
 bool subscribe(int sockfd, const char* tagname, unsigned int* error);
 ```
 - **功能**: 订阅标签变化
+- **错误**: tag 不存在返回 `ERROR_TAG_NOT_EXIST`，连接和已有订阅保留
 
 ### subscribedelaypost
 ```cpp
@@ -204,6 +206,7 @@ bool waitpostdata(int sockfd, char* tagname, int tagnamesize,
 - **功能**: 阻塞等待事件
 - **参数**: `tagname` - 返回触发事件的标签名，`tagnamesize` 必须 >= `GPLAT_TAGNAME_SIZE`（否则 `ERROR_INVALID_PARAMETER`）；`timeout` - 超时时间（毫秒，-1 永久等待）
 - **超时**: 返回 true，`error = ERROR_WAIT_TIMEOUT`，`tagname` 为 `"WAIT_TIMEOUT"`
+- **缓冲区不足**: 事件数据比 `buffersize` 大时返回 false，`error = ERROR_BUFFER_TOO_SMALL`；该事件被丢弃，连接和订阅保留
 
 ### post
 ```cpp
@@ -252,12 +255,12 @@ conn.close();                              // 析构时也会自动关闭
 - **已封装**: `readq` `writeq` `clearq` `peekq` `readb` `writeb` `writeb_notpost` `readb_string` `writeb_string` `writeb_string_notpost` `subscribe` `subscribedelaypost` `waitpostdata` `getresponse` `write_plc_{string,bool,short,ushort,int,uint,float}`
 - **waitpostdata 超时**: 返回 `ERROR_WAIT_TIMEOUT`，`tagname` 置为 `"WAIT_TIMEOUT"`
 - **异常**: 按 `GetErrorCategory` 的类别决定，所有异常都派生自 `GplatError : std::runtime_error`（`code()` 为错误码，`what()` 为 `"<描述> (Code: N)"`），抛出前已更新连接状态：
-  - RESULT（如 `ERROR_TAG_NOT_EXIST`、`ERROR_DQ_EMPTY`、`ERROR_RESPONSE_TIMEOUT`）：只返回错误码，不抛异常
-  - USAGE：抛 `GplatUsageError`。连接一般保留；`ERROR_BUFFER_TOO_SMALL` 时库已关闭 socket，`is_open()` 为 false
-  - CONNECTION：抛 `GplatConnectionError`，连接已标记为关闭
+  - RESULT（如 `ERROR_TAG_NOT_EXIST`、`ERROR_DQ_EMPTY`、`ERROR_RESPONSE_TIMEOUT`）：只返回错误码，不抛异常，连接保留（含 `subscribe` 不存在的 tag）
+  - USAGE：抛 `GplatUsageError`，连接保留（`ERROR_BUFFER_TOO_SMALL` 时过大的包体已被读掉丢弃）
+  - CONNECTION：抛 `GplatConnectionError`，封装类已关闭自己的 fd，`is_open()` 为 false
   - C 接口本身不抛异常，只通过错误钩子上报（默认写 stderr，可用 `SetErrorHook(NULL, NULL)` 关闭）并返回错误码
 - **未连接**: 未 `open()` 或连接已关闭时调用，抛 `GplatConnectionError`（`ERROR_SOCKET_NOT_CONNECTED`）；不自动重连（重连会丢失订阅），需调用者重新 `open()` 并重新订阅
-- **断线识别**: C 接口在 I/O 失败等情况下会在内部 `close(sockfd)`，封装类按错误码判断并把连接标记为关闭（不会重复 close）：CONNECTION 类错误码（失败且 error 为 0 时按 `ERROR_SOCKET_NOT_CONNECTED` 处理）、`ERROR_BUFFER_TOO_SMALL`；`subscribe` / `waitpostdata` 另外在任何服务端错误时（`ERROR_INVALID_PARAMETER`、`ERROR_WAIT_TIMEOUT` 除外）视为已断开，此时即使错误码属于 RESULT（如订阅不存在的 tag 得到 `ERROR_TAG_NOT_EXIST`）也抛 `GplatConnectionError`，`code()` 保留原错误码。`is_open()` 只反映本地状态，对端关闭要到下一次调用失败才能感知
+- **断线识别**: C 接口从不关闭 fd，遇到 CONNECTION 类错误（失败且 error 为 0 时按 `ERROR_SOCKET_NOT_CONNECTED` 处理）时只 `shutdown` 连接，封装类随即 `close()` 自己的 fd 再抛异常；其它类别不影响连接。`is_open()` 只反映本地状态，对端关闭要到下一次调用失败才能感知
 - **拷贝/移动**: 不可拷贝，可移动（被移动对象变为未连接）
 - **线程安全**: 不加锁，一个连接只能在一个线程中使用
 - **示例/测试**: `testapp6`

@@ -9,8 +9,11 @@
 //                                        成功调用不上报；SetErrorHook(NULL) 后不再上报。
 //   [N] default_hook_stderr          —— 默认钩子只把 USAGE / CONNECTION 类错误各写一行到 stderr，
 //                                        RESULT 类不输出，SetErrorHook(NULL) 后静默。
+//   [N] connect_failure_reported     —— connectgplat 失败经钩子上报一次（errno + host:port，参数非法为
+//                                        USAGE），返回 -1 时 errno 可用；成功不上报；库不写 stdout。
 //
 // 钩子是进程级全局状态：改钩子的用例都在 fork 子进程里跑，不影响其它用例。
+#include <stdlib.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -191,5 +194,65 @@ TEST("error.default_hook_stderr", TAG_BOARD)
              "[higplat connection] readb: %s (code %d)\n",
              (unsigned)ERROR_RECORDSIZE, (unsigned)ERROR_INVALID_PARAMETER, strerror(EBADF), EBADF);
     CHECK(ctx, r.diagnostics == expected, "stderr mismatch:\n--- expected\n%s--- got\n%s", expected,
+          r.diagnostics.c_str());
+}
+
+// --- [N] connectgplat 失败经钩子上报一次，errno 可用，库不写 stdout -------------------------
+TEST("error.connect_failure_reported", TAG_CONN)
+{
+    const std::string ip = ctx.server().ip();
+    const int port = ctx.server().port();
+    const int closedPort = pick_free_port(port + 100);
+    ASSERT(ctx, closedPort > 0, "no free port");
+
+    ForkResult r = run_in_fork([&]() {
+        char path[] = "/tmp/gplat_stdout_XXXXXX";
+        int out = mkstemp(path);
+        if (out < 0 || dup2(out, STDOUT_FILENO) < 0) _exit(77);
+        unlink(path);
+
+        std::vector<HookCall> calls;
+        SetErrorHook(record_hook, &calls);
+        int fd = connectgplat(ip.c_str(), port);
+        if (fd < 0 || !calls.empty()) {
+            fprintf(stderr, "successful connect: fd %d, %zu hook calls\n", fd, calls.size());
+            _exit(2);
+        }
+        disconnectgplat(fd);
+
+        // 端口无人监听：errno 为 ECONNREFUSED，钩子收到 errno 和 host:port
+        errno = 0;
+        fd = connectgplat("127.0.0.1", closedPort);
+        int savedErrno = errno;
+        const std::string where = "127.0.0.1:" + std::to_string(closedPort);
+        if (fd != -1 || savedErrno != ECONNREFUSED || calls.size() != 1 || calls[0].func != "connectgplat" ||
+            calls[0].error != ECONNREFUSED || calls[0].category != GPLAT_ERRCAT_CONNECTION ||
+            calls[0].message.find(where) == std::string::npos) {
+            fprintf(stderr, "refused: fd %d errno %d, %zu calls, last '%s' %u '%s'\n", fd, savedErrno,
+                    calls.size(), calls.empty() ? "" : calls.back().func.c_str(),
+                    calls.empty() ? 0u : calls.back().error, calls.empty() ? "" : calls.back().message.c_str());
+            _exit(3);
+        }
+
+        // 参数非法：USAGE，errno 为 EINVAL
+        errno = 0;
+        fd = connectgplat(nullptr, port);
+        savedErrno = errno;
+        if (fd != -1 || savedErrno != EINVAL || calls.size() != 2 || calls[1].func != "connectgplat" ||
+            calls[1].error != ERROR_INVALID_PARAMETER || calls[1].category != GPLAT_ERRCAT_USAGE) {
+            fprintf(stderr, "invalid parameter: fd %d errno %d, %zu calls\n", fd, savedErrno, calls.size());
+            _exit(4);
+        }
+
+        fflush(stdout);
+        if (lseek(out, 0, SEEK_END) != 0) {
+            fprintf(stderr, "library wrote to stdout\n");
+            _exit(5);
+        }
+        _exit(0);
+    }, 6000);
+
+    ASSERT(ctx, !(r.exited && r.exit_code == 77), "child setup failed");
+    CHECK(ctx, r.exited && r.exit_code == 0, "connect failure report (%s): %s", r.describe(),
           r.diagnostics.c_str());
 }

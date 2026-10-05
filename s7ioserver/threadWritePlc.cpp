@@ -156,6 +156,7 @@ static int reconnectGplatWrite(AppConfig* config, const std::map<std::string, Ta
                 return conn;
             }
             s7log_warn("[write] gPlat subscription registration failed, retrying...");
+            disconnectgplat(conn);
         }
         for (int i = 0; i < config->reconnect_interval / 100 && g_running; i++)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -323,6 +324,7 @@ void threadWritePlc(AppConfig* config) {
     // 4. 订阅timer并注册所有tag
     if (!registerGplatWriteSubscriptions(conn, tagMap)) {
         s7log_warn("[write] Initial gPlat subscription registration failed, reconnecting...");
+        disconnectgplat(conn);
         conn = reconnectGplatWrite(config, tagMap);
     }
     else {
@@ -339,8 +341,13 @@ void threadWritePlc(AppConfig* config) {
         std::string tagname(name);
 
         if (!ret) {
+            if (GetErrorCategory(err, nullptr) != GPLAT_ERRCAT_CONNECTION) {
+                // 如事件数据超过缓冲区（该事件已被丢弃）：连接和注册仍然有效
+                s7log_error("[write] waitpostdata failed, error = %u, event skipped.", err);
+                continue;
+            }
             s7log_warn("[write] waitpostdata failed, error = %u, reconnecting gPlat...", err);
-            conn = -1;
+            disconnectgplat(conn);
             conn = reconnectGplatWrite(config, tagMap);
             if (conn <= 0) {
                 s7log_error("[write] Write thread exiting: gPlat reconnect failed.");

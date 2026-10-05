@@ -46,6 +46,7 @@ Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `
 
 - Read thread per PLC: polls DBs, detects changes by raw byte compare, writes Board via `write_plc_*`
 - Shared write thread: subscribes tags, `waitpostdata()`, writes back to PLC via Snap7
+- gPlat errors: both threads `disconnectgplat` + reconnect only on CONNECTION-category errors; other errors are logged and skipped (registration failure always reconnects)
 - INI config: `[general]` (gPlat connection) + per-PLC sections with tag mappings (sample: `Doc/s7ioserver.ini`)
 
 ## Network API (pure C header `include/higplat.h`, blocking TCP)
@@ -54,7 +55,9 @@ Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `
 
 **Error categories** (`GetErrorInfo` in `qbd.h`, one explicit case per code; see `Doc/ERROR_CODE.md`): `GPLAT_ERRCAT_RESULT` (not exist, empty/full, wait/response timeout, capacity — caller branches on the code), `GPLAT_ERRCAT_USAGE` (caller bug: invalid parameter, size mismatch, buffer too small), `GPLAT_ERRCAT_CONNECTION` (errno `< MY_ERR_OFFSET`, `ERROR_SOCKET_NOT_CONNECTED`, `ERROR_INVALID_RESPONSE`). New codes must get a case and a category.
 
-**Error reporting**: each exported network function (never internal helpers like `writeb_`/`writeb_plc`) declares `AutoErrorCheck _checker(error, __func__)`; on return with a non-zero code it calls the error hook once with the category. `SetErrorHook(hook, user)` replaces it (NULL = silent); the default writes USAGE/CONNECTION as one stderr line `[higplat usage] writeb: record size invalid (code 1014)`.
+**Error reporting**: each exported network function (never internal helpers like `writeb_`/`writeb_plc`) declares `AutoErrorCheck _checker(error, __func__)`; on return with a non-zero code it calls the error hook once with the category. `SetErrorHook(hook, user)` replaces it (NULL = silent); the default writes USAGE/CONNECTION as one stderr line `[higplat usage] writeb: record size invalid (code 1014)`. `connectgplat` (no `error` param) reports failures through the same hook (errno or `ERROR_INVALID_PARAMETER`, message with host:port) and sets errno; the library never writes stdout.
+
+**fd ownership**: the network API never closes the caller's fd (only `disconnectgplat` does). All I/O goes through `send_request`/`recv_response`/`fail_connection`/`discard_body` in `higplat.cpp`: when the stream can't be trusted (send/recv failure, EOF → `ERROR_SOCKET_NOT_CONNECTED`, malformed response → `ERROR_INVALID_RESPONSE`) they `shutdown(SHUT_RDWR)` and return a CONNECTION code, so CONNECTION ⇔ connection unusable and the caller must `disconnectgplat` + reconnect; RESULT/USAGE leave it usable (`ERROR_BUFFER_TOO_SMALL` drains the body, `subscribe` of a missing tag keeps the connection). `send` uses `MSG_NOSIGNAL`.
 
 - Connection: `connectgplat(server, port)` → fd (2s timeout, TCP_NODELAY), `disconnectgplat`
 - Queue: `readq`, `writeq`, `clearq`, `createqueue`, `readhead` (QUEUE_HEAD), `peekq` (non-consuming, `PEEK_NEXT`/`PEEK_LATEST`), `listq` (loaded queue names)
@@ -67,7 +70,7 @@ Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 
 ## C++ Wrapper (`include/gplat_connection.h`)
 
-`GplatConnection(server, port)`: header-only C++ layer over `higplat.h` (all C++ features — `std::string`, exceptions, default args, `=delete` overloads, `read_value<T>` — live here, in the caller's TU). `open()`/`close()`/`is_open()`; methods drop `sockfd`, return 0 or a RESULT-category code (`[[nodiscard]] unsigned int`), take `const std::string&` names; `std::string` overloads of `readb_string`/`writeb_string`/`waitpostdata`. Exceptions by category, all derived from `GplatError : std::runtime_error` (`code()`): USAGE → `GplatUsageError`; CONNECTION, calls when not open, or any failure after which the library closed the fd (e.g. `subscribe` server error, code kept) → `GplatConnectionError`, no auto-reconnect. Because C functions `close(sockfd)` internally on I/O/protocol errors, `call()` marks the fd closed via `closed_by_library` (CONNECTION codes, `ERROR_BUFFER_TOO_SMALL`, any server error for subscribe/waitpostdata) before throwing. Non-copyable, movable, not thread-safe.
+`GplatConnection(server, port)`: header-only C++ layer over `higplat.h` (all C++ features — `std::string`, exceptions, default args, `=delete` overloads, `read_value<T>` — live here, in the caller's TU). `open()`/`close()`/`is_open()`; methods drop `sockfd`, return 0 or a RESULT-category code (`[[nodiscard]] unsigned int`), take `const std::string&` names; `std::string` overloads of `readb_string`/`writeb_string`/`waitpostdata`. Exceptions by category, all derived from `GplatError : std::runtime_error` (`code()`): USAGE → `GplatUsageError` (connection kept); CONNECTION or calls when not open → `GplatConnectionError`, no auto-reconnect — on CONNECTION `call()` first `close()`s its own fd, since the library only shut the connection down. Non-copyable, movable, not thread-safe.
 
 ## Local API (direct mmap on QBD files, `higplat/higplat.cpp`)
 
@@ -97,7 +100,7 @@ Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 | `testapp3/` | Struct type test (`PodString`, arrays, nested) |
 | `testapp4/` | Subscribe/`waitpostdata` test |
 | `testapp5/` | `getresponse` request/response test (basic, pending events, concurrency, timeout); Makefile only |
-| `testapp6/` | `GplatConnection` wrapper test (`testapp6 [ip] [port]`); Makefile only |
+| `testapp6/` | `GplatConnection` wrapper test (`testapp6 [ip] [port]`; part [6] uses a local fake server for connection loss); Makefile only |
 | `testapp7/` | Send-path test (`testapp7 [ip] [port]`, use ≥2 worker threads): small client rcvbuf/MSS forces partial sends; pipelined large READB with slow reader (EPOLLOUT/backlog/stall), repeated bursts at the buffer-full boundary (concurrent sends on one connection), POST while backlogged, disconnect while sending + fd reuse; Makefile only |
 | `s7ioserver/` | PLC ↔ Board bridge |
 | `snap7/` | Snap7 source (`libsnap7.so`) |

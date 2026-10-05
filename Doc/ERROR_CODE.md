@@ -40,7 +40,9 @@ enum class ErrorCategory {
 | Usage | `ERROR_INVALID_PARAMETER`、`ERROR_PARAMETER_SIZE`、`ERROR_RECORDSIZE`、`STRING_TOO_LONG`、`BUFFER_TOO_SMALL`、`ERROR_BUFFER_TOO_SMALL`、`ERROR_FILENAME_TOO_LONG`、`ERROR_STARTPOSITION`、`ERROR_OPERATE_PROHIBIT`、`ERROR_TABLE_ROWID` | 写 stderr | 抛 `GplatUsageError` |
 | Connection | errno（`< MY_ERR_OFFSET`）、`ERROR_SOCKET_NOT_CONNECTED`、`ERROR_INVALID_RESPONSE` | 写 stderr | 抛 `GplatConnectionError` |
 
-两个"缓冲区太小"错误码都属于 Usage，但含义不同：`BUFFER_TOO_SMALL`（1038，"string longer than buffer"）是服务端 `ReadB_String` 发现字符串比调用方缓冲区长，连接保留；`ERROR_BUFFER_TOO_SMALL`（1041，"data larger than buffer"）是数据比调用方缓冲区大，网络 API 在客户端发现时会关闭 `sockfd`。
+两个"缓冲区太小"错误码都属于 Usage，但含义不同：`BUFFER_TOO_SMALL`（1038，"string longer than buffer"）是服务端 `ReadB_String` 发现字符串比调用方缓冲区长；`ERROR_BUFFER_TOO_SMALL`（1041，"data larger than buffer"）是数据比调用方缓冲区大，网络 API 在客户端发现后读掉并丢弃该包体（`waitpostdata` 的这条事件被丢弃）。两者都不影响连接。
+
+类别同时表示连接状态：只有 Connection 类错误意味着字节流已不可信，此时网络 API 已 `shutdown` 该连接（服务端随即断开并清理订阅），之后该 fd 上的调用都以 Connection 类错误失败；Result 和 Usage 类错误不影响连接和已有订阅。网络 API 从不 `close` 调用方的 fd，fd 始终由调用方 `disconnectgplat`（见 3.2）。
 
 ### 2.3 错误信息映射
 
@@ -112,6 +114,12 @@ struct AutoErrorCheck {
 
 调用方用 `SetErrorHook(hook, user)` 替换默认钩子（例如接入自己的日志），传 NULL 关闭输出。钩子会收到所有非 0 错误码（含 Result 类，如 `waitpostdata` 超时），由钩子自己按 `category` 过滤；钩子可能在多个线程上并发执行，不得抛异常。
 
+`connectgplat` 没有 `error` 参数，失败时也经钩子上报一次：`error` 为 errno（如 `ECONNREFUSED`、`ETIMEDOUT`，Connection 类），参数非法时为 `ERROR_INVALID_PARAMETER`（Usage 类）；`message` 附带 host:port。返回 -1 时 errno 同样可用。库不再向 stdout 打印任何内容。
+
+```
+[higplat connection] connectgplat: Connection refused (127.0.0.1:8777) (code 111)
+```
+
 ## 3. 使用示例
 
 ### 3.1 库实现端
@@ -147,6 +155,19 @@ SetErrorHook(NULL, NULL);       // 或者关闭库的错误输出
 
 `higplat.h` 是纯 C 接口，异常不得穿过库边界，因此拦截器只上报不抛异常。
 
+fd 始终归调用方：网络 API 失败时从不 `close` 它，调用方负责 `disconnectgplat`，因此不会出现重复关闭（多线程下可能误关别的线程新打开的同号 fd）或泄漏的歧义。按类别处理失败即可：
+
+```c
+unsigned int err = 0;
+if (!readb(fd, "temperature", &value, sizeof(value), &err, NULL)) {
+    if (GetErrorCategory(err, NULL) == GPLAT_ERRCAT_CONNECTION) {
+        disconnectgplat(fd);                // 库只 shutdown 了连接，fd 仍由调用方关闭
+        fd = connectgplat(host, port);      // 重连后重新订阅
+    }
+    // Result / Usage：连接仍可用，按错误码处理
+}
+```
+
 ### 3.3 C++ 调用方（GplatConnection）
 
 `GplatConnection` 在调用方的编译单元里按 `GetErrorCategory` 的类别决定是否抛异常：
@@ -157,20 +178,19 @@ public:
     unsigned int code() const noexcept;
 };
 class GplatUsageError : public GplatError {};       // Usage
-class GplatConnectionError : public GplatError {};  // 连接不可用，已标记为关闭
+class GplatConnectionError : public GplatError {};  // 连接不可用，封装类已关闭连接
 ```
 
-- Result：方法返回错误码（0 为成功），不抛异常，连接保留。
-- Usage：抛 `GplatUsageError`。连接一般保留；`ERROR_BUFFER_TOO_SMALL` 时库已关闭 socket，`is_open()` 为 false。
-- Connection：抛 `GplatConnectionError`，连接已标记为关闭。未 `open()`、或连接已关闭后再调用，同样抛 `ERROR_SOCKET_NOT_CONNECTED`。
-- `subscribe` / `waitpostdata` 遇到服务端错误时（`ERROR_INVALID_PARAMETER`、`ERROR_WAIT_TIMEOUT` 除外）库会关闭 socket，此时即使错误码属于 Result（如 `ERROR_TAG_NOT_EXIST`），也抛 `GplatConnectionError`，`code()` 保留原错误码。
+- Result：方法返回错误码（0 为成功），不抛异常，连接保留。`subscribe` 不存在的 tag 返回 `ERROR_TAG_NOT_EXIST`，已有订阅不受影响。
+- Usage：抛 `GplatUsageError`，连接保留（`ERROR_BUFFER_TOO_SMALL` 时库已读掉并丢弃过大的包体）。
+- Connection：抛 `GplatConnectionError`。库只 `shutdown` 了连接，封装类在抛出前关闭自己的 fd，`is_open()` 为 false。未 `open()`、或连接已关闭后再调用，同样抛 `ERROR_SOCKET_NOT_CONNECTED`。
 
 ```cpp
 GplatConnection conn("127.0.0.1", 8777);
 while (running) {
     try {
         if (!conn.open()) { sleep_a_while(); continue; }
-        (void)conn.subscribe("alarm");      // 成功返回 0；服务端错误会关闭连接，抛 GplatConnectionError
+        (void)conn.subscribe("alarm");      // 成功返回 0；tag 不存在返回 ERROR_TAG_NOT_EXIST
         for (;;) {
             unsigned int err = conn.waitpostdata(tag, buf, sizeof(buf), 1000);
             if (err == ERROR_WAIT_TIMEOUT)

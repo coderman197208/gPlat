@@ -225,6 +225,7 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
         s7log_warn("[%s] Initial snap7 connect failed (err=%d), entering reconnect loop.",
                plc->name.c_str(), res);
         if (!reconnectSnap7(client, *plc, config->reconnect_interval)) {
+            disconnectgplat(conn);
             Cli_Destroy(&client);
             s7log_error("[%s] Read thread exiting.", plc->name.c_str());
             return;
@@ -415,8 +416,15 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
                 tag->first_read = false;
 
                 if (!write_ok) {
-                    s7log_error("[%s] writeb failed for tag '%s', error = %d, reconnecting gPlat...",
+                    if (GetErrorCategory(gplat_error, nullptr) != GPLAT_ERRCAT_CONNECTION) {
+                        // tag 不存在、大小不符等：连接仍可用，记录后继续处理下一个 tag
+                        s7log_error("[%s] writeb failed for tag '%s', error = %u.",
+                               plc->name.c_str(), tag->tagname.c_str(), gplat_error);
+                        continue;
+                    }
+                    s7log_error("[%s] writeb failed for tag '%s', error = %u, reconnecting gPlat...",
                            plc->name.c_str(), tag->tagname.c_str(), gplat_error);
+                    disconnectgplat(conn);
                     conn = reconnectGplat(*config);
                     if (conn <= 0) {
                         s7log_error("[%s] Read thread exiting: gPlat reconnect failed.", plc->name.c_str());
@@ -493,6 +501,7 @@ void threadReadPlc(PlcConfig* plc, AppConfig* config) {
     }
 
     // 清理
+    disconnectgplat(conn);
     Cli_Disconnect(client);
     Cli_Destroy(&client);
     s7log_info("[%s] Read thread exited.", plc->name.c_str());

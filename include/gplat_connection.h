@@ -46,16 +46,15 @@ private:
 };
 
 // Caller bug (GPLAT_ERRCAT_USAGE): invalid parameter, size mismatch, buffer too small...
-// The connection stays open unless the library had to close it (e.g. ERROR_BUFFER_TOO_SMALL); check is_open().
+// The connection stays open (a response too large for the buffer has been read and dropped).
 class GplatUsageError : public GplatError
 {
 public:
 	using GplatError::GplatError;
 };
 
-// The connection is unusable and already marked closed: not open, I/O failure (GPLAT_ERRCAT_CONNECTION),
-// or closed by the library after a server error on subscribe/waitpostdata (code() keeps that error).
-// Call open() again and re-subscribe.
+// The connection is unusable (GPLAT_ERRCAT_CONNECTION: I/O failure, peer closed, malformed response) and has
+// already been closed, or it was not open (ERROR_SOCKET_NOT_CONNECTED). Call open() again and re-subscribe.
 class GplatConnectionError : public GplatError
 {
 public:
@@ -110,28 +109,28 @@ public:
 	// ---- Queue ----
 	[[nodiscard]] unsigned int readq(const std::string& qname, void* record, int actsize)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::readq(fd, qname.c_str(), record, actsize, err);
 		});
 	}
 
 	[[nodiscard]] unsigned int writeq(const std::string& qname, const void* record, int actsize)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::writeq(fd, qname.c_str(), const_cast<void*>(record), actsize, err);
 		});
 	}
 
 	[[nodiscard]] unsigned int clearq(const std::string& qname)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::clearq(fd, qname.c_str(), err);
 		});
 	}
 
 	[[nodiscard]] unsigned int peekq(const std::string& qname, int position, void* record, int actsize, RECORD_HEAD* recordhead = nullptr)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::peekq(fd, qname.c_str(), position, record, actsize, recordhead, err);
 		});
 	}
@@ -139,28 +138,28 @@ public:
 	// ---- Board ----
 	[[nodiscard]] unsigned int readb(const std::string& tagname, void* value, int actsize, timespec* timestamp = nullptr)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::readb(fd, tagname.c_str(), value, actsize, err, timestamp);
 		});
 	}
 
 	[[nodiscard]] unsigned int writeb(const std::string& tagname, const void* value, int actsize)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::writeb(fd, tagname.c_str(), const_cast<void*>(value), actsize, err);
 		});
 	}
 
 	[[nodiscard]] unsigned int writeb_notpost(const std::string& tagname, const void* value, int actsize)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::writeb_notpost(fd, tagname.c_str(), const_cast<void*>(value), actsize, err);
 		});
 	}
 
 	[[nodiscard]] unsigned int readb_string(const std::string& tagname, char* value, int buffersize, timespec* timestamp = nullptr)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::readb_string(fd, tagname.c_str(), value, buffersize, err, timestamp);
 		});
 	}
@@ -176,7 +175,7 @@ public:
 
 	[[nodiscard]] unsigned int writeb_string(const std::string& tagname, const char* value)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::writeb_string(fd, tagname.c_str(), value, err);
 		});
 	}
@@ -188,7 +187,7 @@ public:
 
 	[[nodiscard]] unsigned int writeb_string_notpost(const std::string& tagname, const char* value)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::writeb_string_notpost(fd, tagname.c_str(), value, err);
 		});
 	}
@@ -201,14 +200,14 @@ public:
 	// ---- Pub/Sub ----
 	[[nodiscard]] unsigned int subscribe(const std::string& tagname)
 	{
-		return call(CloseRule::AnyServerError, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::subscribe(fd, tagname.c_str(), err);
 		});
 	}
 
 	[[nodiscard]] unsigned int subscribedelaypost(const std::string& tagname, const std::string& eventname, int delaytime)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::subscribedelaypost(fd, tagname.c_str(), eventname.c_str(), delaytime, err);
 		});
 	}
@@ -217,7 +216,7 @@ public:
 	[[nodiscard]] unsigned int waitpostdata(std::string& tagname, void* value, int buffersize, int timeout)
 	{
 		char name[GPLAT_TAGNAME_SIZE] = {};
-		unsigned int error = call(CloseRule::AnyServerError, [&](int fd, unsigned int* err) {
+		unsigned int error = call([&](int fd, unsigned int* err) {
 			return ::waitpostdata(fd, name, sizeof(name), value, buffersize, timeout, err);
 		});
 		tagname = name;
@@ -228,7 +227,7 @@ public:
 	[[nodiscard]] unsigned int getresponse(const std::string& request_tag, const void* request_value, int request_size,
 		const std::string& response_tag, void* response_value, int response_size, int timeout_ms = 2000)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::getresponse(fd, request_tag.c_str(), const_cast<void*>(request_value), request_size,
 				response_tag.c_str(), response_value, response_size, err, timeout_ms);
 		});
@@ -237,14 +236,14 @@ public:
 	// ---- PLC ----
 	[[nodiscard]] unsigned int write_plc_string(const std::string& tagname, const std::string& str)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::write_plc_string(fd, tagname.c_str(), str.c_str(), err);
 		});
 	}
 
 	[[nodiscard]] unsigned int write_plc_bool(const std::string& tagname, bool value)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::write_plc_bool(fd, tagname.c_str(), value, err);
 		});
 	}
@@ -252,7 +251,7 @@ public:
 
 	[[nodiscard]] unsigned int write_plc_short(const std::string& tagname, short value)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::write_plc_short(fd, tagname.c_str(), value, err);
 		});
 	}
@@ -260,7 +259,7 @@ public:
 
 	[[nodiscard]] unsigned int write_plc_ushort(const std::string& tagname, unsigned short value)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::write_plc_ushort(fd, tagname.c_str(), value, err);
 		});
 	}
@@ -268,7 +267,7 @@ public:
 
 	[[nodiscard]] unsigned int write_plc_int(const std::string& tagname, int value)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::write_plc_int(fd, tagname.c_str(), value, err);
 		});
 	}
@@ -276,7 +275,7 @@ public:
 
 	[[nodiscard]] unsigned int write_plc_uint(const std::string& tagname, unsigned int value)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::write_plc_uint(fd, tagname.c_str(), value, err);
 		});
 	}
@@ -284,33 +283,17 @@ public:
 
 	[[nodiscard]] unsigned int write_plc_float(const std::string& tagname, float value)
 	{
-		return call(CloseRule::Default, [&](int fd, unsigned int* err) {
+		return call([&](int fd, unsigned int* err) {
 			return ::write_plc_float(fd, tagname.c_str(), value, err);
 		});
 	}
 	template<typename T> unsigned int write_plc_float(const std::string& tagname, T value) = delete;
 
 private:
-	// How to tell that the C function already closed the socket on failure.
-	enum class CloseRule
-	{
-		Default,		// only on I/O errors and client-detected protocol errors
-		AnyServerError	// subscribe / waitpostdata also close on server-reported errors
-	};
-
-	static bool closed_by_library(CloseRule rule, unsigned int error)
-	{
-		if (error == ERROR_INVALID_PARAMETER || error == ERROR_WAIT_TIMEOUT)
-			return false;
-		if (rule == CloseRule::AnyServerError)
-			return true;
-		// errno, ERROR_SOCKET_NOT_CONNECTED, ERROR_INVALID_RESPONSE
-		return ::GetErrorCategory(error, nullptr) == GPLAT_ERRCAT_CONNECTION ||
-			error == ERROR_BUFFER_TOO_SMALL;
-	}
-
+	// The C library never closes the fd: on a CONNECTION-category error it has only shut the connection down,
+	// so the wrapper closes its own fd before throwing.
 	template<typename F>
-	unsigned int call(CloseRule rule, F&& f)
+	unsigned int call(F&& f)
 	{
 		const char* message = nullptr;
 		if (!is_open()) {
@@ -322,15 +305,16 @@ private:
 		if (f(m_sockfd, &error))
 			return error;	// non-zero only for waitpostdata timeout
 		if (error == 0)
-			error = ERROR_SOCKET_NOT_CONNECTED;	// send() returned 0 without errno
-		if (closed_by_library(rule, error))
-			m_sockfd = -1;
+			error = ERROR_SOCKET_NOT_CONNECTED;	// every failure sets a code; treat a missing one as a lost connection
 
 		int category = ::GetErrorCategory(error, &message);
+		if (category == GPLAT_ERRCAT_CONNECTION) {
+			GplatConnectionError e(error, message);
+			close();
+			throw e;
+		}
 		if (category == GPLAT_ERRCAT_USAGE)
 			throw GplatUsageError(error, message);
-		if (!is_open())	// every CONNECTION code, plus server errors on subscribe/waitpostdata
-			throw GplatConnectionError(error, message);
 		return error;
 	}
 

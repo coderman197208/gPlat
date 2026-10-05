@@ -1,5 +1,10 @@
 // testapp6: GplatConnection (C++ 封装类) 测试
 // 用法: testapp6 [server_ip] [port]，需要已运行的 gplat 服务
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <atomic>
 #include <chrono>
 #include <climits>
@@ -254,16 +259,18 @@ static void testPubSub()
 		CHECK(delay.open() && delay.subscribedelaypost(INT_TAG, "TEST6_DELAY_EVENT", 100) == 0, "subscribedelaypost");
 	}
 
-	// 缓冲区不足：编程错误，抛 GplatUsageError；libhigplat 已关闭 socket，封装类应识别为断开
+	// 缓冲区不足：编程错误，抛 GplatUsageError；libhigplat 读掉并丢弃这条事件，连接和订阅保留
 	CHECK(pub.writeb_string(STR_TAG, "a string longer than four bytes") == 0, "writeb_string");
 	CHECK(thrownCode<GplatUsageError>([&] { (void)sub.waitpostdata(tag, buf, 4, 1000); }) == ERROR_BUFFER_TOO_SMALL, "waitpostdata with small buffer should throw GplatUsageError");
-	CHECK(!sub.is_open(), "connection closed by library must be detected");
-	CHECK(thrownCode<GplatConnectionError>([&] { (void)sub.subscribe(INT_TAG); }) == ERROR_SOCKET_NOT_CONNECTED, "call after detected close should throw GplatConnectionError");
-	CHECK(sub.open() && sub.subscribe(INT_TAG) == 0, "reopen after close");
+	CHECK(sub.is_open(), "buffer too small must keep the connection open");
+	w = 888;
+	CHECK(pub.writeb(INT_TAG, &w, sizeof(w)) == 0, "writeb after dropped event");
+	CHECK(sub.waitpostdata(tag, buf, sizeof(buf), 1000) == 0 && tag == INT_TAG && *(int32_t*)buf == w, "subscription kept after dropped event, tag=%s", tag.c_str());
 
-	// subscribe 的服务端错误会让 libhigplat 关闭 socket：抛 GplatConnectionError，code 保留原错误
-	CHECK(thrownCode<GplatConnectionError>([&] { (void)sub.subscribe("TEST6_NO_SUCH_TAG"); }) == ERROR_TAG_NOT_EXIST, "subscribe on missing tag should throw GplatConnectionError");
-	CHECK(!sub.is_open(), "subscribe server error must mark the connection closed");
+	// subscribe 的服务端错误只返回错误码，连接和已有订阅保留
+	CHECK(sub.subscribe("TEST6_NO_SUCH_TAG") == ERROR_TAG_NOT_EXIST, "subscribe on missing tag should return ERROR_TAG_NOT_EXIST");
+	CHECK(sub.is_open(), "subscribe server error must keep the connection open");
+	CHECK(sub.subscribe(INT_TAG) == 0, "connection usable after subscribe error");
 }
 
 static void testGetResponse()
@@ -335,6 +342,37 @@ static void testGetResponse()
 	responder.join();
 }
 
+// 连接类错误：用本地假服务端（accept 后立即关闭）模拟断线，不依赖 gplat
+static void testConnectionLost()
+{
+	printf("[6] connection lost\n");
+	int listener = socket(AF_INET, SOCK_STREAM, 0);
+	sockaddr_in addr{};
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	socklen_t len = sizeof(addr);
+	if (listener < 0 || bind(listener, (sockaddr*)&addr, sizeof(addr)) != 0 || listen(listener, 1) != 0 ||
+		getsockname(listener, (sockaddr*)&addr, &len) != 0) {
+		CHECK(false, "fake server setup failed");
+		if (listener >= 0)
+			::close(listener);
+		return;
+	}
+
+	GplatConnection c("127.0.0.1", ntohs(addr.sin_port));
+	CHECK(c.open(), "open to fake server");
+	int peer = accept(listener, nullptr, nullptr);
+	if (peer >= 0)
+		::close(peer);
+
+	int32_t v = 0;
+	unsigned int code = thrownCode<GplatConnectionError>([&] { (void)c.readb(INT_TAG, &v, sizeof(v)); });
+	CHECK(code != 0 && code != UINT_MAX && GetErrorCategory(code, nullptr) == GPLAT_ERRCAT_CONNECTION, "readb after peer close should throw GplatConnectionError, code=%u", code);
+	CHECK(!c.is_open(), "connection error must close the connection");
+	CHECK(thrownCode<GplatConnectionError>([&] { (void)c.subscribe(INT_TAG); }) == ERROR_SOCKET_NOT_CONNECTED, "call after connection error should throw GplatConnectionError");
+	::close(listener);
+}
+
 int main(int argc, char* argv[])
 {
 	if (argc > 1) g_ip = argv[1];
@@ -350,6 +388,7 @@ int main(int argc, char* argv[])
 	testQueue();
 	testPubSub();
 	testGetResponse();
+	testConnectionLost();
 
 	if (g_failures == 0) {
 		printf("ALL PASSED\n");

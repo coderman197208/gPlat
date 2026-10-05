@@ -36,7 +36,7 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 | 命令 | 作用 | 判据 |
 |---|---|---|
 | `make test` | 常规回归（隐藏破坏性/压力） | 全绿即通过；XFAIL 不计失败 |
-| `make test-all` | ASan 重编 + 运行全部 81 个用例（含破坏性/压力） | 81 个用例全部实际执行且无失败/XPASS |
+| `make test-all` | ASan 重编 + 运行全部 87 个用例（含破坏性/压力） | 87 个用例全部实际执行且无失败/XPASS |
 | `make test-asan` | ASan 重编 + 跑泄漏敏感用例 | LSan 零残留（减基线后） |
 | `make test-destructive` | 破坏性用例（fork 隔离，逐个重启 server） | 命中登记缺陷 → XFAIL |
 | `make test-stress` | 高 QPS / 高并发 / churn 基准 | 正确性 + 无 fd 泄漏；性能仅报告 |
@@ -75,7 +75,7 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 
 断言宏（`framework/assertions.h`）：`CHECK`（软）/ `ASSERT`（硬，中止用例）/ `EXPECT_OK` / `EXPECT_ERR`（错误码专用）/ `REQUIRE_OK`（前置条件）/ **`BUG_CHECK`**（XFAIL 专用，只豁免这一个检查；其它断言失败仍是 FAIL）。
 
-> 规模：当前共 **81** 个用例。常规 `make test` 全绿，无 XFAIL、ASan 专用 `mem.*` 在非 ASan 下 SKIP。
+> 规模：当前共 **87** 个用例。常规 `make test` 全绿，无 XFAIL、ASan 专用 `mem.*` 在非 ASan 下 SKIP。
 
 ---
 
@@ -176,7 +176,7 @@ testsuite/
 ├── main.cpp            # CLI 解析 → Runner
 ├── framework/          # 框架设施（见上表）
 ├── cases/              # 用例（test_board/queue/string/pubsub/getresponse/
-│                       #       persistence/memory/board_churn/conn_churn/stress/protocol/framework/error）
+│                       #       persistence/memory/board_churn/conn_churn/stress/protocol/framework/error/client）
 │   └── xfail_ids.h     # XFAIL 缺陷ID 符号常量
 └── scripts/
     └── gen_fixtures.cpp # 独立 fixtures 生成器

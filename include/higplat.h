@@ -45,7 +45,7 @@
 #define BUFFER_TOO_SMALL			    (MY_ERR_OFFSET + 38)	// 字符串比调用方缓冲区长（ReadB_String / readb_string），连接保留
 #define ERROR_INVALID_PARAMETER			(MY_ERR_OFFSET + 39)
 #define ERROR_INVALID_RESPONSE			(MY_ERR_OFFSET + 40)
-#define ERROR_BUFFER_TOO_SMALL			(MY_ERR_OFFSET + 41)	// 数据比调用方缓冲区大；网络 API 会关闭 sockfd
+#define ERROR_BUFFER_TOO_SMALL			(MY_ERR_OFFSET + 41)	// 数据比调用方缓冲区大；网络 API 已读掉并丢弃该包体，连接保留
 #define ERROR_TAG_NOT_EXIST 			(MY_ERR_OFFSET + 42)
 #define ERROR_WAIT_TIMEOUT              (MY_ERR_OFFSET + 43)
 #define ERROR_RESPONSE_TIMEOUT          (MY_ERR_OFFSET + 44)
@@ -108,7 +108,7 @@ typedef struct TAG_META
 // 错误类别（错误钩子的 category 参数、GetErrorCategory 的返回值；分类见 higplat/qbd.h 的 GetErrorInfo）
 #define GPLAT_ERRCAT_RESULT			0	// 运行结果，调用方按返回码分支：tag/队列不存在、队列空/满、等待/响应超时、容量不足等
 #define GPLAT_ERRCAT_USAGE			1	// 编程错误：参数非法、大小不符、缓冲区太小等；GplatConnection 抛 GplatUsageError
-#define GPLAT_ERRCAT_CONNECTION		2	// 连接不可用：errno（< MY_ERR_OFFSET）、ERROR_SOCKET_NOT_CONNECTED、ERROR_INVALID_RESPONSE；GplatConnection 抛 GplatConnectionError
+#define GPLAT_ERRCAT_CONNECTION		2	// 连接不可用：errno（< MY_ERR_OFFSET）、ERROR_SOCKET_NOT_CONNECTED、ERROR_INVALID_RESPONSE；库已 shutdown 该连接，调用方应 disconnectgplat 后重连；GplatConnection 抛 GplatConnectionError
 
 #ifdef __cplusplus
 extern "C" {
@@ -117,6 +117,9 @@ extern "C" {
 struct timespec;
 
 // ---- Network API ----
+// sockfd 始终归调用方：除 disconnectgplat 外，库从不 close 它。返回 CONNECTION 类错误时库已 shutdown 该连接
+// （服务端随即断开并清理订阅），之后该 fd 上的调用都以 CONNECTION 类错误失败，调用方应 disconnectgplat 后重连；
+// 其它错误不影响连接。connectgplat 失败返回 -1 并设置 errno。
 int  connectgplat(const char* server, int port);
 void disconnectgplat(int sockfd);
 bool readq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error);
@@ -160,7 +163,8 @@ int GetErrorCategory(unsigned int error, const char** message);
 bool IsFatalError(unsigned int error, const char** message);
 
 // 网络 API（带 unsigned int* error 的函数）返回时若错误码非 0，就调用一次钩子（含 waitpostdata 超时返回
-// true + ERROR_WAIT_TIMEOUT）。category 为 GPLAT_ERRCAT_*；message 和 func（API 函数名）只在回调期间有效。
+// true + ERROR_WAIT_TIMEOUT）；connectgplat 失败时也调用一次（error 为 errno，参数非法时为 ERROR_INVALID_PARAMETER，
+// message 附带 host:port）。category 为 GPLAT_ERRCAT_*；message 和 func（API 函数名）只在回调期间有效。
 // 钩子可能在多个线程上并发执行，不得抛异常。
 typedef void (*GPLAT_ERROR_HOOK)(unsigned int error, int category, const char* message, const char* func, void* user);
 

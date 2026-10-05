@@ -17,7 +17,7 @@ static_assert(MAXDQNAMELENTH == GPLAT_TAGNAME_SIZE, "tag name size mismatch");
 enum class ErrorCategory {
     Result = GPLAT_ERRCAT_RESULT,           // outcome the caller branches on: not exist, empty/full, timeout, capacity
     Usage = GPLAT_ERRCAT_USAGE,             // caller bug: bad parameter, size mismatch, buffer too small
-    Connection = GPLAT_ERRCAT_CONNECTION    // connection unusable
+    Connection = GPLAT_ERRCAT_CONNECTION    // connection unusable: the network API has shut it down, the caller must disconnectgplat()
 };
 
 struct ErrorInfo {

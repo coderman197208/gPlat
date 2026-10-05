@@ -77,7 +77,7 @@ void PrintBanner(const std::string& tagName, const std::string& label)
 	std::cout << "===== " << tagName << "  " << label << " =====" << std::endl;
 }
 
-// waitpostdata 出错时已关闭 conn
+// conn 由 MonitorTags 在本线程结束后关闭
 void ReceivePosts(int conn, const TagTypes& types, const std::atomic<bool>& stopping, std::atomic<bool>& finished)
 {
 	std::vector<char> buffer(kPostBufferSize);
@@ -159,8 +159,8 @@ void MonitorTags(int conn, const std::string& host, int port, const std::vector<
 		unsigned int err = 0;
 		if (!subscribe(monitorConn, tagName.c_str(), &err))
 		{
-			// subscribe 失败时已关闭连接
 			std::cout << "Subscribe tag '" << tagName << "' failed, error code " << err << "." << std::endl;
+			disconnectgplat(monitorConn);
 			return;
 		}
 	}
@@ -174,10 +174,11 @@ void MonitorTags(int conn, const std::string& host, int port, const std::vector<
 		if (WaitForQuit(finished))
 		{
 			stopping = true;
-			// 唤醒阻塞在 waitpostdata 中的接收线程，由它关闭连接
+			// 唤醒阻塞在 waitpostdata 中的接收线程（读到 EOF 后返回）
 			shutdown(monitorConn, SHUT_RDWR);
 		}
 	}
 	receiver.join();
+	disconnectgplat(monitorConn);
 	std::cout << "Monitor stopped." << std::endl;
 }

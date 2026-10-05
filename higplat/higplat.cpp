@@ -46,6 +46,24 @@ namespace {
 	std::mutex g_errorHookMutex;
 	GPLAT_ERROR_HOOK g_errorHook = DefaultErrorHook;
 	void* g_errorHookUser = nullptr;
+
+	// Calls the error hook once; message == nullptr means the standard description of the code
+	void ReportError(unsigned int error, const char* func, const char* message)
+	{
+		int savedErrno = errno;
+		GPLAT_ERROR_HOOK hook;
+		void* user;
+		{
+			std::lock_guard<std::mutex> lock(g_errorHookMutex);
+			hook = g_errorHook;
+			user = g_errorHookUser;
+		}
+		if (hook != nullptr) {
+			ErrorInfo info = GetErrorInfo(error);
+			hook(error, static_cast<int>(info.category), message ? message : info.message, func, user);
+		}
+		errno = savedErrno;
+	}
 }
 
 // Declared once at the top of every exported network function (never in internal helpers),
@@ -58,21 +76,8 @@ struct AutoErrorCheck {
 
 	// The C API must not throw; GplatConnection turns Usage/Connection codes into exceptions.
 	~AutoErrorCheck() {
-		if (m_error == nullptr || *m_error == 0)
-			return;
-		GPLAT_ERROR_HOOK hook;
-		void* user;
-		{
-			std::lock_guard<std::mutex> lock(g_errorHookMutex);
-			hook = g_errorHook;
-			user = g_errorHookUser;
-		}
-		if (hook == nullptr)
-			return;
-		int savedErrno = errno;
-		ErrorInfo info = GetErrorInfo(*m_error);
-		hook(*m_error, static_cast<int>(info.category), info.message, m_func, user);
-		errno = savedErrno;
+		if (m_error != nullptr && *m_error != 0)
+			ReportError(*m_error, m_func, nullptr);
 	}
 };
 
@@ -430,6 +435,15 @@ int setblocking(int fd)
 	return old_option;
 }
 
+// close() may overwrite errno; keep the error that made the connect fail
+static void close_keep_errno(int fd)
+{
+	int savedErrno = errno;
+	close(fd);
+	errno = savedErrno;
+}
+
+// On failure returns -1 with errno set (ETIMEDOUT on timeout, the SO_ERROR value when the connect fails asynchronously)
 int unblock_connect(const char* ip, int port, int time)
 {
 	int ret = 0;
@@ -461,14 +475,12 @@ int unblock_connect(const char* ip, int port, int time)
 	ret = connect(sockfd, (struct sockaddr*)&address, sizeof(address));
 	if (ret == 0)
 	{
-		printf("connect with server immediately\n");
 		fcntl(sockfd, F_SETFL, fdopt);
 		return sockfd;
 	}
 	else if (errno != EINPROGRESS)
 	{
-		printf("unblock connect not support\n");
-		close(sockfd);
+		close_keep_errno(sockfd);
 		return -1;
 	}
 
@@ -484,15 +496,16 @@ int unblock_connect(const char* ip, int port, int time)
 	} while (ret < 0 && errno == EINTR);
 	if (ret <= 0)
 	{
-		printf("connection time out\n");
-		close(sockfd);
+		if (ret == 0)
+			errno = ETIMEDOUT;
+		close_keep_errno(sockfd);
 		return -1;
 	}
 
 	if (!(pfd.revents & (POLLOUT | POLLERR | POLLHUP)))
 	{
-		printf("no events on sockfd found\n");
 		close(sockfd);
+		errno = EIO;
 		return -1;
 	}
 
@@ -500,15 +513,14 @@ int unblock_connect(const char* ip, int port, int time)
 	socklen_t length = sizeof(error);
 	if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &error, &length) < 0)
 	{
-		printf("get socket option failed\n");
-		close(sockfd);
+		close_keep_errno(sockfd);
 		return -1;
 	}
 
 	if (error != 0)
 	{
-		printf("connection failed after select with the error: %d \n", error);
 		close(sockfd);
+		errno = error;
 		return -1;
 	}
 
@@ -519,12 +531,14 @@ int unblock_connect(const char* ip, int port, int time)
 int send_all(int sockfd, const void* buf, size_t len) {
 	size_t total_sent = 0;
 	while (total_sent < len) {
-		//mark send会像下面的readn一样被信号中断吗
-		int sent = send(sockfd, (char*)buf + total_sent, len - total_sent, 0);
-		if (sent <= 0) return sent; // 错误或连接关闭
+		// MSG_NOSIGNAL：对端已关闭时返回 EPIPE，而不是用 SIGPIPE 杀死调用方进程
+		ssize_t sent = send(sockfd, (const char*)buf + total_sent, len - total_sent, MSG_NOSIGNAL);
+		if (sent < 0 && errno == EINTR)
+			continue;
+		if (sent <= 0) return (int)sent; // 错误或连接关闭
 		total_sent += sent;
 	}
-	return total_sent;
+	return (int)total_sent;
 }
 
 /**
@@ -532,7 +546,7 @@ int send_all(int sockfd, const void* buf, size_t len) {
  * @param sockfd 套接字描述符
  * @param buf 接收缓冲区
  * @param len 需要读取的字节数
- * @return 成功返回实际读取的字节数(等于len)，失败返回-1
+ * @return 成功返回 len；对端关闭（EOF）时返回已读取的字节数（小于 len）；出错返回 -1
  */
 ssize_t readn(int sockfd, void* buf, size_t len) {
 	size_t nleft = len;    // 剩余需要读取的字节数
@@ -559,6 +573,53 @@ ssize_t readn(int sockfd, void* buf, size_t len) {
 	}
 
 	return (len - nleft);  // 返回实际读取的字节数
+}
+
+// sockfd 始终归调用方：网络 API 从不 close 它。字节流不可再信任时（send/recv 失败、对端关闭、响应错位），
+// 只 shutdown 连接：服务端随即断开并清理订阅，此后该 fd 上的调用都以 CONNECTION 类错误快速失败；
+// fd 号保持有效，直到调用方 disconnectgplat，因此不会误关其它线程新打开的同号 fd。
+static bool fail_connection(int sockfd, unsigned int* error, unsigned int code)
+{
+	*error = code;
+	shutdown(sockfd, SHUT_RDWR);
+	return false;
+}
+
+static unsigned int io_error()
+{
+	return errno != 0 ? (unsigned int)errno : ERROR_SOCKET_NOT_CONNECTED;
+}
+
+static bool send_request(int sockfd, const void* buf, size_t len, unsigned int* error)
+{
+	if (send_all(sockfd, buf, len) == (int)len)
+		return true;
+	return fail_connection(sockfd, error, io_error());
+}
+
+// 收满 len 字节；对端提前关闭（EOF）报 ERROR_SOCKET_NOT_CONNECTED
+static bool recv_response(int sockfd, void* buf, size_t len, unsigned int* error)
+{
+	ssize_t n = readn(sockfd, buf, len);
+	if (n == (ssize_t)len)
+		return true;
+	return fail_connection(sockfd, error, n < 0 ? io_error() : ERROR_SOCKET_NOT_CONNECTED);
+}
+
+// 响应包体比调用方缓冲区大：读掉并丢弃，流保持对齐、连接可继续使用，报 ERROR_BUFFER_TOO_SMALL
+static bool discard_body(int sockfd, int bodysize, unsigned int* error)
+{
+	if (bodysize < 0 || bodysize > MAXMSGLEN)
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
+	char scratch[1024];
+	while (bodysize > 0) {
+		int n = bodysize < (int)sizeof(scratch) ? bodysize : (int)sizeof(scratch);
+		if (!recv_response(sockfd, scratch, n, error))
+			return false;
+		bodysize -= n;
+	}
+	*error = ERROR_BUFFER_TOO_SMALL;
+	return false;
 }
 
 //变体版本（带超时控制）
@@ -622,29 +683,31 @@ extern "C" unsigned int GetLastErrorQ()
 	return errorCode;
 }
 
+// 失败返回 -1 并设置 errno，同时经错误钩子上报一次：error 为 errno（参数非法时为 ERROR_INVALID_PARAMETER），
+// message 附带 host:port
 extern "C" int connectgplat(const char* server, int port)
 {
-	// 参数校验
+	unsigned int error = 0;
 	if (!server || port <= 0 || port > 65535) {
-		fprintf(stderr, "[ERROR] Invalid server address or port number\n");
-		return -1;
+		error = ERROR_INVALID_PARAMETER;
+		errno = EINVAL;
+	}
+	else {
+		// 建立非阻塞连接
+		int sockfd = unblock_connect(server, port, 2);  // 2秒超时
+		if (sockfd >= 0) {
+			setblocking(sockfd);
+			return sockfd;
+		}
+		error = io_error();
 	}
 
-	// 建立非阻塞连接
-	int sockfd = unblock_connect(server, port, 2);  // 2秒超时
-	if (sockfd < 0) {
-		fprintf(stderr, "[ERROR] Connection to %s:%d failed: %s\n",
-			server, port, strerror(errno));
-		return -1;
-	}
-
-	// 设置为阻塞模式
-	if (!setblocking(sockfd)) {
-		fprintf(stderr, "[WARNING] Failed to set blocking mode for socket %d\n", sockfd);
-		// 继续使用，非致命错误
-	}
-
-	return sockfd;
+	int savedErrno = errno;
+	char message[160];
+	snprintf(message, sizeof(message), "%s (%s:%d)", GetErrorInfo(error).message, server ? server : "null", port);
+	ReportError(error, __func__, message);
+	errno = savedErrno;
+	return -1;
 }
 
 extern "C" void disconnectgplat(int sockfd)
@@ -677,16 +740,12 @@ extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, 
 	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
 
 	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 读取响应头
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
@@ -698,16 +757,12 @@ extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, 
 
 	// 验证数据大小
 	if (msg.head.bodysize > actsize) {
-		*error = ERROR_BUFFER_TOO_SMALL;
-		close(sockfd);
-		return false;
+		return discard_body(sockfd, msg.head.bodysize, error);
 	}
 
 	// 读取数据体（如果有）
 	if (msg.head.bodysize > 0) {
-		if (readn(sockfd, record, msg.head.bodysize) < 0) {
-			*error = errno;
-			close(sockfd);
+		if (!recv_response(sockfd, record, msg.head.bodysize, error)) {
 			return false;
 		}
 	}
@@ -743,25 +798,19 @@ extern "C" bool writeq(int sockfd, const char* qname, void* record, int actsize,
 	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
 
 	// 发送消息头和数据
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0 ||
-		send_all(sockfd, record, actsize) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error) ||
+		!send_request(sockfd, record, actsize, error)) {
 		return false;
 	}
 
 	// 读取响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 验证响应
 	if (msg.head.bodysize > 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
 	*error = msg.head.error;
@@ -790,16 +839,12 @@ extern "C" bool clearq(int sockfd, const char* qname, unsigned int* error)
 	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
 
 	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 读取响应头
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
@@ -830,14 +875,10 @@ extern "C" bool readhead(int sockfd, const char* qname, QUEUE_HEAD* head, unsign
 	strncpy(msg.head.qname, qname, sizeof(msg.head.qname) - 1);
 	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
 
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
@@ -846,13 +887,9 @@ extern "C" bool readhead(int sockfd, const char* qname, QUEUE_HEAD* head, unsign
 		return false;
 	}
 	if (msg.head.bodysize != (int)sizeof(QUEUE_HEAD)) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
-	if (readn(sockfd, head, sizeof(QUEUE_HEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, head, sizeof(QUEUE_HEAD), error)) {
 		return false;
 	}
 	return true;
@@ -878,14 +915,10 @@ extern "C" bool peekq(int sockfd, const char* qname, int position, void* record,
 	strncpy(msg.head.qname, qname, sizeof(msg.head.qname) - 1);
 	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
 
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
@@ -894,16 +927,12 @@ extern "C" bool peekq(int sockfd, const char* qname, int position, void* record,
 		return false;
 	}
 	if (msg.head.bodysize < (int)RECORDHEADSIZE || msg.head.bodysize - (int)RECORDHEADSIZE > actsize) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
 	RECORD_HEAD head;
-	if (readn(sockfd, &head, RECORDHEADSIZE) < 0 ||
-		readn(sockfd, record, msg.head.bodysize - RECORDHEADSIZE) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &head, RECORDHEADSIZE, error) ||
+		!recv_response(sockfd, record, msg.head.bodysize - RECORDHEADSIZE, error)) {
 		return false;
 	}
 	if (recordhead != nullptr) {
@@ -928,14 +957,10 @@ extern "C" bool listq(int sockfd, char* names, int buffsize, int* count, unsigne
 	msg.head.id = LISTQ;
 	msg.head.bodysize = 0;
 
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
@@ -944,13 +969,9 @@ extern "C" bool listq(int sockfd, char* names, int buffsize, int* count, unsigne
 		return false;
 	}
 	if (msg.head.bodysize < 0 || msg.head.bodysize > buffsize) {
-		*error = ERROR_BUFFER_TOO_SMALL;
-		close(sockfd);
-		return false;
+		return discard_body(sockfd, msg.head.bodysize, error);
 	}
-	if (msg.head.bodysize > 0 && readn(sockfd, names, msg.head.bodysize) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (msg.head.bodysize > 0 && !recv_response(sockfd, names, msg.head.bodysize, error)) {
 		return false;
 	}
 	*count = msg.head.count;
@@ -975,14 +996,10 @@ extern "C" bool listtags(int sockfd, int start, char* buff, int buffsize, int* b
 	msg.head.bodysize = 0;
 	strncpy(msg.head.qname, "BOARD", sizeof(msg.head.qname) - 1);
 
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
@@ -991,13 +1008,9 @@ extern "C" bool listtags(int sockfd, int start, char* buff, int buffsize, int* b
 		return false;
 	}
 	if (msg.head.bodysize < 0 || msg.head.bodysize > buffsize) {
-		*error = ERROR_BUFFER_TOO_SMALL;
-		close(sockfd);
-		return false;
+		return discard_body(sockfd, msg.head.bodysize, error);
 	}
-	if (msg.head.bodysize > 0 && readn(sockfd, buff, msg.head.bodysize) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (msg.head.bodysize > 0 && !recv_response(sockfd, buff, msg.head.bodysize, error)) {
 		return false;
 	}
 	*bytes = msg.head.bodysize;
@@ -1032,16 +1045,12 @@ extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize,
 	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
 
 	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 读取响应头
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
@@ -1053,16 +1062,12 @@ extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize,
 
 	// 验证数据大小
 	if (msg.head.bodysize > actsize) {
-		*error = ERROR_BUFFER_TOO_SMALL;
-		close(sockfd);
-		return false;
+		return discard_body(sockfd, msg.head.bodysize, error);
 	}
 
 	// 读取数据体（如果有）
 	if (msg.head.bodysize > 0) {
-		if (readn(sockfd, value, msg.head.bodysize) < 0) {
-			*error = errno;
-			close(sockfd);
+		if (!recv_response(sockfd, value, msg.head.bodysize, error)) {
 			return false;
 		}
 	}
@@ -1111,25 +1116,19 @@ bool writeb_(int sockfd, const char* tagname, void* value, int actsize, unsigned
 	//memcpy(msg.body, value, actsize);
 	//send_all(sockfd, &msg, sizeof(MSGHEAD) + actsize);
 	// 发送消息头和数据（单次发送优化）
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0 ||
-		send_all(sockfd, value, actsize) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error) ||
+		!send_request(sockfd, value, actsize, error)) {
 		return false;
 	}
 
 	// 接收响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 验证响应
 	if (msg.head.bodysize > 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
 	*error = msg.head.error;
@@ -1174,16 +1173,12 @@ extern "C" bool readb_string(int sockfd, const char* tagname, char* value, int b
 	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
 
 	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 读取响应头
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
@@ -1196,16 +1191,12 @@ extern "C" bool readb_string(int sockfd, const char* tagname, char* value, int b
 	// 验证数据大小
 	// 目前这种情况不可能出现，因为服务器会确保数据体大小不超过buffersize，如果buffsize不够大，上面错误码不为零就会返回，不会走到这里
 	if (msg.head.bodysize > buffersize) {
-		*error = ERROR_BUFFER_TOO_SMALL;
-		close(sockfd);
-		return false;
+		return discard_body(sockfd, msg.head.bodysize, error);
 	}
 
 	// 读取数据体（如果有）
 	if (msg.head.bodysize > 0) {
-		if (readn(sockfd, value, msg.head.bodysize) < 0) {
-			*error = errno;
-			close(sockfd);
+		if (!recv_response(sockfd, value, msg.head.bodysize, error)) {
 			return false;
 		}
 	}
@@ -1259,25 +1250,19 @@ bool writeb_string_(int sockfd, const char* tagname, const char* value, unsigned
 	strncpy(msg.head.itemname, tagname, sizeof(msg.head.itemname) - 1);
 	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
 
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0 ||
-		(strlength > 0 && send_all(sockfd, value, strlength) <= 0)) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error) ||
+		(strlength > 0 && !send_request(sockfd, value, strlength, error))) {
 		return false;
 	}
 
 	// 接收响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 验证响应
 	if (msg.head.bodysize > 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
 	*error = msg.head.error;
@@ -1323,33 +1308,22 @@ extern "C" bool subscribe(int sockfd, const char* tagname, unsigned int* error)
 	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
 
 	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 读取响应
-	ssize_t response_size = readn(sockfd, &msg, sizeof(MSGHEAD));
-	if (response_size != static_cast<ssize_t>(sizeof(MSGHEAD))) {
-		*error = (response_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 验证响应
 	if (msg.head.id != SUBSCRIBE || msg.head.bodysize != 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
-	*error = msg.head.error;
-	if (*error != 0) {
-		close(sockfd);
-		return false;
-	}
-	return true;
+	*error = msg.head.error;	// 服务端错误（如 ERROR_TAG_NOT_EXIST）不影响连接和已有订阅
+	return (*error == 0);
 }
 
 extern "C" bool clearb(int sockfd, unsigned int* error)
@@ -1367,22 +1341,16 @@ extern "C" bool clearb(int sockfd, unsigned int* error)
 	strncpy(msg.head.qname, "BOARD", sizeof(msg.head.qname) - 1);
 	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
 	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 	// 读取响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 	// 验证响应
 	if (msg.head.bodysize > 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 	*error = msg.head.error;
 	return (*error == 0);
@@ -1408,15 +1376,11 @@ extern "C" bool readboardinfo(int sockfd, void* info, int infosize, unsigned int
 	strncpy(msg.head.qname, "BOARD", sizeof(msg.head.qname) - 1);
 	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
 	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 	// 读取响应头
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 	// 检查错误码
@@ -1426,16 +1390,12 @@ extern "C" bool readboardinfo(int sockfd, void* info, int infosize, unsigned int
 	}
 	// 验证数据大小
 	if (msg.head.bodysize > infosize) {
-		*error = ERROR_BUFFER_TOO_SMALL;
-		close(sockfd);
-		return false;
+		return discard_body(sockfd, msg.head.bodysize, error);
 	}
 	// 读取数据体（如果有）
 	if (msg.head.bodysize > 0) {
 		// fix: 修改了函数签名，info 不再被 const 修饰，因此此处不再需要 const_cast，直接传入 info 即可
-		if (readn(sockfd, info, msg.head.bodysize) < 0) {
-			*error = errno;
-			close(sockfd);
+		if (!recv_response(sockfd, info, msg.head.bodysize, error)) {
 			return false;
 		}
 	}
@@ -1469,24 +1429,18 @@ extern "C" bool subscribedelaypost(int sockfd, const char* tagname, const char* 
 	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
 
 	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 读取响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 验证响应
 	if (msg.head.bodysize > 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
 	*error = msg.head.error;
@@ -1505,8 +1459,7 @@ extern "C" bool createtag(int sockfd, const char* tagname, int tagsize, void* ty
 		return false;
 	}
 
-	// 类型数据大小限制；typesize<=0 在发送前拒绝：==0 会使 send_all 返回 0 被误判为发送失败而关闭连接，
-	// <0 会让 send_all 以超大 size_t 越界读
+	// 类型数据大小限制；typesize<=0 在发送前拒绝（<0 会让 send_all 以超大 size_t 越界读）
 	if (tagsize < 0 || typesize <= 0 || typesize > 100) {
 		*error = ERROR_PARAMETER_SIZE;
 		return false;
@@ -1526,31 +1479,23 @@ extern "C" bool createtag(int sockfd, const char* tagname, int tagsize, void* ty
 	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
 
 	// 发送消息头
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 发送类型数据
-	if (send_all(sockfd, type, typesize) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, type, typesize, error)) {
 		return false;
 	}
 
 	// 读取响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 验证响应
 	if (msg.head.bodysize > 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
 	*error = msg.head.error;
@@ -1578,22 +1523,16 @@ extern "C" bool deletetag(int sockfd, const char* tagname, unsigned int* error)
 	strncpy(msg.head.itemname, tagname, sizeof(msg.head.itemname) - 1);
 	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
 	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 	// 读取响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 	// 验证响应
 	if (msg.head.bodysize > 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 	*error = msg.head.error;
 	return (*error == 0);
@@ -1617,37 +1556,26 @@ extern "C" bool waitpostdata(int sockfd, char* tagname, int tagnamesize, void* v
 	msg.head.timeout = timeout;  // 或 htonl(timeout)
 	msg.head.bodysize = 0;
 
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
-	ssize_t header_size = readn(sockfd, &msg, sizeof(MSGHEAD));
-	if (header_size != static_cast<ssize_t>(sizeof(MSGHEAD))) {
-		*error = (header_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	if ((msg.head.id != POST && msg.head.id != POSTWAIT) || msg.head.bodysize < 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
+	// 缓冲区不足：丢弃这条事件，连接和订阅保留
 	if (msg.head.bodysize > buffersize) {
-		*error = ERROR_BUFFER_TOO_SMALL;
-		close(sockfd);
-		return false;
+		return discard_body(sockfd, msg.head.bodysize, error);
 	}
 
 	// 读取数据体（如果有）
 	if (msg.head.bodysize > 0) {
-		ssize_t body_size = readn(sockfd, value, msg.head.bodysize);
-		if (body_size != msg.head.bodysize) {
-			*error = (body_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
-			close(sockfd);
+		if (!recv_response(sockfd, value, msg.head.bodysize, error)) {
 			return false;
 		}
 	}
@@ -1662,7 +1590,6 @@ extern "C" bool waitpostdata(int sockfd, char* tagname, int tagnamesize, void* v
 			strcpy(tagname, "WAIT_TIMEOUT");
 			return true;
 		}
-		close(sockfd);
 		return false;
 	}
 
@@ -1702,31 +1629,23 @@ extern "C" bool createqueue(int sockfd, const char* queuename, int recordsize, i
 	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
 
 	// 发送消息头
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 发送类型数据
-	if (send_all(sockfd, type, typesize) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, type, typesize, error)) {
 		return false;
 	}
 
 	// 读取响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 验证响应
 	if (msg.head.bodysize > 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
 	*error = msg.head.error;
@@ -1764,24 +1683,17 @@ extern "C" bool getresponse(int sockfd, const char* request_tag, void* request_v
 	strncpy(head.qname, response_tag, sizeof(head.qname) - 1);
 	head.qname[sizeof(head.qname) - 1] = '\0';
 
-	if (send_all(sockfd, &head, sizeof(MSGHEAD)) <= 0 ||
-		send_all(sockfd, request_value, request_size) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &head, sizeof(MSGHEAD), error) ||
+		!send_request(sockfd, request_value, request_size, error)) {
 		return false;
 	}
 
-	ssize_t header_size = readn(sockfd, &head, sizeof(MSGHEAD));
-	if (header_size != static_cast<ssize_t>(sizeof(MSGHEAD))) {
-		*error = (header_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
-		close(sockfd);
+	if (!recv_response(sockfd, &head, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	if (head.id != GETRESPONSE) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
 	*error = head.error;
@@ -1790,15 +1702,10 @@ extern "C" bool getresponse(int sockfd, const char* request_tag, void* request_v
 	}
 
 	if (head.bodysize != response_size) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
-	ssize_t body_size = readn(sockfd, response_value, response_size);
-	if (body_size != response_size) {
-		*error = (body_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
-		close(sockfd);
+	if (!recv_response(sockfd, response_value, response_size, error)) {
 		return false;
 	}
 
@@ -4039,16 +3946,12 @@ extern "C" bool readtype(int sockfd, const char* qbdname, const char* tagname, v
 	}
 
 	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 读取响应头
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
@@ -4062,16 +3965,12 @@ extern "C" bool readtype(int sockfd, const char* qbdname, const char* tagname, v
 
 	// 验证数据大小
 	if (msg.head.bodysize > buffsize) {
-		*error = ERROR_BUFFER_TOO_SMALL;
-		close(sockfd);
-		return false;
+		return discard_body(sockfd, msg.head.bodysize, error);
 	}
 
 	// 读取数据体（如果有）
 	if (msg.head.bodysize > 0) {
-		if (readn(sockfd, inbuff, msg.head.bodysize) < 0) {
-			*error = errno;
-			close(sockfd);
+		if (!recv_response(sockfd, inbuff, msg.head.bodysize, error)) {
 			return false;
 		}
 	}
@@ -4114,25 +4013,19 @@ bool writeb_plc(int sockfd, const char* tagname, void* value, int actsize, unsig
 	//memcpy(msg.body, value, actsize);
 	//send_all(sockfd, &msg, sizeof(MSGHEAD) + actsize);
 	// 发送消息头和数据（单次发送优化）
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0 ||
-		send_all(sockfd, value, actsize) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error) ||
+		!send_request(sockfd, value, actsize, error)) {
 		return false;
 	}
 
 	// 接收响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 验证响应
 	if (msg.head.bodysize > 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
 	*error = msg.head.error;
@@ -4172,25 +4065,19 @@ bool writeb_string_plc(int sockfd, const char* tagname, const char* value, unsig
 	strncpy(msg.head.itemname, tagname, sizeof(msg.head.itemname) - 1);
 	msg.head.itemname[sizeof(msg.head.itemname) - 1] = '\0';
 
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0 ||
-		(strlength > 0 && send_all(sockfd, value, strlength) <= 0)) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error) ||
+		(strlength > 0 && !send_request(sockfd, value, strlength, error))) {
 		return false;
 	}
 
 	// 接收响应
-	if (readn(sockfd, &msg, sizeof(MSGHEAD)) < 0) {
-		*error = errno;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 验证响应
 	if (msg.head.bodysize > 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
 	*error = msg.head.error;
@@ -4222,33 +4109,22 @@ extern "C" bool registertag(int sockfd, const char* tagname, unsigned int* error
 	msg.head.qname[sizeof(msg.head.qname) - 1] = '\0';
 
 	// 发送请求
-	if (send_all(sockfd, &msg, sizeof(MSGHEAD)) <= 0) {
-		*error = errno;
-		close(sockfd);
+	if (!send_request(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 读取响应
-	ssize_t response_size = readn(sockfd, &msg, sizeof(MSGHEAD));
-	if (response_size != static_cast<ssize_t>(sizeof(MSGHEAD))) {
-		*error = (response_size < 0 && errno != 0) ? errno : ERROR_SOCKET_NOT_CONNECTED;
-		close(sockfd);
+	if (!recv_response(sockfd, &msg, sizeof(MSGHEAD), error)) {
 		return false;
 	}
 
 	// 验证响应
 	if (msg.head.id != REGISTERPLCSERVER || msg.head.bodysize != 0) {
-		*error = ERROR_INVALID_RESPONSE;
-		close(sockfd);
-		return false;
+		return fail_connection(sockfd, error, ERROR_INVALID_RESPONSE);
 	}
 
 	*error = msg.head.error;
-	if (*error != 0) {
-		close(sockfd);
-		return false;
-	}
-	return true;
+	return (*error == 0);
 }
 
 extern "C" bool write_plc_string(int sockfd, const char* tagname, const char* str, unsigned int* error)
