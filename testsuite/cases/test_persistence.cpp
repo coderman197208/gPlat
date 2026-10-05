@@ -14,7 +14,7 @@
 //   [B] kill9_crash         —— 写板+队列 → SIGKILL（无优雅 flush）→ 复起 → 仍一致（页缓存一致性）
 //   [B] create_tag_then_crash —— 运行时建 tag+写值 → SIGKILL → 复起 → 新 tag 可读
 //   [B] corrupt_file_startup  —— 把队列文件截断为 0 → 复起 → LoadQ 失败 → server 拒绝启动
-//   [XFAIL L1] corrupt_exit_code —— 同上，但进一步断言退出码==1（今天实际退出 0，命中 L1）
+//   [B] corrupt_exit_code    —— 同上，但进一步断言退出码==1（L1，已修复）
 #include <unistd.h>  // truncate
 
 #include <cstdint>
@@ -283,12 +283,10 @@ TEST("persist.corrupt_file_startup", TAG_PERSIST)
     if (up) srv.stop();  // 万一意外起来，收尾
 }
 
-// --- [XFAIL L1] 致命启动失败应以退出码 1 退出（今天实际退出 0）--------------
-// 背景（nginx.cxx）：gplat_load_qbd() 失败时置 exitcode=1; goto lblexit; return exitcode，
-//   但实测进程退出码为 0。这破坏了 systemd/supervisor 的失败检测（会误判“正常退出”）。
-// 本用例断言「正确」行为：损坏文件 → 拒绝启动且退出码==1。退出码分支今天必然失败 →
-//   运行器记为 XFAIL(#15 L1)，套件保持绿色；一旦修复（真的退 1）将翻转为 XPASS 提醒更新登记表。
-// 注意：拒绝启动（!up / !running）今天已是正确行为，不计失败；唯一失败点是退出码，精确命中 L1。
+// --- [B][L1 已修复] 致命启动失败应以退出码 1 退出 ----------------------------
+// 背景（nginx.cxx）：gplat_load_qbd() 失败时置 exitcode=1; goto lblexit; return exitcode。
+//   进程管理器（systemd/supervisor）依赖非 0 退出码识别启动失败，故作为常规门控回归保护。
+// 断言：损坏文件 → 拒绝启动且退出码==1。
 TEST("persist.corrupt_exit_code", TAG_PERSIST)
 {
     PRIVATE_SERVER(srv);
@@ -302,6 +300,6 @@ TEST("persist.corrupt_exit_code", TAG_PERSIST)
     CHECK(ctx, !srv.running(), "server must not be running after corrupt-file load");
     // 核心断言：致命启动失败必须以非 0（约定为 1）退出码告知上层进程管理器。
     CHECK(ctx, srv.last_exit_code() == 1,
-          "fatal startup failure should exit with code 1, got %d (bug L1)", srv.last_exit_code());
+          "fatal startup failure should exit with code 1, got %d (L1 regression)", srv.last_exit_code());
     if (up) srv.stop();
 }

@@ -87,14 +87,14 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 |---|---|---|---|
 | B1（已修复） | `DeleteItem` memmove | 原不持条带锁，与 readb 竞态 → 撕裂读；现持全部条带锁，读写者先持条带锁再放全局锁 | `board_churn.concurrent_delete_race` |
 | G1（已修复） | `m_mapResponseOwner` | 归属条目永不清理，tag 被 `deletetag` 后残留（response_tag 与 request_tag 一一绑定本是设计）；现 `deletetag` 成功后由 `ForgetDeletedTag` 清理 | `getresp.response_owner_cleared_on_deletetag` |
+| L1（已修复） | 致命启动失败（`gplat_load_qbd` 失败）退出码 | 现以退出码 1 退出，已作为常规门控用例 | `persist.corrupt_exit_code` |
 
 **特征化报告（非 XFAIL，RSS 趋势不适合作门控）**：
 
 | ID | 现象 | 覆盖用例 |
 |---|---|---|
 | M1 | 连接池 free-list 抽空即 new、按峰值撑大不缩 | `mem.connpool_hwm_trend` |
-| P3 | 只订不取 → `m_listPost` 堆积（已由 `Sock_MaxPendingPost` 封顶，默认 1000，满后丢弃最新事件；`pubsub.pending_queue_capped` 门控上限，本用例仅观察 RSS） | `pubsub.listpost_unbounded_trend` |
-| L1 | 致命启动失败的退出码（当前实测已为 1） | `persist.corrupt_exit_code` |
+| P3 | 只订不取 → `m_listPost` 堆积（已由 `Sock_MaxPendingPost` 封顶，默认 1000，满后丢弃最新事件；`pubsub.pending_queue_capped` 门控上限，本用例仅观察 RSS） | `pubsub.listpost_capped_trend` |
 
 ---
 
@@ -104,7 +104,7 @@ gplat 在**关闭时、带在连接客户端**存在“逻辑 shutdown-leak”�
 
 1. **基线法**：`mem.baseline_clean` 记录空闲 + 干净断开 + 正常 SIGTERM 的 LSan 指纹。
 2. **分离 shutdown-leak**：`mem.live_conn_shutdown_leak` 显式复现“带连接被 SIGTERM”的已知泄漏（`allowLeaks` 放行并特征化），作为“修复后应消失”的探针。
-3. **趋势法**：`proc_sampler` 采样 worker `VmRSS`/fd 斜率，抓 LSan 看不见的**可达**无界增长（连接池 M1、`m_listPost` P3）；RSS 回缩依赖 glibc trim，故只报告。
+3. **趋势法**：`proc_sampler` 采样 worker `VmRSS`/fd 斜率，抓 LSan 看不见的**可达**增长（连接池 M1、`m_listPost` P3，后者已封顶）；RSS 回缩依赖 glibc trim，故只报告。
 
 `mem.crud_no_residual` 是权威闸门：全量 CRUD 后 ASan/LSan **零残留**才算通过。
 

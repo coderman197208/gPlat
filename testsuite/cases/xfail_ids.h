@@ -18,11 +18,11 @@ enum XfailBug {
     BUG_S2 = 8,   // （已修复，保留编号）e_pkgLen>16384：丢头不关连接 → 流错位
     BUG_P1 = 9,   // （已修复，保留编号）HandleSubscribe 不校验 tag 存在
     BUG_P2 = 10,  // （已修复，保留编号）NotifySubscriber >500：server exit(1)
-    BUG_P3 = 11,  // m_listPost 无界：只订不取 / 定时器订阅堆积
+    BUG_P3 = 11,  // （已修复，保留编号）m_listPost 无界：现由 Sock_MaxPendingPost 封顶
     BUG_G1 = 12,  // （已修复，保留编号）m_mapResponseOwner：deletetag 后残留；现由 ForgetDeletedTag 清理
     BUG_M1 = 13,  // 连接池：ngx_get_connection 无界增长、不缩
     BUG_B1 = 14,  // （已修复，保留编号）DeleteItem memmove：不持条带锁，与读写竞态
-    BUG_L1 = 15,  // 致命启动失败（gplat_load_qbd 失败）以退出码 0 退出，应为 1
+    BUG_L1 = 15,  // （已修复，保留编号）致命启动失败（gplat_load_qbd 失败）现以退出码 1 退出
 };
 
 }  // namespace ts

@@ -300,12 +300,12 @@ TEST("pubsub.pending_queue_capped", TAG_PUBSUB | TAG_DESTRUCTIVE)
     CHECK(ctx, got == CAP, "drained %d events, want exactly %d (newest dropped when queue full)", got, CAP);
 }
 
-// --- [内存][P3 特征化] 只订不取 → m_listPost 无界堆积（RSS 趋势，仅报告）---------
-// 机理（登记表 P3）：订阅者从不 waitpostdata，持续 writeb 触发投递，投递数据进该连接的
-//   m_listPost 且永不 drain → 可达内存无界增长（LSan 看不见）。
+// --- [内存][P3 特征化] 只订不取 → m_listPost 堆积（已封顶，RSS 趋势，仅报告）-------
+// 机理（登记表 P3，已由 Sock_MaxPendingPost 封顶修复）：订阅者从不 waitpostdata，持续 writeb 触发投递，
+//   投递数据进该连接的 m_listPost；队列满后丢弃最新事件，RSS 增长应有界（上限由 pending_queue_capped 门控）。
 // 与 M1 一致：RSS 能否回落依赖 glibc malloc_trim，不宜作断言——此处仅特征化报告趋势，
 //   可靠门控只有“server 存活、数据面无损”。
-TEST("pubsub.listpost_unbounded_trend", TAG_PUBSUB | TAG_MEMORY)
+TEST("pubsub.listpost_capped_trend", TAG_PUBSUB | TAG_MEMORY)
 {
     ServerConfig cfg;
     cfg.threads = 2;
@@ -337,7 +337,7 @@ TEST("pubsub.listpost_unbounded_trend", TAG_PUBSUB | TAG_MEMORY)
     smp.tick();
     const long rss_end = smp.rss_last_kb();
     smp.report("listpost-growth");
-    printf("    [note] 只订不取 → m_listPost 无界堆积（登记表 P3）：RSS base=%ldKB end=%ldKB Δ=%ldKB "
+    printf("    [note] 只订不取 → m_listPost 堆积（已封顶，登记表 P3）：RSS base=%ldKB end=%ldKB Δ=%ldKB "
            "（特征化报告，非门控）\n", rss_base, rss_end, rss_end - rss_base);
 
     CHECK(ctx, srv.running(), "server died while m_listPost accumulated %d undrained posts", N);
