@@ -191,7 +191,7 @@ S7IOSERVER_LDFLAGS := -lpthread -L$(LIB_DIR) -lhigplat -lsnap7 -Wl,-rpath,'$$ORI
 	testapp testapp2 testapp3 testapp4 testapp5 testapp6 testapp7 \
 	clean-gplat clean-higplat clean-createq clean-createb clean-toolgplat clean-snap7 clean-s7ioserver \
 	clean-testapp clean-testapp2 clean-testapp3 clean-testapp4 clean-testapp5 clean-testapp6 clean-testapp7 \
-	testsuite gen_fixtures test test-asan test-destructive test-stress asan-build clean-testsuite
+	testsuite gen_fixtures test test-all test-apps test-asan test-destructive test-stress asan-build clean-testsuite
 
 all: directories $(HIGPLAT_LIB) $(SNAP7_LIB) $(GPLAT_BIN) $(CREATEQ_BIN) $(CREATEB_BIN) $(TOOLGPLAT_BIN) $(S7IOSERVER_BIN) $(TESTAPP_BIN) $(TESTAPP2_BIN) $(TESTAPP3_BIN) $(TESTAPP4_BIN) $(TESTAPP5_BIN) $(TESTAPP6_BIN) $(TESTAPP7_BIN) $(TESTSUITE_BIN)
 	@echo "OK"
@@ -232,6 +232,17 @@ testapp6: directories $(HIGPLAT_LIB) $(TESTAPP6_BIN)
 testapp7: directories $(HIGPLAT_LIB) $(TESTAPP7_BIN)
 	@echo "OK"
 
+# 集成测试程序：需要已运行在 127.0.0.1:8777 的 gplat，任一失败即停止
+test-apps: testapp2 testapp5 testapp6 testapp7
+	@echo "Running testapp2..."
+	@$(TESTAPP2_BIN)
+	@echo "Running testapp5..."
+	@$(TESTAPP5_BIN)
+	@echo "Running testapp6..."
+	@$(TESTAPP6_BIN)
+	@echo "Running testapp7..."
+	@$(TESTAPP7_BIN)
+
 # 编译测试套件本体 + 独立的 fixture 生成器
 testsuite: directories $(HIGPLAT_LIB) $(TESTSUITE_BIN) $(GEN_FIXTURES_BIN)
 	@echo "OK"
@@ -250,6 +261,12 @@ test-asan:
 	@$(MAKE) ASAN=1 asan-build
 	@echo "Running leak-sensitive suite under ASan..."
 	@build/asan/bin/testsuite --expect-asan --tag asan
+
+# 全量回归：ASan 隔离构建下放行破坏性/压力用例，确保 78 个用例全部实际执行
+test-all:
+	@$(MAKE) ASAN=1 asan-build
+	@echo "Running all tests under ASan..."
+	@build/asan/bin/testsuite --expect-asan --all
 
 # 破坏性用例：每条在子进程 fork 隔离下运行，崩溃后由 fixture 重启 server
 test-destructive: gplat testsuite
@@ -534,7 +551,9 @@ help:
 	@echo "  all                    : Build all modules (higplat, snap7, gplat, createq, createb, toolgplat, s7ioserver, testapp, testapp2, testapp3, testapp4, testapp5, testapp6, testapp7, testsuite)"
 	@echo "  gplat|s7ioserver|...   : Build a single target"
 	@echo "  testsuite              : Build the end-to-end test suite (+ gen_fixtures generator)"
+	@echo "  test-apps              : Build and run testapp2, testapp5, testapp6, testapp7 in order (requires gplat on 127.0.0.1:8777)"
 	@echo "  test                   : Build and run the regression suite (non-destructive, self-hosted sandbox)"
+	@echo "  test-all               : Rebuild with ASan and run all 78 cases (including destructive/stress)"
 	@echo "  test-asan              : Rebuild higplat+gplat+tools+suite with ASan (build/asan/) and run leak-sensitive cases"
 	@echo "  test-destructive       : Run destructive cases (fork-isolated; server restarted per case)"
 	@echo "  test-stress            : Run stress/benchmark cases (correctness + no-leak gate; perf reported only)"

@@ -36,6 +36,7 @@ make ASAN=1 asan-build  # 编 ASan 变体 → build/asan/{bin,lib}（rpath 同�
 | 命令 | 作用 | 判据 |
 |---|---|---|
 | `make test` | 常规回归（隐藏破坏性/压力） | 全绿即通过；XFAIL 不计失败 |
+| `make test-all` | ASan 重编 + 运行全部 78 个用例（含破坏性/压力） | 78 个用例全部实际执行且无失败/XPASS |
 | `make test-asan` | ASan 重编 + 跑泄漏敏感用例 | LSan 零残留（减基线后） |
 | `make test-destructive` | 破坏性用例（fork 隔离，逐个重启 server） | 命中登记缺陷 → XFAIL |
 | `make test-stress` | 高 QPS / 高并发 / churn 基准 | 正确性 + 无 fd 泄漏；性能仅报告 |
