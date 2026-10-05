@@ -50,7 +50,11 @@ Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `
 
 ## Network API (pure C header `include/higplat.h`, blocking TCP)
 
-`higplat.h` compiles as C99+ and C++ (`extern "C"` block under `__cplusplus`): C types only, no default args/templates/`std::string`, never throws (null `error` → return false; Fatal codes are logged only). `higplat/qbd.h` includes it, so `higplat.cpp` definitions are checked against the declarations. Constants `GPLAT_MAX_DATA_SIZE` (=MAXMSGLEN), `GPLAT_TAGNAME_SIZE` (=40, static_assert'ed); `IsFatalError(error, &msg)`.
+`higplat.h` compiles as C99+ and C++ (`extern "C"` block under `__cplusplus`): C types only, no default args/templates/`std::string`, never throws (null `error` → return false). `higplat/qbd.h` includes it, so `higplat.cpp` definitions are checked against the declarations. Constants `GPLAT_MAX_DATA_SIZE` (=MAXMSGLEN), `GPLAT_TAGNAME_SIZE` (=40, static_assert'ed); `GetErrorCategory(error, &msg)`; `IsFatalError` kept for compatibility (== USAGE).
+
+**Error categories** (`GetErrorInfo` in `qbd.h`, one explicit case per code; see `Doc/ERROR_CODE.md`): `GPLAT_ERRCAT_RESULT` (not exist, empty/full, wait/response timeout, capacity — caller branches on the code), `GPLAT_ERRCAT_USAGE` (caller bug: invalid parameter, size mismatch, buffer too small), `GPLAT_ERRCAT_CONNECTION` (errno `< MY_ERR_OFFSET`, `ERROR_SOCKET_NOT_CONNECTED`, `ERROR_INVALID_RESPONSE`). New codes must get a case and a category.
+
+**Error reporting**: each exported network function (never internal helpers like `writeb_`/`writeb_plc`) declares `AutoErrorCheck _checker(error, __func__)`; on return with a non-zero code it calls the error hook once with the category. `SetErrorHook(hook, user)` replaces it (NULL = silent); the default writes USAGE/CONNECTION as one stderr line `[higplat usage] writeb: record size invalid (code 1014)`.
 
 - Connection: `connectgplat(server, port)` → fd (2s timeout, TCP_NODELAY), `disconnectgplat`
 - Queue: `readq`, `writeq`, `clearq`, `createqueue`, `readhead` (QUEUE_HEAD), `peekq` (non-consuming, `PEEK_NEXT`/`PEEK_LATEST`), `listq` (loaded queue names)
@@ -63,7 +67,7 @@ Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 
 ## C++ Wrapper (`include/gplat_connection.h`)
 
-`GplatConnection(server, port)`: header-only C++ layer over `higplat.h` (all C++ features — `std::string`, exceptions, default args, `=delete` overloads, `read_value<T>` — live here, in the caller's TU). `open()`/`close()`/`is_open()`; methods drop `sockfd`, return the error code (`[[nodiscard]] unsigned int`, 0 = ok), take `const std::string&` names; `std::string` overloads of `readb_string`/`writeb_string`/`waitpostdata`. Not open → `ERROR_SOCKET_NOT_CONNECTED`, no auto-reconnect. Because C functions `close(sockfd)` internally on I/O/protocol errors, `call()` marks the fd closed by error-code heuristics (`closed_by_library`), then throws `std::runtime_error` if `IsFatalError(error)`. Non-copyable, movable, not thread-safe.
+`GplatConnection(server, port)`: header-only C++ layer over `higplat.h` (all C++ features — `std::string`, exceptions, default args, `=delete` overloads, `read_value<T>` — live here, in the caller's TU). `open()`/`close()`/`is_open()`; methods drop `sockfd`, return 0 or a RESULT-category code (`[[nodiscard]] unsigned int`), take `const std::string&` names; `std::string` overloads of `readb_string`/`writeb_string`/`waitpostdata`. Exceptions by category, all derived from `GplatError : std::runtime_error` (`code()`): USAGE → `GplatUsageError`; CONNECTION, calls when not open, or any failure after which the library closed the fd (e.g. `subscribe` server error, code kept) → `GplatConnectionError`, no auto-reconnect. Because C functions `close(sockfd)` internally on I/O/protocol errors, `call()` marks the fd closed via `closed_by_library` (CONNECTION codes, `ERROR_BUFFER_TOO_SMALL`, any server error for subscribe/waitpostdata) before throwing. Non-copyable, movable, not thread-safe.
 
 ## Local API (direct mmap on QBD files, `higplat/higplat.cpp`)
 

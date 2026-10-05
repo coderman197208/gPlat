@@ -32,45 +32,68 @@ static_assert(GPLAT_TAGNAME_SIZE == sizeof(MSGHEAD::itemname), "GPLAT_TAGNAME_SI
 
 // error code system
 namespace {
-	// 线程内重入深度计数器
-	thread_local int g_api_depth = 0;
-}
-struct AutoErrorCheck {
-	unsigned int* m_error;
-
-	AutoErrorCheck(unsigned int* error) : m_error(error) {
-		g_api_depth++;
+	void DefaultErrorHook(unsigned int error, int category, const char* message, const char* func, void*)
+	{
+		const char* label = category == GPLAT_ERRCAT_USAGE ? "usage"
+			: category == GPLAT_ERRCAT_CONNECTION ? "connection" : nullptr;
+		if (label == nullptr)
+			return;
+		char line[256];
+		snprintf(line, sizeof(line), "[higplat %s] %s: %s (code %u)\n", label, func, message, error);
+		fputs(line, stderr);	// one call per line so concurrent threads don't interleave
 	}
 
-	// The C API must not throw; GplatConnection turns Fatal codes into exceptions.
+	std::mutex g_errorHookMutex;
+	GPLAT_ERROR_HOOK g_errorHook = DefaultErrorHook;
+	void* g_errorHookUser = nullptr;
+}
+
+// Declared once at the top of every exported network function (never in internal helpers),
+// so each API call reports a non-zero error code to the hook exactly once.
+struct AutoErrorCheck {
+	unsigned int* m_error;
+	const char* m_func;
+
+	AutoErrorCheck(unsigned int* error, const char* func) : m_error(error), m_func(func) {}
+
+	// The C API must not throw; GplatConnection turns Usage/Connection codes into exceptions.
 	~AutoErrorCheck() {
-		g_api_depth--;
-		// only check error code when we're back to the outermost API call, 
-		// to avoid multiple checks during nested calls.
-		if (g_api_depth == 0 && m_error != nullptr && *m_error != 0) {
-			ErrorInfo info = GetErrorInfo(*m_error);
-			if (info.level == ErrorLevel::Fatal) {
-				std::cout << "[higplat error: Fatal Error] " << info.message << " (Code: " << *m_error << ")\n";
-			} 
-			// else if (info.level == ErrorLevel::Deprecated) {
-			// 	std::cout << "[higplat error: Deprecated] " << info.message << " (Code: " << *m_error << ")\n";
-			// }
-			// else if (info.level == ErrorLevel::Ignore) {
-			// 	std::cout << "[higplat error: Ignore] " << info.message << " (Code: " << *m_error << ")\n";
-			// }
-			// else {
-			// 	std::cout << "[higplat error: Unknown Level] " << info.message << " (Code: " << *m_error << ")\n";
-			// }
+		if (m_error == nullptr || *m_error == 0)
+			return;
+		GPLAT_ERROR_HOOK hook;
+		void* user;
+		{
+			std::lock_guard<std::mutex> lock(g_errorHookMutex);
+			hook = g_errorHook;
+			user = g_errorHookUser;
 		}
+		if (hook == nullptr)
+			return;
+		int savedErrno = errno;
+		ErrorInfo info = GetErrorInfo(*m_error);
+		hook(*m_error, static_cast<int>(info.category), info.message, m_func, user);
+		errno = savedErrno;
 	}
 };
 
-extern "C" bool IsFatalError(unsigned int error, const char** message)
+extern "C" void SetErrorHook(GPLAT_ERROR_HOOK hook, void* user)
+{
+	std::lock_guard<std::mutex> lock(g_errorHookMutex);
+	g_errorHook = hook;
+	g_errorHookUser = user;
+}
+
+extern "C" int GetErrorCategory(unsigned int error, const char** message)
 {
 	ErrorInfo info = GetErrorInfo(error);
 	if (message)
 		*message = info.message;
-	return info.level == ErrorLevel::Fatal;
+	return static_cast<int>(info.category);
+}
+
+extern "C" bool IsFatalError(unsigned int error, const char** message)
+{
+	return GetErrorCategory(error, message) == GPLAT_ERRCAT_USAGE;
 }
 
 enum EVENTID
@@ -636,7 +659,7 @@ extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, 
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (!qname || !record || actsize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -697,7 +720,7 @@ extern "C" bool writeq(int sockfd, const char* qname, void* record, int actsize,
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (!qname || !record || actsize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -750,7 +773,7 @@ extern "C" bool clearq(int sockfd, const char* qname, unsigned int* error)
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (!qname) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -794,7 +817,7 @@ extern "C" bool readhead(int sockfd, const char* qname, QUEUE_HEAD* head, unsign
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	if (!qname || !head) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
@@ -841,7 +864,7 @@ extern "C" bool peekq(int sockfd, const char* qname, int position, void* record,
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	if (!qname || !record || actsize <= 0 || actsize > MAXMSGLEN - (int)RECORDHEADSIZE) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
@@ -895,7 +918,7 @@ extern "C" bool listq(int sockfd, char* names, int buffsize, int* count, unsigne
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	if (!names || !count || buffsize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
@@ -940,7 +963,7 @@ extern "C" bool listtags(int sockfd, int start, char* buff, int buffsize, int* b
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	if (!buff || !bytes || !count || !next || buffsize <= 0 || start < 0) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
@@ -988,7 +1011,7 @@ extern "C" bool readb(int sockfd, const char* tagname, void* value, int actsize,
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (!tagname || !value || actsize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -1057,8 +1080,6 @@ bool writeb_(int sockfd, const char* tagname, void* value, int actsize, unsigned
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
-
 	// 参数校验
 	if (!tagname || !value || actsize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -1117,11 +1138,13 @@ bool writeb_(int sockfd, const char* tagname, void* value, int actsize, unsigned
 
 extern "C" bool writeb(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error)
 {
+	AutoErrorCheck _checker(error, __func__);
 	return writeb_(sockfd, tagname, value, actsize, error, 1);	// 触发发布
 }
 
 extern "C" bool writeb_notpost(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error)
 {
+	AutoErrorCheck _checker(error, __func__);
 	return writeb_(sockfd, tagname, value, actsize, error, 0);	// 不触发发布
 }
 
@@ -1130,7 +1153,7 @@ extern "C" bool readb_string(int sockfd, const char* tagname, char* value, int b
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (!tagname || !value || buffersize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -1207,8 +1230,6 @@ bool writeb_string_(int sockfd, const char* tagname, const char* value, unsigned
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
-
 	// 参数校验（必须先于 strlen，避免 value==NULL 时解引用空指针）
 	if (!tagname || !value) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -1265,11 +1286,13 @@ bool writeb_string_(int sockfd, const char* tagname, const char* value, unsigned
 
 extern "C" bool writeb_string(int sockfd, const char* tagname, const char* value, unsigned int* error)
 {
+	AutoErrorCheck _checker(error, __func__);
 	return writeb_string_(sockfd, tagname, value, error, 1);	// 触发发布
 }
 
 extern "C" bool writeb_string_notpost(int sockfd, const char* tagname, const char* value, unsigned int* error)
 {
+	AutoErrorCheck _checker(error, __func__);
 	return writeb_string_(sockfd, tagname, value, error, 0);	// 不触发发布
 }
 
@@ -1278,7 +1301,7 @@ extern "C" bool subscribe(int sockfd, const char* tagname, unsigned int* error)
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (!tagname) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -1334,7 +1357,7 @@ extern "C" bool clearb(int sockfd, unsigned int* error)
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 
 	// 初始化消息结构体
 	MSGSTRUCT msg{};
@@ -1370,7 +1393,7 @@ extern "C" bool readboardinfo(int sockfd, void* info, int infosize, unsigned int
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (!info || infosize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -1424,7 +1447,7 @@ extern "C" bool subscribedelaypost(int sockfd, const char* tagname, const char* 
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (!tagname || !eventname) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -1475,7 +1498,7 @@ extern "C" bool createtag(int sockfd, const char* tagname, int tagsize, void* ty
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (!tagname || !type) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -1539,7 +1562,7 @@ extern "C" bool deletetag(int sockfd, const char* tagname, unsigned int* error)
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (!tagname) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -1581,7 +1604,7 @@ extern "C" bool waitpostdata(int sockfd, char* tagname, int tagnamesize, void* v
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	if (sockfd < 0 || tagname == nullptr || tagnamesize < GPLAT_TAGNAME_SIZE || value == nullptr || buffersize <= 0 || timeout < -1) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
@@ -1653,7 +1676,7 @@ extern "C" bool createqueue(int sockfd, const char* queuename, int recordsize, i
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (recordsize <= 0 || recordnum <= 0 || type == nullptr || typesize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -1715,7 +1738,7 @@ extern "C" bool getresponse(int sockfd, const char* request_tag, void* request_v
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	if (sockfd < 0 || !request_tag || !response_tag || !request_value || !response_value ||
 		request_size <= 0 || response_size <= 0 || timeout_ms <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -3982,7 +4005,7 @@ extern "C" bool readtype(int sockfd, const char* qbdname, const char* tagname, v
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if ((!tagname && !qbdname) || !inbuff || buffsize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -4061,7 +4084,6 @@ bool writeb_plc(int sockfd, const char* tagname, void* value, int actsize, unsig
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
 	// 参数校验
 	if (!tagname || !value || actsize <= 0) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -4122,8 +4144,6 @@ bool writeb_string_plc(int sockfd, const char* tagname, const char* value, unsig
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
-
 	// 参数校验（必须先于 strlen，避免 value==NULL 时解引用空指针）
 	if (!tagname || !value) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -4182,7 +4202,7 @@ extern "C" bool registertag(int sockfd, const char* tagname, unsigned int* error
 	if (error == nullptr)
 		return false;
 
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	// 参数校验
 	if (!tagname) {
 		*error = ERROR_INVALID_PARAMETER;
@@ -4233,42 +4253,42 @@ extern "C" bool registertag(int sockfd, const char* tagname, unsigned int* error
 
 extern "C" bool write_plc_string(int sockfd, const char* tagname, const char* str, unsigned int* error)
 {
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	return writeb_string_plc(sockfd, tagname, str, error);
 }
 
 extern "C" bool write_plc_bool(int sockfd, const char* tagname, bool value, unsigned int* error)
 {
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	return writeb_plc(sockfd, tagname, (void*)&value, sizeof(value), error);
 }
 
 extern "C" bool write_plc_short(int sockfd, const char* tagname, short value, unsigned int* error)
 {
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	return writeb_plc(sockfd, tagname, (void*)&value, sizeof(value), error);
 }
 
 extern "C" bool write_plc_ushort(int sockfd, const char* tagname, unsigned short value, unsigned int* error)
 {
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	return writeb_plc(sockfd, tagname, (void*)&value, sizeof(value), error);
 }
 
 extern "C" bool write_plc_int(int sockfd, const char* tagname, int value, unsigned int* error)
 {
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	return writeb_plc(sockfd, tagname, (void*)&value, sizeof(value), error);
 }
 
 extern "C" bool write_plc_uint(int sockfd, const char* tagname, unsigned int value, unsigned int* error)
 {
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	return writeb_plc(sockfd, tagname, (void*)&value, sizeof(value), error);
 }
 
 extern "C" bool write_plc_float(int sockfd, const char* tagname, float value, unsigned int* error)
 {
-	AutoErrorCheck _checker(error);
+	AutoErrorCheck _checker(error, __func__);
 	return writeb_plc(sockfd, tagname, (void*)&value, sizeof(value), error);
 }

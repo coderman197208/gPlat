@@ -42,10 +42,10 @@
 #define CODE_QEMPTY						(MY_ERR_OFFSET + 35)
 #define CODE_QFULL						(MY_ERR_OFFSET + 36)
 #define STRING_TOO_LONG			        (MY_ERR_OFFSET + 37)
-#define BUFFER_TOO_SMALL			    (MY_ERR_OFFSET + 38)
+#define BUFFER_TOO_SMALL			    (MY_ERR_OFFSET + 38)	// 字符串比调用方缓冲区长（ReadB_String / readb_string），连接保留
 #define ERROR_INVALID_PARAMETER			(MY_ERR_OFFSET + 39)
 #define ERROR_INVALID_RESPONSE			(MY_ERR_OFFSET + 40)
-#define ERROR_BUFFER_TOO_SMALL			(MY_ERR_OFFSET + 41)
+#define ERROR_BUFFER_TOO_SMALL			(MY_ERR_OFFSET + 41)	// 数据比调用方缓冲区大；网络 API 会关闭 sockfd
 #define ERROR_TAG_NOT_EXIST 			(MY_ERR_OFFSET + 42)
 #define ERROR_WAIT_TIMEOUT              (MY_ERR_OFFSET + 43)
 #define ERROR_RESPONSE_TIMEOUT          (MY_ERR_OFFSET + 44)
@@ -105,6 +105,11 @@ typedef struct TAG_META
 #define GPLAT_MAX_DATA_SIZE	16384	// 单次读写数据的最大长度
 #define GPLAT_TAGNAME_SIZE	40		// tag 名缓冲区长度（含 '\0'）
 
+// 错误类别（错误钩子的 category 参数、GetErrorCategory 的返回值；分类见 higplat/qbd.h 的 GetErrorInfo）
+#define GPLAT_ERRCAT_RESULT			0	// 运行结果，调用方按返回码分支：tag/队列不存在、队列空/满、等待/响应超时、容量不足等
+#define GPLAT_ERRCAT_USAGE			1	// 编程错误：参数非法、大小不符、缓冲区太小等；GplatConnection 抛 GplatUsageError
+#define GPLAT_ERRCAT_CONNECTION		2	// 连接不可用：errno（< MY_ERR_OFFSET）、ERROR_SOCKET_NOT_CONNECTED、ERROR_INVALID_RESPONSE；GplatConnection 抛 GplatConnectionError
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -148,8 +153,19 @@ bool write_plc_uint(int sockfd, const char* tagname, unsigned int value, unsigne
 bool write_plc_float(int sockfd, const char* tagname, float value, unsigned int* error);
 bool registertag(int sockfd, const char* tagname, unsigned int* error);
 
-// message may be NULL
+// 返回错误码的类别 GPLAT_ERRCAT_*；message 可为 NULL，对 errno（< MY_ERR_OFFSET）*message 在本线程下次调用前有效
+int GetErrorCategory(unsigned int error, const char** message);
+
+// 兼容旧接口：等价于 GetErrorCategory(error, message) == GPLAT_ERRCAT_USAGE
 bool IsFatalError(unsigned int error, const char** message);
+
+// 网络 API（带 unsigned int* error 的函数）返回时若错误码非 0，就调用一次钩子（含 waitpostdata 超时返回
+// true + ERROR_WAIT_TIMEOUT）。category 为 GPLAT_ERRCAT_*；message 和 func（API 函数名）只在回调期间有效。
+// 钩子可能在多个线程上并发执行，不得抛异常。
+typedef void (*GPLAT_ERROR_HOOK)(unsigned int error, int category, const char* message, const char* func, void* user);
+
+// 默认钩子把 USAGE 和 CONNECTION 类错误整行写到 stderr；hook 为 NULL 时关闭输出。线程安全。
+void SetErrorHook(GPLAT_ERROR_HOOK hook, void* user);
 
 // ---- Local API ----
 bool CreateB(const char* lpFileName, int size);

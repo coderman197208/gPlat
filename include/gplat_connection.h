@@ -32,9 +32,40 @@ T read_value(CharT* buffer) {
 	}
 }
 
+// Base of the exceptions thrown by GplatConnection; code() is the gPlat error code.
+class GplatError : public std::runtime_error
+{
+public:
+	GplatError(unsigned int code, const char* message)
+		: std::runtime_error(std::string(message ? message : "") + " (Code: " + std::to_string(code) + ")"), m_code(code) {}
+
+	unsigned int code() const noexcept { return m_code; }
+
+private:
+	unsigned int m_code;
+};
+
+// Caller bug (GPLAT_ERRCAT_USAGE): invalid parameter, size mismatch, buffer too small...
+// The connection stays open unless the library had to close it (e.g. ERROR_BUFFER_TOO_SMALL); check is_open().
+class GplatUsageError : public GplatError
+{
+public:
+	using GplatError::GplatError;
+};
+
+// The connection is unusable and already marked closed: not open, I/O failure (GPLAT_ERRCAT_CONNECTION),
+// or closed by the library after a server error on subscribe/waitpostdata (code() keeps that error).
+// Call open() again and re-subscribe.
+class GplatConnectionError : public GplatError
+{
+public:
+	using GplatError::GplatError;
+};
+
 // C++ wrapper of the gPlat network API (higplat.h is the pure C interface of libhigplat.so).
 // Header-only on purpose: std::string and exceptions stay in the caller's translation unit, so no C++ ABI crosses the library boundary.
-// Methods return the error code (0 = success) and throw std::runtime_error on Fatal-level codes. Not thread-safe: use one connection per thread.
+// Methods return 0 or a GPLAT_ERRCAT_RESULT code (tag not exist, queue empty, wait/response timeout...) and throw
+// GplatUsageError / GplatConnectionError for the other categories. Not thread-safe: use one connection per thread.
 class GplatConnection
 {
 public:
@@ -273,31 +304,34 @@ private:
 			return false;
 		if (rule == CloseRule::AnyServerError)
 			return true;
-		// error < MY_ERR_OFFSET is an errno; 0 on failure means send() returned 0 without errno
-		return error < MY_ERR_OFFSET ||
-			error == ERROR_SOCKET_NOT_CONNECTED ||
-			error == ERROR_INVALID_RESPONSE ||
+		// errno, ERROR_SOCKET_NOT_CONNECTED, ERROR_INVALID_RESPONSE
+		return ::GetErrorCategory(error, nullptr) == GPLAT_ERRCAT_CONNECTION ||
 			error == ERROR_BUFFER_TOO_SMALL;
 	}
 
 	template<typename F>
 	unsigned int call(CloseRule rule, F&& f)
 	{
-		if (!is_open())
-			return ERROR_SOCKET_NOT_CONNECTED;
+		const char* message = nullptr;
+		if (!is_open()) {
+			::GetErrorCategory(ERROR_SOCKET_NOT_CONNECTED, &message);
+			throw GplatConnectionError(ERROR_SOCKET_NOT_CONNECTED, message);
+		}
 
 		unsigned int error = 0;
-		bool ok = f(m_sockfd, &error);
-		if (!ok && closed_by_library(rule, error))
+		if (f(m_sockfd, &error))
+			return error;	// non-zero only for waitpostdata timeout
+		if (error == 0)
+			error = ERROR_SOCKET_NOT_CONNECTED;	// send() returned 0 without errno
+		if (closed_by_library(rule, error))
 			m_sockfd = -1;
 
-		const char* message = nullptr;
-		if (error != 0 && ::IsFatalError(error, &message))
-			throw std::runtime_error(std::string(message) + " (Code: " + std::to_string(error) + ")");
-
-		if (ok)
-			return error;	// non-zero only for waitpostdata timeout
-		return error != 0 ? error : ERROR_SOCKET_NOT_CONNECTED;
+		int category = ::GetErrorCategory(error, &message);
+		if (category == GPLAT_ERRCAT_USAGE)
+			throw GplatUsageError(error, message);
+		if (!is_open())	// every CONNECTION code, plus server errors on subscribe/waitpostdata
+			throw GplatConnectionError(error, message);
+		return error;
 	}
 
 	std::string m_server;

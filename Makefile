@@ -262,7 +262,7 @@ test-asan:
 	@echo "Running leak-sensitive suite under ASan..."
 	@build/asan/bin/testsuite --expect-asan --tag asan
 
-# 全量回归：ASan 隔离构建下放行破坏性/压力用例，确保 78 个用例全部实际执行
+# 全量回归：ASan 隔离构建下放行破坏性/压力用例，确保 81 个用例全部实际执行
 test-all:
 	@$(MAKE) ASAN=1 asan-build
 	@echo "Running all tests under ASan..."
@@ -553,7 +553,7 @@ help:
 	@echo "  testsuite              : Build the end-to-end test suite (+ gen_fixtures generator)"
 	@echo "  test-apps              : Build and run testapp2, testapp5, testapp6, testapp7 in order (requires gplat on 127.0.0.1:8777)"
 	@echo "  test                   : Build and run the regression suite (non-destructive, self-hosted sandbox)"
-	@echo "  test-all               : Rebuild with ASan and run all 78 cases (including destructive/stress)"
+	@echo "  test-all               : Rebuild with ASan and run all 81 cases (including destructive/stress)"
 	@echo "  test-asan              : Rebuild higplat+gplat+tools+suite with ASan (build/asan/) and run leak-sensitive cases"
 	@echo "  test-destructive       : Run destructive cases (fork-isolated; server restarted per case)"
 	@echo "  test-stress            : Run stress/benchmark cases (correctness + no-leak gate; perf reported only)"

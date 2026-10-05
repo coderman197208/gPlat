@@ -4,7 +4,21 @@
 
 - `GPLAT_MAX_DATA_SIZE`（16384）：单次读写数据的最大长度
 - `GPLAT_TAGNAME_SIZE`（40）：tag 名缓冲区长度（含 `'\0'`）
-- `bool IsFatalError(unsigned int error, const char** message)`：错误码是否为 Fatal 级，`message` 可为 NULL
+- `int GetErrorCategory(unsigned int error, const char** message)`：错误码的类别 `GPLAT_ERRCAT_*`，`message` 可为 NULL（errno 的描述在本线程下次调用前有效）。分类表见 `Doc/ERROR_CODE.md`
+  - `GPLAT_ERRCAT_RESULT`（0）：运行结果，调用方按返回码分支，如 `ERROR_TAG_NOT_EXIST`、`ERROR_DQ_EMPTY`、`ERROR_WAIT_TIMEOUT`、`ERROR_RESPONSE_TIMEOUT`
+  - `GPLAT_ERRCAT_USAGE`（1）：编程错误，如 `ERROR_INVALID_PARAMETER`、`ERROR_RECORDSIZE`、`STRING_TOO_LONG`、`ERROR_BUFFER_TOO_SMALL`
+  - `GPLAT_ERRCAT_CONNECTION`（2）：连接不可用：errno（< `MY_ERR_OFFSET`，send/recv 失败）、`ERROR_SOCKET_NOT_CONNECTED`、`ERROR_INVALID_RESPONSE`
+- `bool IsFatalError(unsigned int error, const char** message)`：兼容旧接口，等价于 `GetErrorCategory(error, message) == GPLAT_ERRCAT_USAGE`
+- `void SetErrorHook(GPLAT_ERROR_HOOK hook, void* user)`：设置错误钩子 `void (*)(unsigned int error, int category, const char* message, const char* func, void* user)`。带 `unsigned int* error` 的网络 API 返回时若错误码非 0（含 `waitpostdata` 超时），就调用一次钩子；`func` 为 API 函数名，`message` 和 `func` 只在回调期间有效。默认钩子把 USAGE 和 CONNECTION 类错误整行写到 stderr（如 `[higplat usage] writeb: record size invalid (code 1014)`），`hook` 传 NULL 关闭输出。线程安全；钩子可能在多个线程上并发执行，不得抛异常
+
+```c
+static void my_hook(unsigned int error, int category, const char* message, const char* func, void* user)
+{
+    if (category != GPLAT_ERRCAT_RESULT)
+        my_log("%s: %s (code %u)", func, message, error);
+}
+SetErrorHook(my_hook, NULL);    // 进程启动时设置一次
+```
 
 ## 连接管理
 
@@ -233,13 +247,17 @@ err = conn.readb_string("name", s);
 conn.close();                              // 析构时也会自动关闭
 ```
 
-- **与 C 接口的差异**: 去掉 `sockfd` 参数；去掉 `unsigned int* error`，改为返回值（`[[nodiscard]] unsigned int`，0 为成功）；名称参数为 `const std::string&`，写入缓冲区为 `const void*`
+- **与 C 接口的差异**: 去掉 `sockfd` 参数；去掉 `unsigned int* error`，改为返回值（`[[nodiscard]] unsigned int`，0 为成功，非 0 只会是 `GPLAT_ERRCAT_RESULT` 类错误码）；名称参数为 `const std::string&`，写入缓冲区为 `const void*`
 - **重载**: `readb_string(tag, char*, int, timespec* = nullptr)` / `readb_string(tag, std::string&, timespec* = nullptr)`（内部以 `GPLAT_MAX_DATA_SIZE` 缓冲区调用 C 版，失败时不修改 `value`）；`writeb_string` / `writeb_string_notpost` 均有 `const char*` 与 `const std::string&` 两个版本；`waitpostdata(std::string& tagname, ...)`；`write_plc_*` 有 `=delete` 模板，禁止隐式类型转换
 - **已封装**: `readq` `writeq` `clearq` `peekq` `readb` `writeb` `writeb_notpost` `readb_string` `writeb_string` `writeb_string_notpost` `subscribe` `subscribedelaypost` `waitpostdata` `getresponse` `write_plc_{string,bool,short,ushort,int,uint,float}`
 - **waitpostdata 超时**: 返回 `ERROR_WAIT_TIMEOUT`，`tagname` 置为 `"WAIT_TIMEOUT"`
-- **未连接**: 未 `open()` 或连接已断开时直接返回 `ERROR_SOCKET_NOT_CONNECTED`，不自动重连（重连会丢失订阅），需调用者重新 `open()` 并重新订阅
-- **断线识别**: C 接口在 I/O 失败等情况下会在内部 `close(sockfd)`，封装类按错误码判断并把连接标记为关闭（不会重复 close）：失败且 error 为 0、errno（< 1000）、`ERROR_SOCKET_NOT_CONNECTED`、`ERROR_INVALID_RESPONSE`、`ERROR_BUFFER_TOO_SMALL`；`subscribe` / `waitpostdata` 另外在任何服务端错误时（`ERROR_INVALID_PARAMETER`、`ERROR_WAIT_TIMEOUT` 除外）视为已断开。`is_open()` 只反映本地状态，对端关闭要到下一次调用失败才能感知
-- **异常**: 错误码为 Fatal 级（`IsFatalError`，如 `ERROR_TAG_NOT_EXIST`、`ERROR_BUFFER_TOO_SMALL`）时由封装类抛 `std::runtime_error`，抛出前已更新连接状态；C 接口本身只打印日志并返回错误码
+- **异常**: 按 `GetErrorCategory` 的类别决定，所有异常都派生自 `GplatError : std::runtime_error`（`code()` 为错误码，`what()` 为 `"<描述> (Code: N)"`），抛出前已更新连接状态：
+  - RESULT（如 `ERROR_TAG_NOT_EXIST`、`ERROR_DQ_EMPTY`、`ERROR_RESPONSE_TIMEOUT`）：只返回错误码，不抛异常
+  - USAGE：抛 `GplatUsageError`。连接一般保留；`ERROR_BUFFER_TOO_SMALL` 时库已关闭 socket，`is_open()` 为 false
+  - CONNECTION：抛 `GplatConnectionError`，连接已标记为关闭
+  - C 接口本身不抛异常，只通过错误钩子上报（默认写 stderr，可用 `SetErrorHook(NULL, NULL)` 关闭）并返回错误码
+- **未连接**: 未 `open()` 或连接已关闭时调用，抛 `GplatConnectionError`（`ERROR_SOCKET_NOT_CONNECTED`）；不自动重连（重连会丢失订阅），需调用者重新 `open()` 并重新订阅
+- **断线识别**: C 接口在 I/O 失败等情况下会在内部 `close(sockfd)`，封装类按错误码判断并把连接标记为关闭（不会重复 close）：CONNECTION 类错误码（失败且 error 为 0 时按 `ERROR_SOCKET_NOT_CONNECTED` 处理）、`ERROR_BUFFER_TOO_SMALL`；`subscribe` / `waitpostdata` 另外在任何服务端错误时（`ERROR_INVALID_PARAMETER`、`ERROR_WAIT_TIMEOUT` 除外）视为已断开，此时即使错误码属于 RESULT（如订阅不存在的 tag 得到 `ERROR_TAG_NOT_EXIST`）也抛 `GplatConnectionError`，`code()` 保留原错误码。`is_open()` 只反映本地状态，对端关闭要到下一次调用失败才能感知
 - **拷贝/移动**: 不可拷贝，可移动（被移动对象变为未连接）
 - **线程安全**: 不加锁，一个连接只能在一个线程中使用
 - **示例/测试**: `testapp6`

@@ -2,6 +2,7 @@
 // 用法: testapp6 [server_ip] [port]，需要已运行的 gplat 服务
 #include <atomic>
 #include <chrono>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -37,6 +38,25 @@ static const char* QUEUE_NAME = "TEST6_QUEUE";
 		}                                                 \
 	} while (0)
 
+// 执行 f：抛出 Ex 时返回其错误码，未抛出返回 0，抛出其它 GplatError 返回 UINT_MAX
+template<typename Ex, typename F>
+static unsigned int thrownCode(F&& f)
+{
+	try {
+		f();
+	}
+	catch (const Ex& e) {
+		return e.code();
+	}
+	catch (const GplatError&) {
+		return UINT_MAX;
+	}
+	return 0;
+}
+
+static_assert(std::is_base_of_v<std::runtime_error, GplatError>, "GplatError must be a std::runtime_error");
+static_assert(std::is_base_of_v<GplatError, GplatUsageError>, "GplatUsageError must derive from GplatError");
+static_assert(std::is_base_of_v<GplatError, GplatConnectionError>, "GplatConnectionError must derive from GplatError");
 // write_plc_* 的 =delete 模板必须拒绝隐式类型转换
 template<typename T, typename = void>
 struct CanWritePlcInt : std::false_type {};
@@ -100,8 +120,8 @@ static void testLifecycle()
 	CHECK(!c.is_open(), "should not connect in constructor");
 
 	int32_t v = 0;
-	CHECK(c.readb(INT_TAG, &v, sizeof(v)) == ERROR_SOCKET_NOT_CONNECTED, "readb before open");
-	CHECK(c.subscribe(INT_TAG) == ERROR_SOCKET_NOT_CONNECTED, "subscribe before open");
+	CHECK(thrownCode<GplatConnectionError>([&] { (void)c.readb(INT_TAG, &v, sizeof(v)); }) == ERROR_SOCKET_NOT_CONNECTED, "readb before open should throw");
+	CHECK(thrownCode<GplatConnectionError>([&] { (void)c.subscribe(INT_TAG); }) == ERROR_SOCKET_NOT_CONNECTED, "subscribe before open should throw");
 
 	CHECK(c.open(), "open failed");
 	CHECK(c.open(), "second open should return true");
@@ -109,7 +129,7 @@ static void testLifecycle()
 
 	GplatConnection moved(std::move(c));
 	CHECK(!c.is_open() && moved.is_open(), "move construct");
-	CHECK(c.readb(INT_TAG, &v, sizeof(v)) == ERROR_SOCKET_NOT_CONNECTED, "moved-from should be closed");
+	CHECK(thrownCode<GplatConnectionError>([&] { (void)c.readb(INT_TAG, &v, sizeof(v)); }) == ERROR_SOCKET_NOT_CONNECTED, "moved-from should be closed");
 	CHECK(moved.readb(INT_TAG, &v, sizeof(v)) == 0, "moved-to should work");
 
 	GplatConnection other(g_ip, g_port);
@@ -158,16 +178,23 @@ static void testBoard()
 	CHECK(c.writeb_string_notpost(STR_TAG, std::string("np2")) == 0, "writeb_string_notpost(std::string)");
 	CHECK(c.readb_string(STR_TAG, s) == 0 && s == "np2", "got '%s'", s.c_str());
 
-	// 服务端错误：不关闭连接；ERROR_TAG_NOT_EXIST 为 Fatal 级，libhigplat 会抛异常
-	bool thrown = false;
-	try {
-		(void)c.readb("TEST6_NO_SUCH_TAG", &r, sizeof(r));
-	}
-	catch (const std::runtime_error&) {
-		thrown = true;
-	}
-	CHECK(thrown, "readb on missing tag should throw");
+	// 业务结果：只返回错误码，不抛异常，连接保留
+	CHECK(c.readb("TEST6_NO_SUCH_TAG", &r, sizeof(r)) == ERROR_TAG_NOT_EXIST, "readb on missing tag should return ERROR_TAG_NOT_EXIST");
 	CHECK(c.is_open(), "server-side error must keep connection open");
+
+	// 编程错误：抛 GplatUsageError；客户端参数校验和服务端报的错误都不关闭连接
+	CHECK(thrownCode<GplatUsageError>([&] { (void)c.readb(INT_TAG, &r, 0); }) == ERROR_INVALID_PARAMETER, "readb with actsize 0 should throw GplatUsageError");
+	int64_t big = 0;
+	CHECK(thrownCode<GplatUsageError>([&] { (void)c.writeb(INT_TAG, &big, sizeof(big)); }) == ERROR_RECORDSIZE, "writeb with wrong size should throw GplatUsageError");
+	bool caught = false;
+	try {
+		(void)c.writeb(INT_TAG, &big, sizeof(big));
+	}
+	catch (const std::runtime_error& e) {
+		caught = strstr(e.what(), ("(Code: " + std::to_string(ERROR_RECORDSIZE) + ")").c_str()) != nullptr;
+	}
+	CHECK(caught, "GplatUsageError should be catchable as std::runtime_error with the code in what()");
+	CHECK(c.is_open(), "usage error must keep connection open");
 	CHECK(c.readb(INT_TAG, &r, sizeof(r)) == 0, "connection usable after server error");
 }
 
@@ -227,19 +254,16 @@ static void testPubSub()
 		CHECK(delay.open() && delay.subscribedelaypost(INT_TAG, "TEST6_DELAY_EVENT", 100) == 0, "subscribedelaypost");
 	}
 
-	// 缓冲区不足：libhigplat 关闭 socket 并抛异常，封装类应识别为断开
+	// 缓冲区不足：编程错误，抛 GplatUsageError；libhigplat 已关闭 socket，封装类应识别为断开
 	CHECK(pub.writeb_string(STR_TAG, "a string longer than four bytes") == 0, "writeb_string");
-	bool thrown = false;
-	try {
-		(void)sub.waitpostdata(tag, buf, 4, 1000);
-	}
-	catch (const std::runtime_error&) {
-		thrown = true;
-	}
-	CHECK(thrown, "waitpostdata with small buffer should throw");
+	CHECK(thrownCode<GplatUsageError>([&] { (void)sub.waitpostdata(tag, buf, 4, 1000); }) == ERROR_BUFFER_TOO_SMALL, "waitpostdata with small buffer should throw GplatUsageError");
 	CHECK(!sub.is_open(), "connection closed by library must be detected");
-	CHECK(sub.subscribe(INT_TAG) == ERROR_SOCKET_NOT_CONNECTED, "call after detected close");
+	CHECK(thrownCode<GplatConnectionError>([&] { (void)sub.subscribe(INT_TAG); }) == ERROR_SOCKET_NOT_CONNECTED, "call after detected close should throw GplatConnectionError");
 	CHECK(sub.open() && sub.subscribe(INT_TAG) == 0, "reopen after close");
+
+	// subscribe 的服务端错误会让 libhigplat 关闭 socket：抛 GplatConnectionError，code 保留原错误
+	CHECK(thrownCode<GplatConnectionError>([&] { (void)sub.subscribe("TEST6_NO_SUCH_TAG"); }) == ERROR_TAG_NOT_EXIST, "subscribe on missing tag should throw GplatConnectionError");
+	CHECK(!sub.is_open(), "subscribe server error must mark the connection closed");
 }
 
 static void testGetResponse()
@@ -248,33 +272,39 @@ static void testGetResponse()
 	std::atomic<bool> running(true), ready(false);
 
 	std::thread responder([&]() {
-		GplatConnection c(g_ip, g_port);
-		if (!c.open() || c.subscribe(REQ_TAG) != 0) {
-			CHECK(false, "responder setup failed");
-			ready = true;
-			return;
-		}
-		ready = true;
-
-		char buf[1024];
-		std::string tag;
-		while (running) {
-			unsigned int err = c.waitpostdata(tag, buf, sizeof(buf), 200);
-			if (err == ERROR_WAIT_TIMEOUT)
-				continue;
-			if (err != 0) {
-				CHECK(false, "responder waitpostdata error=%u", err);
+		try {
+			GplatConnection c(g_ip, g_port);
+			if (!c.open() || c.subscribe(REQ_TAG) != 0) {
+				CHECK(false, "responder setup failed");
+				ready = true;
 				return;
 			}
-			if (tag != REQ_TAG)
-				continue;
-			Request req = read_value<Request>(buf);
-			Response rsp{};
-			rsp.id = req.id;
-			rsp.message = "ok";
-			for (int i = 0; i < 4; i++)
-				rsp.values[i] = req.args[i] * 2;
-			CHECK(c.writeb(RSP_TAG, &rsp, sizeof(rsp)) == 0, "responder writeb");
+			ready = true;
+
+			char buf[1024];
+			std::string tag;
+			while (running) {
+				unsigned int err = c.waitpostdata(tag, buf, sizeof(buf), 200);
+				if (err == ERROR_WAIT_TIMEOUT)
+					continue;
+				if (err != 0) {
+					CHECK(false, "responder waitpostdata error=%u", err);
+					return;
+				}
+				if (tag != REQ_TAG)
+					continue;
+				Request req = read_value<Request>(buf);
+				Response rsp{};
+				rsp.id = req.id;
+				rsp.message = "ok";
+				for (int i = 0; i < 4; i++)
+					rsp.values[i] = req.args[i] * 2;
+				CHECK(c.writeb(RSP_TAG, &rsp, sizeof(rsp)) == 0, "responder writeb");
+			}
+		}
+		catch (const GplatError& e) {
+			CHECK(false, "responder: %s", e.what());
+			ready = true;
 		}
 	});
 	while (!ready)
