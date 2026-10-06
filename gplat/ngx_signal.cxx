@@ -154,7 +154,9 @@ static void ngx_signal_handler(int signo, siginfo_t* siginfo, void* ucontext)
 	//.......其他需要扩展的将来再处理；
 
 	//子进程状态有变化，通常是意外退出【既然官方是在这里处理，我们也学习官方在这里处理】
-	if (signo == SIGCHLD)
+	//只有master回收子进程；worker也继承了该handler，若在worker里waitpid(-1)，
+	//会抢走ASan/LSan退出时检查用的tracer子进程的状态，导致worker退出卡死
+	if (signo == SIGCHLD && ngx_process == NGX_PROCESS_MASTER)
 	{
 		ngx_process_get_status(); //获取子进程的结束状态
 
