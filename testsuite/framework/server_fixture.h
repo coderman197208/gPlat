@@ -25,7 +25,7 @@ namespace ts {
 struct ServerConfig {
     int  port = 0;             // 0 = 从 preferredPort 起自动探测空闲端口
     int  preferredPort = 18777;
-    int  threads = 2;          // ProcMsgRecvWorkThreadCount（发送路径/并发用例需 >=2）
+    int  threads = 3;          // ProcMsgRecvWorkThreadCount（发送路径/并发用例需 >=2）
     int  workerConns = 1024;   // worker_connections
     int  recyWait = 20;        // Sock_RecyConnectionWaitTime（churn 用例可调小/调大）
     int  logLevel = 8;
