@@ -1,21 +1,10 @@
 ﻿
 // 网络以及逻辑处理有关
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>	   //uintptr_t
-#include <stdarg.h>	   //va_start....
-#include <unistd.h>	   //STDERR_FILENO等
-#include <sys/time.h>  //gettimeofday
-#include <time.h>	   //localtime_r
-#include <fcntl.h>	   //open
-#include <errno.h>	   //errno
-#include <sys/ioctl.h> //ioctl
-#include <arpa/inet.h>
-#include <pthread.h> //多线程
-#include <iostream>
+#include <cstring>
 #include <algorithm>
+#include <iterator>
+#include <string_view>
 
 #include "ngx_c_conf.h"
 #include "ngx_macro.h"
@@ -28,25 +17,116 @@
 
 #include "../include/higplat.h"
 
-thread_local char g_buffer[MAXMSGLEN] = {0};
+namespace
+{
+	constexpr int kMsgHeaderLen = sizeof(STRUC_MSG_HEADER);
+	constexpr int kPkgHeaderLen = sizeof(PKGHEAD);
 
-// 定义成员函数指针
-typedef bool (CLogicSocket::*handler)(lpngx_connection_t pConn,		 // 连接池中连接的指针
-									  LPSTRUC_MSG_HEADER pMsgHeader, // 消息头指针
-									  char *pPkgBody,				 // 包体指针
-									  unsigned short iBodyLength);	 // 包体长度
+	// 线程私有的临时缓冲区（读字符串、getresponse 校验 tag）
+	thread_local char g_buffer[MAXMSGLEN] = {0};
 
-// gyb
-// 用来保存成员函数指针的数组
-// 顺序必须和msg.h中的MSGID对应
-static const handler statusHandler[] =
+	// 定时器是虚拟 tag（不在 Board 中），由 ngx_process_cycle.cxx 中的定时器发布
+	constexpr std::string_view kTimerTags[] = {"timer_500ms", "timer_1s", "timer_2s", "timer_3s", "timer_5s"};
+
+	bool IsTimerTag(const char* tagName)
+	{
+		return std::find(std::begin(kTimerTags), std::end(kTimerTags), tagName) != std::end(kTimerTags);
+	}
+
+	// 发送缓冲区布局：消息头 + 包头 + 包体
+	char* AllocSendBuf(int iBodyLen)
+	{
+		return static_cast<char*>(CMemory::GetInstance()->AllocMemory(kMsgHeaderLen + kPkgHeaderLen + iBodyLen, false));
+	}
+
+	PPKGHEAD PkgHeadOf(char* p_sendbuf)
+	{
+		return reinterpret_cast<PPKGHEAD>(p_sendbuf + kMsgHeaderLen);
+	}
+
+	char* BodyOf(char* p_sendbuf)
+	{
+		return p_sendbuf + kMsgHeaderLen + kPkgHeaderLen;
+	}
+
+	// 请求包中紧跟包头的数据
+	char* PayloadOf(PPKGHEAD pPkgHead)
+	{
+		return reinterpret_cast<char*>(pPkgHead) + sizeof(PKGHEAD);
+	}
+
+	template <size_t N>
+	void CopyName(char (&dst)[N], const char* src)
+	{
+		strncpy(dst, src, N - 1);
+		dst[N - 1] = '\0';
+	}
+
+	unsigned int ResultCode(bool ok)
+	{
+		return ok ? 0 : GetLastErrorQ();
+	}
+
+	// 客户端给出的应答缓冲区大小：超出协议上限时拒绝，避免按非法长度分配内存
+	bool IsValidBodySize(int size)
+	{
+		return size >= 0 && size <= MAXMSGLEN;
+	}
+
+	// 声明的数据长度不得超过实际收到的包体，否则会读越界；不符时置 ERROR_RECORDSIZE
+	bool PayloadFits(PPKGHEAD pPkgHead, unsigned short iBodyLength)
+	{
+		if (pPkgHead->datasize >= 0 && pPkgHead->datasize <= iBodyLength)
+		{
+			return true;
+		}
+		pPkgHead->error = ERROR_RECORDSIZE;
+		return false;
+	}
+
+	// 构造一个主动发往 pConn 的包：消息头 + 清零后只填 id/bodysize 的包头 + 包体，其余包头字段由调用者填写
+	char* BuildPacket(lpngx_connection_t pConn, uint64_t iCurrsequence, int id, const char* pBody, int iBodyLen)
+	{
+		char* p_sendbuf = AllocSendBuf(iBodyLen);
+
+		auto* pMsgHeader = reinterpret_cast<LPSTRUC_MSG_HEADER>(p_sendbuf);
+		pMsgHeader->pConn = pConn;
+		pMsgHeader->iCurrsequence = iCurrsequence; // 连接已断开时由发送线程丢弃
+
+		PPKGHEAD pPkgHead = PkgHeadOf(p_sendbuf);
+		memset(pPkgHead, 0, sizeof(PKGHEAD));
+		pPkgHead->id = id;
+		pPkgHead->bodysize = iBodyLen;
+		if (pBody != nullptr && iBodyLen > 0)
+		{
+			memcpy(BodyOf(p_sendbuf), pBody, iBodyLen);
+		}
+		return p_sendbuf;
+	}
+
+	// 发布事件包，itemname 为事件名（订阅端据此识别事件）
+	char* BuildPostPacket(lpngx_connection_t pConn, const char* name, const char* pBody, unsigned short iBodyLen)
+	{
+		char* p_sendbuf = BuildPacket(pConn, pConn->iCurrsequence, POST, pBody, iBodyLen);
+		CopyName(PkgHeadOf(p_sendbuf)->itemname, name);
+		return p_sendbuf;
+	}
+}
+
+// 成员函数指针，顺序必须和 msg.h 中的 MSGID 对应
+using Handler = bool (CLogicSocket::*)(lpngx_connection_t pConn,		 // 连接池中连接的指针
+									   LPSTRUC_MSG_HEADER pMsgHeader, // 消息头指针
+									   char *pPkgHeader,				 // 包头指针（包体紧随其后）
+									   unsigned short iBodyLength);	 // 包体长度
+
+static constexpr Handler statusHandler[] =
 	{
 		// 数组前5个元素，保留，以备将来增加一些基本服务器功能
-		NULL, // 【0】：下标从0开始
-		NULL, // 【1】
-		NULL, // 【2】
-		NULL, // 【3】
-		NULL, // 【4】
+		nullptr, // 【0】：下标从0开始
+		nullptr, // 【1】
+		nullptr, // 【2】
+		nullptr, // 【3】
+		nullptr, // 【4】
 
 		// 以下是处理具体的业务逻辑
 		&CLogicSocket::noop,				  // SUCCEED = 5
@@ -103,95 +183,120 @@ static const handler statusHandler[] =
 		&CLogicSocket::HandleListTags,      // LISTTAGS
 };
 
-#define AUTH_TOTAL_COMMANDS sizeof(statusHandler) / sizeof(handler) // 整个数组有多少个命令
-
-// 构造函数
-CLogicSocket::CLogicSocket()
-{
-}
-
-// 析构函数
-CLogicSocket::~CLogicSocket()
-{
-}
+static_assert(std::size(statusHandler) == LISTTAGS + 1, "statusHandler[] must have one entry per MSGID");
 
 // 初始化函数【fork()子进程之前执行】
-// 成功返回true，失败返回false
 bool CLogicSocket::Initialize()
 {
-	// 这里可以做一些和本类相关的初始化工作
-
-	bool bParentInit = CSocekt::Initialize(); // 调用父类的同名函数
-	return bParentInit;
+	return CSocekt::Initialize();
 }
 
 // 处理收到的数据包，由线程池来调用本函数
 // pMsgBuf：消息头 + 包头 + 包体
 void CLogicSocket::threadRecvProcFunc(char *pMsgBuf)
 {
-	LPSTRUC_MSG_HEADER pMsgHeader = (LPSTRUC_MSG_HEADER)pMsgBuf; // 消息头
-	PMSGHEAD pPkgHeader = (PMSGHEAD)(pMsgBuf + m_iLenMsgHeader); // 包头
-	[[maybe_unused]] void *pPkgBody;												 // 指向包体的指针
+	auto* pMsgHeader = reinterpret_cast<LPSTRUC_MSG_HEADER>(pMsgBuf);
+	PPKGHEAD pPkgHead = PkgHeadOf(pMsgBuf);
+	lpngx_connection_t pConn = pMsgHeader->pConn;
 
-	unsigned short pkglen = pPkgHeader->bodysize; // 客户端指明的包大小【包体】,不含包头
-
-	unsigned short imsgCode = pPkgHeader->id;	   // 消息代码拿出来
-	lpngx_connection_t p_Conn = pMsgHeader->pConn; // 消息头中藏着连接池中连接的指针
-
-	// 如果从收到客户端发送来的包，到服务器释放一个线程池中的线程处理该包的过程中，客户端断开了，这种包就不必处理了
-	if (p_Conn->iCurrsequence != pMsgHeader->iCurrsequence) // 该连接池中连接以被其他tcp连接【其他socket】占用，这说明原来的客户端和本服务器的连接断了，这种包直接丢弃
+	// 从收到包到线程池处理期间客户端断开、连接已被其他 socket 复用，这种包直接丢弃
+	if (pConn->iCurrsequence != pMsgHeader->iCurrsequence)
 	{
-		return; // 丢弃不处理【客户端断开了】
-	}
-
-	// 判断消息码是正确的，防止客户端恶意发送一个不在我们服务器处理范围内的消息码
-	if (imsgCode >= AUTH_TOTAL_COMMANDS)
-	{
-		ngx_log_stderr(0, "CLogicSocket::threadRecvProcFunc()中imsgCode=%d消息码不对!", imsgCode);
-		return; // 丢弃不理这种包【恶意包或者错误包】
-	}
-
-	// 继续判断是否有相应的处理函数
-	if (statusHandler[imsgCode] == NULL) // 这种用imsgCode的方式可以使查找要执行的成员函数效率特别高
-	{
-		ngx_log_stderr(0, "CLogicSocket::threadRecvProcFunc()中imsgCode=%d消息码找不到对应的处理函数!", imsgCode);
 		return;
 	}
 
-	// 调用消息码对应的成员函数来处理
-	(this->*statusHandler[imsgCode])(p_Conn, pMsgHeader, (char *)pPkgHeader, pkglen); // pkglen只是包体长度，不包含包头
-	return;
+	// 防止客户端发送不在处理范围内的消息码
+	const int msgCode = pPkgHead->id;
+	if (msgCode < 0 || static_cast<size_t>(msgCode) >= std::size(statusHandler))
+	{
+		ngx_log_stderr(0, "CLogicSocket::threadRecvProcFunc()中imsgCode=%d消息码不对!", msgCode);
+		return;
+	}
+
+	const Handler handler = statusHandler[msgCode];
+	if (handler == nullptr)
+	{
+		ngx_log_stderr(0, "CLogicSocket::threadRecvProcFunc()中imsgCode=%d消息码找不到对应的处理函数!", msgCode);
+		return;
+	}
+
+	// 名字字段来自客户端，统一保证零终止
+	pPkgHead->qname[sizeof(pPkgHead->qname) - 1] = '\0';
+	pPkgHead->itemname[sizeof(pPkgHead->itemname) - 1] = '\0';
+
+	const unsigned short pkglen = pPkgHead->bodysize; // 只是包体长度，不含包头；收包时已校验不超过 MAXMSGLEN
+	(this->*handler)(pConn, pMsgHeader, reinterpret_cast<char*>(pPkgHead), pkglen);
 }
 
-bool CLogicSocket::noop(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgBody, unsigned short iBodyLength)
+bool CLogicSocket::noop(lpngx_connection_t, LPSTRUC_MSG_HEADER, char *, unsigned short)
 {
 	ngx_log_stderr(0, "执行了CLogicSocket::noop()!");
 	return true;
 }
 
+// 以请求的消息头 + 已改写的包头组装应答并发送；包体须已写入 p_sendbuf
+void CLogicSocket::SendReplyLocked(LPSTRUC_MSG_HEADER pMsgHeader, PPKGHEAD pPkgHead, char* p_sendbuf)
+{
+	memcpy(p_sendbuf, pMsgHeader, kMsgHeaderLen);
+	memcpy(p_sendbuf + kMsgHeaderLen, pPkgHead, kPkgHeaderLen);
+	msgSend(p_sendbuf);
+}
+
+void CLogicSocket::SendReply(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, PPKGHEAD pPkgHead, char* p_sendbuf)
+{
+	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	SendReplyLocked(pMsgHeader, pPkgHead, p_sendbuf);
+}
+
+void CLogicSocket::SendHeadReply(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, PPKGHEAD pPkgHead)
+{
+	pPkgHead->bodysize = 0;
+	SendReply(pConn, pMsgHeader, pPkgHead, AllocSendBuf(0));
+}
+
+// 连接正在 waitpostdata 则立即发送并停止等待超时定时器，否则放入待发队列（满则丢弃）
+void CLogicSocket::DeliverPostLocked(lpngx_connection_t pConn, char* p_sendbuf, const char* name)
+{
+	if (pConn->m_bWaitingTimeout)
+	{
+		pConn->m_bWaitingTimeout = false;
+		pConn->StopTimeoutTimer();
+	}
+
+	if (pConn->m_bWaitingPost)
+	{
+		pConn->m_bWaitingPost = false;
+		msgSend(p_sendbuf);
+	}
+	else
+	{
+		pConn->EnqueuePost(p_sendbuf, name);
+	}
+}
+
 bool CLogicSocket::HandleReadQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	// 首先判断包体的合法性
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-	char ip[16];
-	int iLenPkgBody = pPkgHead->datasize;
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	const int bufSize = pPkgHead->datasize;
+	if (!IsValidBodySize(bufSize))
+	{
+		pPkgHead->error = ERROR_RECORDSIZE;
+		SendHeadReply(pConn, pMsgHeader, pPkgHead);
+		return true;
+	}
 
-	// 分配返回数据需要的内存
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	// 在 if 语句条件判断中直接进行复制操作 会导致编译器警告：suggest parentheses around assignment used as truth value
-	// 解决方案：避免这样写；或者使用 (()) 向编译器明确表达式的意图
-	if ((ret = ReadQ(pPkgHead->qname, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, iLenPkgBody, ip)))
+	char* p_sendbuf = AllocSendBuf(bufSize);
+	char ip[sizeof(pPkgHead->ip)] = {0};
+	if (ReadQ(pPkgHead->qname, BodyOf(p_sendbuf), bufSize, ip))
 	{
 		pPkgHead->error = 0;
-		pPkgHead->bodysize = pPkgHead->datasize;
-		strcpy(pPkgHead->ip, ip);
+		pPkgHead->bodysize = bufSize;
+		CopyName(pPkgHead->ip, ip);
 	}
 	else
 	{
@@ -199,122 +304,69 @@ bool CLogicSocket::HandleReadQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsg
 		pPkgHead->bodysize = 0;
 	}
 
-	// mark 有必要互斥吗？写入发送队列m_MsgSendQueue的时候已经互斥了，这里又不是真正的发送线程
-	CLock lock(&pConn->logicPorcMutex);
-
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader);
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader);
-
-	// 发送数据包
-	msgSend(p_sendbuf);
-
+	SendReply(pConn, pMsgHeader, pPkgHead, p_sendbuf);
 	return true;
 }
 
 bool CLogicSocket::HandleWriteQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	// 判断包体的合法性
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-	[[maybe_unused]] char *data = (char *)pPkgHead + sizeof(PKGHEAD);
-	if ((ret = WriteQ(pPkgHead->qname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize, nullptr)))
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	bool ok = false;
+	if (PayloadFits(pPkgHead, iBodyLength))
 	{
-		pPkgHead->error = 0;
+		ok = WriteQ(pPkgHead->qname, PayloadOf(pPkgHead), pPkgHead->datasize, nullptr);
+		pPkgHead->error = ResultCode(ok);
 	}
-	else
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
+
+	// 发布订阅：队列以队列名作为事件名
+	if (ok)
 	{
-		pPkgHead->error = GetLastErrorQ();
+		NotifySubscriber(pPkgHead->qname, PayloadOf(pPkgHead), pPkgHead->datasize);
 	}
-
-	pPkgHead->bodysize = 0;
-
-	{
-		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-		CMemory *p_memory = CMemory::GetInstance();
-		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader, false); // 准备发送的格式，这里是消息头+包头+包体
-		// 填充消息头
-		memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-		// 填充包头
-		memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-		// 发送数据包
-		msgSend(p_sendbuf);
-	}
-
-	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
-
-	// 发布订阅
-	if (ret)
-	{
-		strcpy(pPkgHead->itemname, pPkgHead->qname); // 必须的，因为最终发布事件的时候是用的itemname
-		NotifySubscriber(pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize);
-	}
-
 	return true;
 }
 
 bool CLogicSocket::HandleClearQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-
-	if ((ret = ClearQ(pPkgHead->qname)))
-	{
-		pPkgHead->error = 0;
-	}
-	else
-	{
-		pPkgHead->error = GetLastErrorQ();
-	}
-
-	pPkgHead->bodysize = 0;
-
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader, false); // 准备发送的格式，这里是消息头+包头+包体
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-	// 发送数据包
-	msgSend(p_sendbuf);
-
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	pPkgHead->error = ResultCode(ClearQ(pPkgHead->qname));
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 	return true;
 }
 
 bool CLogicSocket::HandleReadB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	timespec timestamp;
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	const int bufSize = pPkgHead->datasize;
+	if (!IsValidBodySize(bufSize))
+	{
+		pPkgHead->error = ERROR_RECORDSIZE;
+		SendHeadReply(pConn, pMsgHeader, pPkgHead);
+		return true;
+	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-	int iLenPkgBody = pPkgHead->datasize;
-
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-
-	if ((ret = ReadB(pPkgHead->qname, pPkgHead->itemname, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, iLenPkgBody, &timestamp)))
+	char* p_sendbuf = AllocSendBuf(bufSize);
+	timespec timestamp{};
+	if (ReadB(pPkgHead->qname, pPkgHead->itemname, BodyOf(p_sendbuf), bufSize, &timestamp))
 	{
 		pPkgHead->error = 0;
-		pPkgHead->bodysize = pPkgHead->datasize;
+		pPkgHead->bodysize = bufSize;
 		pPkgHead->timestamp = timestamp;
 	}
 	else
@@ -323,261 +375,147 @@ bool CLogicSocket::HandleReadB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsg
 		pPkgHead->bodysize = 0;
 	}
 
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-	// 发送数据包
-	msgSend(p_sendbuf);
-
+	SendReply(pConn, pMsgHeader, pPkgHead, p_sendbuf);
 	return true;
 }
 
 bool CLogicSocket::HandleWriteB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-	if ((ret = WriteB(pPkgHead->qname, pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize, nullptr, 0)))
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	bool ok = false;
+	if (PayloadFits(pPkgHead, iBodyLength))
 	{
-		pPkgHead->error = 0;
+		ok = WriteB(pPkgHead->qname, pPkgHead->itemname, PayloadOf(pPkgHead), pPkgHead->datasize, nullptr, 0);
+		pPkgHead->error = ResultCode(ok);
 	}
-	else
-	{
-		pPkgHead->error = GetLastErrorQ();
-	}
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 
-	pPkgHead->bodysize = 0;
-
-	{
-		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-		int iLenPkgBody = 0;
-		CMemory *p_memory = CMemory::GetInstance();
-		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-		// 填充消息头
-		memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-		// 填充包头
-		memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-		// 发送数据包
-		msgSend(p_sendbuf);
-	}
-
-	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
-
-	// 发布订阅
-	if (ret && pPkgHead->start == 1)	// 1表示触发发布，0表示不触发发布
+	// 发布订阅：start 为 1 表示触发发布，0 表示不触发
+	if (ok && pPkgHead->start == 1)
 	{
 		// response_tag 只投递给等待的请求方，不通知普通订阅者
-		if (!DeliverResponse(pPkgHead->itemname, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize))
+		if (!DeliverResponse(pPkgHead->itemname, PayloadOf(pPkgHead), pPkgHead->datasize))
 		{
-			NotifySubscriber(pPkgHead->itemname, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize);
+			NotifySubscriber(pPkgHead->itemname, PayloadOf(pPkgHead), pPkgHead->datasize);
 		}
 	}
-
 	return true;
 }
 
 bool CLogicSocket::HandleReadBString(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	timespec timestamp;
-
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf;
-	int strlen = 0; // 接收字符串的实际长度
-	if ((ret = ReadB_String2(pPkgHead->qname, pPkgHead->itemname, g_buffer, pPkgHead->datasize, &strlen, &timestamp)))
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	// g_buffer 只有 MAXMSGLEN 字节，更长的字符串本就装不进应答包
+	const int bufSize = std::min(pPkgHead->datasize, MAXMSGLEN);
+	timespec timestamp{};
+	int strLen = 0; // 字符串的实际长度
+	char* p_sendbuf = nullptr;
+	if (ReadB_String2(pPkgHead->qname, pPkgHead->itemname, g_buffer, bufSize, &strLen, &timestamp))
 	{
-		p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + strlen, false); // 准备发送的格式，这里是消息头+包头+包体
+		p_sendbuf = AllocSendBuf(strLen);
+		memcpy(BodyOf(p_sendbuf), g_buffer, strLen);
 
 		pPkgHead->error = 0;
-		pPkgHead->bodysize = strlen; // 包体长度是实际读取的长度，不是datasize（用户缓冲区的长度）
+		pPkgHead->bodysize = strLen; // 包体长度是实际读取的长度，不是 datasize（用户缓冲区的长度）
 		pPkgHead->timestamp = timestamp;
 	}
 	else
 	{
-		p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader, false); // 准备发送的格式，这里是消息头+包头+包体
+		p_sendbuf = AllocSendBuf(0);
 
 		pPkgHead->error = GetLastErrorQ();
 		pPkgHead->bodysize = 0;
 	}
 
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-	// 填充包体
-	if (ret && strlen > 0) // 如果读取成功，才填充包体
-	{
-		memcpy(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, g_buffer, strlen); // 跳过消息头，跳过包头，就是包体了
-	}
-	else // 如果读取失败，包体就不填充了
-	{
-		// 包体不填充，直接发送空包体
-	}
-
-	// 发送数据包
-	msgSend(p_sendbuf);
-
+	SendReply(pConn, pMsgHeader, pPkgHead, p_sendbuf);
 	return true;
 }
 
 bool CLogicSocket::HandleWriteBString(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-
-	if ((ret = WriteB_String(pPkgHead->qname, pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize, nullptr, 0)))
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	bool ok = false;
+	if (PayloadFits(pPkgHead, iBodyLength))
 	{
-		pPkgHead->error = 0;
+		ok = WriteB_String(pPkgHead->qname, pPkgHead->itemname, PayloadOf(pPkgHead), pPkgHead->datasize, nullptr, 0);
+		pPkgHead->error = ResultCode(ok);
 	}
-	else
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
+
+	// 发布订阅：start 为 1 表示触发发布，0 表示不触发
+	if (ok && pPkgHead->start == 1)
 	{
-		pPkgHead->error = GetLastErrorQ();
+		NotifySubscriber(pPkgHead->itemname, PayloadOf(pPkgHead), pPkgHead->datasize);
 	}
-
-	pPkgHead->bodysize = 0;
-
-	{
-		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-		int iLenPkgBody = 0;
-		CMemory *p_memory = CMemory::GetInstance();
-		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-		// 填充消息头
-		memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-		// 填充包头
-		memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-		// 发送数据包
-		msgSend(p_sendbuf);
-	}
-
-	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
-
-	// 发布订阅
-	if (ret && pPkgHead->start == 1)	// 1表示触发发布，0表示不触发发布
-	{
-		NotifySubscriber(pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize);
-	}
-
 	return true;
 }
 
 bool CLogicSocket::HandleClearB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-	if ((ret = ClearB(pPkgHead->qname)))
-	{
-		pPkgHead->error = 0;
-	}
-	else
-	{
-		pPkgHead->error = GetLastErrorQ();
-	}
-	pPkgHead->bodysize = 0;
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader, false); // 准备发送的格式，这里是消息头+包头+包体
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-	// 发送数据包
-	msgSend(p_sendbuf);
+
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	pPkgHead->error = ResultCode(ClearB(pPkgHead->qname));
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 	return true;
 }
 
 // 这个函数和windows平台的区别是不返回TAG类型的大小
 bool CLogicSocket::HandleSubscribe(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	pPkgHead->itemname[sizeof(pPkgHead->itemname) - 1] = '\0';
-	pPkgHead->qname[sizeof(pPkgHead->qname) - 1] = '\0';
-
-	// 定时器是虚拟 tag（不在 Board 中），其余 tag 必须存在
-	static const char *const kTimerTags[] = {"timer_500ms", "timer_1s", "timer_2s", "timer_3s", "timer_5s"};
-	bool isTimerTag = false;
-	for (const char *t : kTimerTags)
-	{
-		if (strcmp(pPkgHead->itemname, t) == 0)
-		{
-			isTimerTag = true;
-			break;
-		}
-	}
-	bool tagOk = isTimerTag || ExistsB("BOARD", pPkgHead->itemname);
-	unsigned int subError = tagOk ? 0 : ERROR_TAG_NOT_EXIST;
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	const bool tagOk = IsTimerTag(pPkgHead->itemname) || ExistsB("BOARD", pPkgHead->itemname);
 
 	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
 	if (tagOk)
 	{
 		pConn->Attach(pPkgHead->itemname);
 
-		EventNode eventnode;
+		EventNode eventnode{};
 		eventnode.subscriber = pConn;
-		eventnode.eventid = (EVENTID)(pPkgHead->eventid);
+		eventnode.eventid = static_cast<EVENTID>(pPkgHead->eventid);
 		eventnode.eventarg = pPkgHead->eventarg;
-		strcpy(eventnode.eventname, pPkgHead->qname); // 用qname字段保存用户定义的事件名！
+		CopyName(eventnode.eventname, pPkgHead->qname); // 用qname字段保存用户定义的事件名！
 		m_subscriber.Attach(pPkgHead->itemname, eventnode);
 	}
 
-	pPkgHead->error = subError;
+	pPkgHead->error = tagOk ? 0 : ERROR_TAG_NOT_EXIST;
 	pPkgHead->bodysize = 0;
-
-	int iLenPkgBody = 0;
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-	// 发送数据包
-	msgSend(p_sendbuf);
-
+	SendReplyLocked(pMsgHeader, pPkgHead, AllocSendBuf(0));
 	return true;
 }
 
-bool CLogicSocket::HandlePostWait(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader = 0, unsigned short iBodyLength = 0)
+bool CLogicSocket::HandlePostWait(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
 
 	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
 
@@ -586,202 +524,94 @@ bool CLogicSocket::HandlePostWait(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER p
 		pConn->m_bWaitingPost = false;
 		char *p_sendbuf = pConn->m_listPost.front();
 		pConn->m_listPost.pop_front();
+		msgSend(p_sendbuf);
+		return true;
+	}
 
-		// 发送数据包
+	const int waitMs = pPkgHead->timeout;
+	if (waitMs == -1) // 无限等待
+	{
+		pConn->m_bWaitingPost = true;
+		pConn->m_bWaitingTimeout = false;
+	}
+	else if (waitMs == 0) // 不等待，立即返回超时
+	{
+		pConn->m_bWaitingPost = false;
+		pConn->m_bWaitingTimeout = false;
+
+		char* p_sendbuf = BuildPacket(pMsgHeader->pConn, pMsgHeader->iCurrsequence, POSTWAIT, nullptr, 0);
+		PkgHeadOf(p_sendbuf)->error = ERROR_WAIT_TIMEOUT;
 		msgSend(p_sendbuf);
 	}
 	else
 	{
-		int dwWaitingTime = pPkgHead->timeout;
-		if (dwWaitingTime == -1)
-		{
-			pConn->m_bWaitingPost = true;
-			pConn->m_bWaitingTimeout = false;
-		}
-		else if (dwWaitingTime == 0)
-		{
-			pConn->m_bWaitingPost = false;
-			pConn->m_bWaitingTimeout = false;
-
-			CMemory *p_memory = CMemory::GetInstance();
-			char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + 0, false); // 准备发送的格式，这里是消息头+包头
-			// b)填充消息头
-			memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-			// c)填充包头
-			PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + m_iLenMsgHeader);
-			memset(pPkgHead, 0, sizeof(PKGHEAD));
-			pPkgHead->id = POSTWAIT;
-			pPkgHead->itemname[0] = '\0';
-			pPkgHead->error = ERROR_WAIT_TIMEOUT;
-			pPkgHead->bodysize = 0;
-			// f)发送数据包
-			msgSend(p_sendbuf);
-		}
-		else
-		{
-			pConn->m_bWaitingPost = true;
-			pConn->m_bWaitingTimeout = true;
-
-			// 启动最小堆定时器
-			pConn->StartTimeoutTimer(dwWaitingTime);
-		}
+		pConn->m_bWaitingPost = true;
+		pConn->m_bWaitingTimeout = true;
+		pConn->StartTimeoutTimer(waitMs); // 启动最小堆定时器
 	}
 	return true;
 }
 
-void CLogicSocket::NotifySubscriber(std::string tagName, char *pPkgBody, unsigned short iBodyLength)
+void CLogicSocket::NotifySubscriber(const std::string& tagName, const char *pPkgBody, unsigned short iBodyLength)
 {
-	std::list<EventNode> subscribers = m_subscriber.GetSubscriber(tagName);
-
 	// 事件风暴保护由每连接待发队列上限（ngx_connection_s::EnqueuePost）负责，这里不限制订阅者数量
-	if (!subscribers.empty())
+	for (const EventNode& subscriber : m_subscriber.GetSubscriber(tagName))
 	{
-		for (auto subscriber : subscribers)
+		auto* pConn = static_cast<lpngx_connection_t>(subscriber.subscriber);
+		char* p_sendbuf = BuildPostPacket(pConn, tagName.c_str(), pPkgBody, iBodyLength);
+
+		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+
+		switch (subscriber.eventid)
 		{
-			CMemory *p_memory = CMemory::GetInstance();
-			char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iBodyLength, false); // 准备发送的格式，这里是消息头+包头+包体
-			// 填充消息头
-			LPSTRUC_MSG_HEADER ptmpMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
-			lpngx_connection_t pConn = (lpngx_connection_t)(subscriber.subscriber);
-			ptmpMsgHeader->pConn = pConn;
-			ptmpMsgHeader->iCurrsequence = ptmpMsgHeader->pConn->iCurrsequence;
-			// 填充包头
-			PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + m_iLenMsgHeader); // 包头
-			memset(pPkgHead, 0, sizeof(PKGHEAD));
-			pPkgHead->id = POST;										 // 发布事件
-			strcpy(pPkgHead->itemname, tagName.c_str());				 // 必须的，因为最终发布事件的时候是用的itemname
-			pPkgHead->error = 0;										 // 必须设置为0，因为包头是在堆上分配的，所以error值是随机的（而且很有可能是上一次分配的同一块内存的值）
-			pPkgHead->bodysize = iBodyLength;
-			// 填充包体
-			if (pPkgBody != NULL && iBodyLength > 0) // 如果有包体，才拷贝包体
-			{
-				memcpy(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, pPkgBody, iBodyLength); // 包体直接拷贝到这里来
-			}
+		case EVENTID::DEFAULT:
+			DeliverPostLocked(pConn, p_sendbuf, tagName.c_str());
+			break;
+		case EVENTID::POST_DELAY:
+			CopyName(PkgHeadOf(p_sendbuf)->itemname, subscriber.eventname); // 延时事件以用户定义的事件名发布
+			g_tm.add_once(subscriber.eventarg, [this](void *arg)
+						  {
+				char* p_postbuf = static_cast<char*>(arg);
+				auto* pPostMsgHeader = reinterpret_cast<LPSTRUC_MSG_HEADER>(p_postbuf);
+				lpngx_connection_t pconn = pPostMsgHeader->pConn;
 
-			// mark 有必要互斥吗？写入发送队列m_MsgSendQueue的时候已经互斥了，这里又不是真正的发送线程
-			CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-			switch (subscriber.eventid)
-			{
-			case EVENTID::DEFAULT:
-				// ngx_log_stderr(0, "-------------------CLogicSocket::NotifySubscriber() 事件名=%s, eventarg=%d", pPkgHead->itemname, subscriber.eventarg);
-				if (pConn->m_bWaitingTimeout)
+				// 定时器线程中执行，必须与 NotifySubscriber/HandlePostWait/超时回调互斥，否则一次 waitpostdata 可能收到两个包
+				CLock postLock(&pconn->logicPorcMutex);
+				if (pconn->iCurrsequence != pPostMsgHeader->iCurrsequence)
 				{
-					pConn->m_bWaitingTimeout = false;
-					pConn->StopTimeoutTimer();
+					// 延时期间连接已断开或已被复用
+					CMemory::GetInstance()->FreeMemory(p_postbuf);
+					return;
 				}
-
-				if (pConn->m_bWaitingPost)
-				{
-					pConn->m_bWaitingPost = false;
-					msgSend(p_sendbuf);
-				}
-				else
-				{
-					pConn->EnqueuePost(p_sendbuf, tagName.c_str());
-				}
-				break;
-			case EVENTID::POST_DELAY:
-				strcpy(pPkgHead->itemname, subscriber.eventname); // 必须的，因为最终发布事件的时候是用的itemname
-				g_tm.add_once(subscriber.eventarg, [](void *arg)
-							  {
-					char* p_sendbuf = (char*)arg;
-					LPSTRUC_MSG_HEADER ptmpMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
-					lpngx_connection_t pconn = ptmpMsgHeader->pConn;
-					[[maybe_unused]] PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + sizeof(STRUC_MSG_HEADER));
-
-					// 定时器线程中执行，必须与 NotifySubscriber/HandlePostWait/超时回调互斥，否则一次 waitpostdata 可能收到两个包
-					CLock lock(&pconn->logicPorcMutex);
-					if (pconn->iCurrsequence != ptmpMsgHeader->iCurrsequence)
-					{
-						// 延时期间连接已断开或已被复用
-						CMemory::GetInstance()->FreeMemory(p_sendbuf);
-						return;
-					}
-
-					if (pconn->m_bWaitingTimeout)
-					{
-						pconn->m_bWaitingTimeout = false;
-						pconn->StopTimeoutTimer();
-					}
-
-					if (pconn->m_bWaitingPost)
-					{
-						//发送延时事件
-						pconn->m_bWaitingPost = false;
-						g_socket.msgSend(p_sendbuf);
-					}
-					else
-					{
-						pconn->EnqueuePost(p_sendbuf, pPkgHead->itemname);
-					} }, p_sendbuf);
-				break;
-			default:
-				ngx_log_stderr(0, "ERROR:unknown eventid");
-				p_memory->FreeMemory(p_sendbuf); // 释放内存
-				break;
-			}
+				DeliverPostLocked(pconn, p_postbuf, PkgHeadOf(p_postbuf)->itemname); }, p_sendbuf);
+			break;
+		default:
+			ngx_log_stderr(0, "ERROR:unknown eventid");
+			CMemory::GetInstance()->FreeMemory(p_sendbuf);
+			break;
 		}
 	}
 }
 
-void CLogicSocket::NotifyTimerSubscriber(std::string timerName, char *pPkgBody, unsigned short iBodyLength)
+void CLogicSocket::NotifyTimerSubscriber(const std::string& timerName, const char *pPkgBody, unsigned short iBodyLength)
 {
-	const auto &subscribers = m_subscriber.GetSubscriber(timerName);
-	if (subscribers.empty())
+	for (const EventNode& subscriber : m_subscriber.GetSubscriber(timerName))
 	{
-		return;
-	}
-
-	CMemory *p_memory = CMemory::GetInstance();
-	for (auto subscriber : subscribers)
-	{
-		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iBodyLength, false); // 准备发送的格式，这里是消息头+包头+包体
-		// 填写消息头内容
-		LPSTRUC_MSG_HEADER ptmpMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
-		lpngx_connection_t pConn = (lpngx_connection_t)(subscriber.subscriber);
-		ptmpMsgHeader->pConn = pConn;
-		ptmpMsgHeader->iCurrsequence = ptmpMsgHeader->pConn->iCurrsequence;
-		// 填充包头
-		PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + m_iLenMsgHeader);
-		memset(pPkgHead, 0, sizeof(PKGHEAD));
-		pPkgHead->id = POST; // 发布事件
-		strncpy(pPkgHead->itemname, timerName.c_str(), sizeof(pPkgHead->itemname) - 1);
-		pPkgHead->itemname[sizeof(pPkgHead->itemname) - 1] = '\0'; // 确保字符串零终止
-		pPkgHead->bodysize = iBodyLength;
-		// 填充包体
-		if (pPkgBody != NULL && iBodyLength > 0) // 如果有包体，才拷贝包体
-		{
-			memcpy(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, pPkgBody, iBodyLength); // 包体直接拷贝到这里来
-		}
+		auto* pConn = static_cast<lpngx_connection_t>(subscriber.subscriber);
+		char* p_sendbuf = BuildPostPacket(pConn, timerName.c_str(), pPkgBody, iBodyLength);
 
 		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-		if (pConn->m_bWaitingTimeout)
-		{
-			pConn->m_bWaitingTimeout = false;
-			pConn->StopTimeoutTimer();
-		}
-
-		if (pConn->m_bWaitingPost)
-		{
-			pConn->m_bWaitingPost = false;
-			msgSend(p_sendbuf);
-		}
-		else
-		{
-			pConn->EnqueuePost(p_sendbuf, timerName.c_str());
-		}
+		DeliverPostLocked(pConn, p_sendbuf, timerName.c_str());
 	}
 }
 
 void CLogicSocket::CancelSubscribe(lpngx_connection_t pConn, const std::list<std::string> &tagList, const std::list<std::string> &plcTagList)
 {
-	for (auto tag : tagList)
+	for (const auto& tag : tagList)
 	{
 		m_subscriber.Detach(tag, pConn);
 	}
-	for (auto plctag : plcTagList)
+	for (const auto& plctag : plcTagList)
 	{
 		m_subscriber.DetachPlcIoServer(plctag, pConn);
 	}
@@ -790,20 +620,24 @@ void CLogicSocket::CancelSubscribe(lpngx_connection_t pConn, const std::list<std
 
 bool CLogicSocket::HandleReadType(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-	int iLenPkgBody = pPkgHead->datasize;
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	const int bufSize = pPkgHead->datasize;
+	if (!IsValidBodySize(bufSize))
+	{
+		pPkgHead->error = ERROR_RECORDSIZE;
+		pPkgHead->recsize = 0;
+		SendHeadReply(pConn, pMsgHeader, pPkgHead);
+		return true;
+	}
 
-	CMemory* p_memory = CMemory::GetInstance();
-	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-
+	char* p_sendbuf = AllocSendBuf(bufSize);
 	int typesize = 0;
-	if ((ret = ReadType(pPkgHead->qname, pPkgHead->itemname, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, iLenPkgBody, &typesize)))
+	if (ReadType(pPkgHead->qname, pPkgHead->itemname, BodyOf(p_sendbuf), bufSize, &typesize))
 	{
 		pPkgHead->error = 0;
 		pPkgHead->bodysize = typesize;
@@ -816,357 +650,163 @@ bool CLogicSocket::HandleReadType(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER p
 		pPkgHead->recsize = 0;
 	}
 
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-	// 发送数据包
-	msgSend(p_sendbuf);
-
+	SendReply(pConn, pMsgHeader, pPkgHead, p_sendbuf);
 	return true;
 }
 
 bool CLogicSocket::HandleCreateItem(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-	if ((ret = CreateItem(pPkgHead->qname, pPkgHead->itemname, pPkgHead->recsize, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->bodysize)))
-	{
-		pPkgHead->error = 0;
-	}
-	else
-	{
-		pPkgHead->error = GetLastErrorQ();
-	}
-
-	pPkgHead->bodysize = 0;
-
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-	int iLenPkgBody = 0;
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	// b)填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// c)填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-	// f)发送数据包
-	msgSend(p_sendbuf);
-
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	// 包体是可选的类型描述
+	pPkgHead->error = ResultCode(CreateItem(pPkgHead->qname, pPkgHead->itemname, pPkgHead->recsize, PayloadOf(pPkgHead), pPkgHead->bodysize));
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 	return true;
 }
 
 bool CLogicSocket::HandleDeleteItem(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-	if ((ret = DeleteItem(pPkgHead->qname, pPkgHead->itemname)))
+
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	const bool ok = DeleteItem(pPkgHead->qname, pPkgHead->itemname);
+	if (ok)
 	{
-		pPkgHead->error = 0;
 		ForgetDeletedTag(pPkgHead->itemname);
 	}
-	else
-	{
-		pPkgHead->error = GetLastErrorQ();
-	}
-	pPkgHead->bodysize = 0;
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-	int iLenPkgBody = 0;
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	// b)填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// c)填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-	// f)发送数据包
-	msgSend(p_sendbuf);
+	pPkgHead->error = ResultCode(ok);
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 	return true;
 }
 
 bool CLogicSocket::HandleRegisterPlcServer(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
 
 	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
 	pConn->AttachPlcTag(pPkgHead->itemname);
-
 	m_subscriber.AttachPlcIoServer(pPkgHead->itemname, pConn);
 
 	pPkgHead->error = 0;
 	pPkgHead->bodysize = 0;
-
-	int iLenPkgBody = 0;
-	CMemory *p_memory = CMemory::GetInstance();
-	char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-	// 发送数据包
-	msgSend(p_sendbuf);
-
+	SendReplyLocked(pMsgHeader, pPkgHead, AllocSendBuf(0));
 	return true;
 }
 
+// 写 PLC：数据不落 Board，直接转发给注册了该 tag 的 PLC I/O 服务器
 bool CLogicSocket::HandleWriteBPlc(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	// bool ret;
-	// if (ret = WriteB(pPkgHead->qname, pPkgHead->itemname, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize))
-	// {
-	// 	pPkgHead->error = 0;
-	// }
-	// else
-	// {
-	// 	pPkgHead->error = GetLastErrorQ();
-	// }
-	pPkgHead->error = 0; // 先假设写PLC成功了，等发布订阅的时候再根据实际情况修改这个值
-
-	pPkgHead->bodysize = 0;
-
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	if (!PayloadFits(pPkgHead, iBodyLength))
 	{
-		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-		int iLenPkgBody = 0;
-		CMemory *p_memory = CMemory::GetInstance();
-		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-		// 填充消息头
-		memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-		// 填充包头
-		memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-		// 发送数据包
-		msgSend(p_sendbuf);
+		SendHeadReply(pConn, pMsgHeader, pPkgHead);
+		return true;
 	}
 
-	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
+	pPkgHead->error = 0; // 先假设写PLC成功了，等发布订阅的时候再根据实际情况修改这个值
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 
-	// 发布订阅
-	NotifyPlcIoSever(pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize);
-
+	NotifyPlcIoSever(pPkgHead->itemname, PayloadOf(pPkgHead), pPkgHead->datasize);
 	return true;
 }
 
 bool CLogicSocket::HandleWriteBStringPlc(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
-	{
-		return false;
-	}
-
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	// bool ret;
-
-	// if (ret = WriteB_String(pPkgHead->qname, pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize))
-	// {
-	// 	pPkgHead->error = 0;
-	// }
-	// else
-	// {
-	// 	pPkgHead->error = GetLastErrorQ();
-	// }
-	pPkgHead->error = 0; // 先假设写PLC成功了，等发布订阅的时候再根据实际情况修改这个值
-
-	pPkgHead->bodysize = 0;
-
-	{
-		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-		int iLenPkgBody = 0;
-		CMemory *p_memory = CMemory::GetInstance();
-		char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-		// 填充消息头
-		memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-		// 填充包头
-		memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-		// 发送数据包
-		msgSend(p_sendbuf);
-	}
-
-	pPkgHead->bodysize = pPkgHead->datasize; // 为了发布订阅的时候能拿到正确的包体长度，实际没用到
-
-	// 发布订阅
-	NotifyPlcIoSever(pPkgHead->itemname, (char *)pPkgHead + sizeof(PKGHEAD), pPkgHead->datasize);
-
-	return true;
+	// 与 HandleWriteBPlc 相同：字符串也只是原样转发给 PLC I/O 服务器
+	return HandleWriteBPlc(pConn, pMsgHeader, pPkgHeader, iBodyLength);
 }
 
-void CLogicSocket::NotifyPlcIoSever(std::string tagName, char *pPkgBody, unsigned short iBodyLength)
+void CLogicSocket::NotifyPlcIoSever(const std::string& tagName, const char *pPkgBody, unsigned short iBodyLength)
 {
-	void *subscriber = m_subscriber.GetPlcIoServer(tagName);
-
-	if (subscriber != nullptr)
-	{
-			CMemory *p_memory = CMemory::GetInstance();
-			char *p_sendbuf = (char *)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iBodyLength, false); // 准备发送的格式，这里是消息头+包头+包体
-			// 填充消息头
-			LPSTRUC_MSG_HEADER ptmpMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
-			lpngx_connection_t pConn = (lpngx_connection_t)(subscriber);
-			ptmpMsgHeader->pConn = pConn;
-			ptmpMsgHeader->iCurrsequence = ptmpMsgHeader->pConn->iCurrsequence;
-			// 填充包头
-			PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + m_iLenMsgHeader); // 包头
-			memset(pPkgHead, 0, sizeof(PKGHEAD));
-			pPkgHead->id = POST;										 // 发布事件
-			strcpy(pPkgHead->itemname, tagName.c_str());				 // 必须的，因为最终发布事件的时候是用的itemname
-			pPkgHead->error = 0;										 // 必须设置为0，因为包头是在堆上分配的，所以error值是随机的（而且很有可能是上一次分配的同一块内存的值）
-			pPkgHead->bodysize = iBodyLength;
-			// 填充包体
-			if (pPkgBody != NULL && iBodyLength > 0) // 如果有包体，才拷贝包体
-			{
-				memcpy(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, pPkgBody, iBodyLength); // 包体直接拷贝到这里来
-			}
-
-			// mark 有必要互斥吗？写入发送队列m_MsgSendQueue的时候已经互斥了，这里又不是真正的发送线程
-			CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-			if (pConn->m_bWaitingTimeout)
-			{
-				pConn->m_bWaitingTimeout = false;
-				pConn->StopTimeoutTimer();
-			}
-
-			if (pConn->m_bWaitingPost)
-			{
-				pConn->m_bWaitingPost = false;
-				msgSend(p_sendbuf);
-			}
-			else
-			{
-				pConn->EnqueuePost(p_sendbuf, tagName.c_str());
-			}
-	}
-	else
+	auto* pConn = static_cast<lpngx_connection_t>(m_subscriber.GetPlcIoServer(tagName));
+	if (pConn == nullptr)
 	{
 		ngx_log_stderr(0, "ERROR:没有PLCIO服务器订阅这个TAG，请检查应用程序,%s这个TAG没有PLCIO服务器订阅了", tagName.c_str());
+		return;
 	}
+
+	char* p_sendbuf = BuildPostPacket(pConn, tagName.c_str(), pPkgBody, iBodyLength);
+
+	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	DeliverPostLocked(pConn, p_sendbuf, tagName.c_str());
 }
 
 bool CLogicSocket::HandleReadBoardInfo(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-	int iLenPkgBody = pPkgHead->datasize;
-	CMemory* p_memory = CMemory::GetInstance();
-	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	if (pPkgHead->datasize == sizeof(BOARD_INFO))
-	{
-		if ((ret = ReadBoardInfo(pPkgHead->qname, (BOARD_INFO*)(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader))))
-		{
-			pPkgHead->error = 0;
-			pPkgHead->bodysize = iLenPkgBody;
-		}
-		else
-		{
-			pPkgHead->error = GetLastErrorQ();
-			pPkgHead->bodysize = 0;
-		}
-	}
-	else
+
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	if (pPkgHead->datasize != sizeof(BOARD_INFO))
 	{
 		pPkgHead->error = ERROR_RECORDSIZE;
-		pPkgHead->bodysize = 0;
-	}
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-	// 填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// 填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-	// 发送数据包
-	msgSend(p_sendbuf);
-
-	return true;
-}
-
-bool CLogicSocket::HandleCreateQueue(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
-{
-	if (pPkgHeader == NULL)
-	{
-		return false;
+		SendHeadReply(pConn, pMsgHeader, pPkgHead);
+		return true;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	bool ret;
-
-	//extern "C" bool CreateQ(const char* lpFileName,
-	//	int recordSize,
-	//	int recordNum,
-	//	int dateType,
-	//	int operateMode,
-	//	void* pType,
-	//	int typeSize)
-	if ((ret = CreateAndLoadQ(pPkgHead->qname, pPkgHead->recsize, pPkgHead->count, 0, pPkgHead->start, (char*)pPkgHead + sizeof(PKGHEAD), pPkgHead->bodysize)))
+	char* p_sendbuf = AllocSendBuf(sizeof(BOARD_INFO));
+	if (ReadBoardInfo(pPkgHead->qname, reinterpret_cast<BOARD_INFO*>(BodyOf(p_sendbuf))))
 	{
 		pPkgHead->error = 0;
+		pPkgHead->bodysize = sizeof(BOARD_INFO);
 	}
 	else
 	{
 		pPkgHead->error = GetLastErrorQ();
+		pPkgHead->bodysize = 0;
 	}
 
-	pPkgHead->bodysize = 0;
+	SendReply(pConn, pMsgHeader, pPkgHead, p_sendbuf);
+	return true;
+}
 
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+// 请求包：qname=队列名, recsize=记录大小, count=记录数, start=操作模式；包体为可选的类型描述
+bool CLogicSocket::HandleCreateQueue(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
+{
+	if (pPkgHeader == nullptr)
+	{
+		return false;
+	}
 
-	int iLenPkgBody = 0;
-	CMemory* p_memory = CMemory::GetInstance();
-	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false); // 准备发送的格式，这里是消息头+包头+包体
-	// b)填充消息头
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader); // 消息头直接拷贝到这里来
-	// c)填充包头
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader); // 包头直接拷贝到这里来
-
-	// f)发送数据包
-	msgSend(p_sendbuf);
-
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	pPkgHead->error = ResultCode(CreateAndLoadQ(pPkgHead->qname, pPkgHead->recsize, pPkgHead->count, 0, pPkgHead->start,
+												PayloadOf(pPkgHead), pPkgHead->bodysize));
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 	return true;
 }
 
 bool CLogicSocket::HandleReadHead(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	const int iLenPkgBody = sizeof(QUEUE_HEAD);
-	CMemory* p_memory = CMemory::GetInstance();
-	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false);
-
-	if (ReadHead(pPkgHead->qname, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader))
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	char* p_sendbuf = AllocSendBuf(sizeof(QUEUE_HEAD));
+	if (ReadHead(pPkgHead->qname, BodyOf(p_sendbuf)))
 	{
 		pPkgHead->error = 0;
-		pPkgHead->bodysize = iLenPkgBody;
+		pPkgHead->bodysize = sizeof(QUEUE_HEAD);
 	}
 	else
 	{
@@ -1174,36 +814,31 @@ bool CLogicSocket::HandleReadHead(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER p
 		pPkgHead->bodysize = 0;
 	}
 
-	CLock lock(&pConn->logicPorcMutex);
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader);
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader);
-	msgSend(p_sendbuf);
-
+	SendReply(pConn, pMsgHeader, pPkgHead, p_sendbuf);
 	return true;
 }
 
 // 请求包：qname=队列名, start=PEEK_NEXT|PEEK_LATEST, datasize=记录大小；响应包体：RECORD_HEAD + 记录
 bool CLogicSocket::HandlePeekQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
 	const int recordSize = pPkgHead->datasize;
-	const bool validSize = recordSize > 0 && recordSize <= MAXMSGLEN - (int)sizeof(RECORD_HEAD);
-	const int iLenPkgBody = validSize ? (int)sizeof(RECORD_HEAD) + recordSize : 0;
-	CMemory* p_memory = CMemory::GetInstance();
-	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iLenPkgBody, false);
-	char* p_body = p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader;
-
-	if (!validSize)
+	if (recordSize <= 0 || recordSize > MAXMSGLEN - static_cast<int>(sizeof(RECORD_HEAD)))
 	{
 		pPkgHead->error = ERROR_RECORDSIZE;
-		pPkgHead->bodysize = 0;
+		SendHeadReply(pConn, pMsgHeader, pPkgHead);
+		return true;
 	}
-	else if (PeekQRecord(pPkgHead->qname, pPkgHead->start, p_body + sizeof(RECORD_HEAD), recordSize, (RECORD_HEAD*)p_body))
+
+	const int iLenPkgBody = static_cast<int>(sizeof(RECORD_HEAD)) + recordSize;
+	char* p_sendbuf = AllocSendBuf(iLenPkgBody);
+	char* p_body = BodyOf(p_sendbuf);
+	if (PeekQRecord(pPkgHead->qname, pPkgHead->start, p_body + sizeof(RECORD_HEAD), recordSize, reinterpret_cast<RECORD_HEAD*>(p_body)))
 	{
 		pPkgHead->error = 0;
 		pPkgHead->bodysize = iLenPkgBody;
@@ -1214,29 +849,23 @@ bool CLogicSocket::HandlePeekQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsg
 		pPkgHead->bodysize = 0;
 	}
 
-	CLock lock(&pConn->logicPorcMutex);
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader);
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader);
-	msgSend(p_sendbuf);
-
+	SendReply(pConn, pMsgHeader, pPkgHead, p_sendbuf);
 	return true;
 }
 
 // 响应包体：以 '\0' 结尾的队列名依次排列，count=队列个数
 bool CLogicSocket::HandleListQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	CMemory* p_memory = CMemory::GetInstance();
-	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + MAXMSGLEN, false);
-
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	char* p_sendbuf = AllocSendBuf(MAXMSGLEN);
 	int namesSize = 0;
 	int count = 0;
-	if (ListQ(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, MAXMSGLEN, &namesSize, &count))
+	if (ListQ(BodyOf(p_sendbuf), MAXMSGLEN, &namesSize, &count))
 	{
 		pPkgHead->error = 0;
 		pPkgHead->bodysize = namesSize;
@@ -1249,31 +878,24 @@ bool CLogicSocket::HandleListQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsg
 		pPkgHead->count = 0;
 	}
 
-	CLock lock(&pConn->logicPorcMutex);
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader);
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader);
-	msgSend(p_sendbuf);
-
+	SendReply(pConn, pMsgHeader, pPkgHead, p_sendbuf);
 	return true;
 }
 
 // 请求包：qname=BOARD, start=起始索引槽；响应包体：count 条 TAG_META 记录，start=下一页起始槽（-1 表示结束）
 bool CLogicSocket::HandleListTags(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader; // 包头
-	pPkgHead->qname[sizeof(pPkgHead->qname) - 1] = '\0';
-	CMemory* p_memory = CMemory::GetInstance();
-	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + MAXMSGLEN, false);
-
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
+	char* p_sendbuf = AllocSendBuf(MAXMSGLEN);
 	int bytes = 0;
 	int count = 0;
 	int next = -1;
-	if (ListTags(pPkgHead->qname, pPkgHead->start, p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, MAXMSGLEN, &bytes, &count, &next))
+	if (ListTags(pPkgHead->qname, pPkgHead->start, BodyOf(p_sendbuf), MAXMSGLEN, &bytes, &count, &next))
 	{
 		pPkgHead->error = 0;
 		pPkgHead->bodysize = bytes;
@@ -1288,25 +910,19 @@ bool CLogicSocket::HandleListTags(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER p
 		pPkgHead->start = -1;
 	}
 
-	CLock lock(&pConn->logicPorcMutex);
-	memcpy(p_sendbuf, pMsgHeader, m_iLenMsgHeader);
-	memcpy(p_sendbuf + m_iLenMsgHeader, pPkgHeader, m_iLenPkgHeader);
-	msgSend(p_sendbuf);
-
+	SendReply(pConn, pMsgHeader, pPkgHead, p_sendbuf);
 	return true;
 }
 
 // 请求包：itemname=request_tag, qname=response_tag, datasize=请求大小, recsize=响应大小, timeout=超时毫秒
 bool CLogicSocket::HandleGetResponse(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
 {
-	if (pPkgHeader == NULL)
+	if (pPkgHeader == nullptr)
 	{
 		return false;
 	}
 
-	PPKGHEAD pPkgHead = (PPKGHEAD)pPkgHeader;
-	pPkgHead->itemname[sizeof(pPkgHead->itemname) - 1] = '\0';
-	pPkgHead->qname[sizeof(pPkgHead->qname) - 1] = '\0';
+	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
 
 	auto req = std::make_shared<PendingRequest>();
 	req->pConn = pConn;
@@ -1315,8 +931,8 @@ bool CLogicSocket::HandleGetResponse(lpngx_connection_t pConn, LPSTRUC_MSG_HEADE
 	req->responseTag = pPkgHead->qname;
 	req->responseSize = pPkgHead->recsize;
 
-	int requestSize = pPkgHead->datasize;
-	int timeout = pPkgHead->timeout;
+	const int requestSize = pPkgHead->datasize;
+	const int timeout = pPkgHead->timeout;
 	unsigned int error = 0;
 
 	if (req->requestTag.empty() || req->responseTag.empty() || req->requestTag == req->responseTag ||
@@ -1338,7 +954,7 @@ bool CLogicSocket::HandleGetResponse(lpngx_connection_t pConn, LPSTRUC_MSG_HEADE
 		return true;
 	}
 
-	char* pData = (char*)pPkgHead + sizeof(PKGHEAD);
+	const char* pData = PayloadOf(pPkgHead);
 	req->requestData.assign(pData, pData + requestSize);
 
 	bool startNow = false;
@@ -1398,13 +1014,13 @@ void CLogicSocket::StartRequest(PendingRequestPtr req)
 {
 	while (req)
 	{
-		if (WriteB("BOARD", req->requestTag.c_str(), req->requestData.data(), (int)req->requestData.size(), nullptr, 0))
+		if (WriteB("BOARD", req->requestTag.c_str(), req->requestData.data(), static_cast<int>(req->requestData.size()), nullptr, 0))
 		{
-			NotifySubscriber(req->requestTag, req->requestData.data(), (unsigned short)req->requestData.size());
+			NotifySubscriber(req->requestTag, req->requestData.data(), static_cast<unsigned short>(req->requestData.size()));
 			return;
 		}
 
-		unsigned int error = GetLastErrorQ();
+		const unsigned int error = GetLastErrorQ();
 		PendingRequestPtr next;
 		{
 			std::lock_guard<std::mutex> lock(m_reqMutex);
@@ -1419,7 +1035,7 @@ void CLogicSocket::StartRequest(PendingRequestPtr req)
 }
 
 // 返回 false 表示 responseTag 不是 response_tag，调用者按普通 writeb 处理
-bool CLogicSocket::DeliverResponse(const char* responseTag, char* pData, int iDataLen)
+bool CLogicSocket::DeliverResponse(const char* responseTag, const char* pData, int iDataLen)
 {
 	PendingRequestPtr req;
 	PendingRequestPtr next;
@@ -1495,7 +1111,7 @@ void CLogicSocket::ForgetDeletedTag(const char* tagName)
 {
 	std::lock_guard<std::mutex> lock(m_reqMutex);
 
-	bool requestPending = m_mapReqChannel.find(tagName) != m_mapReqChannel.end();
+	const bool requestPending = m_mapReqChannel.find(tagName) != m_mapReqChannel.end();
 	for (auto it = m_mapResponseOwner.begin(); it != m_mapResponseOwner.end();)
 	{
 		if (it->first == tagName || (!requestPending && it->second == tagName))
@@ -1554,24 +1170,11 @@ bool CLogicSocket::DetachRequestLocked(const PendingRequestPtr& req, PendingRequ
 
 void CLogicSocket::SendGetResponseReply(const PendingRequestPtr& req, unsigned int error, const char* pBody, int iBodyLen)
 {
-	CMemory* p_memory = CMemory::GetInstance();
-	char* p_sendbuf = (char*)p_memory->AllocMemory(m_iLenMsgHeader + m_iLenPkgHeader + iBodyLen, false);
-
-	LPSTRUC_MSG_HEADER ptmpMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
-	ptmpMsgHeader->pConn = req->pConn;
-	ptmpMsgHeader->iCurrsequence = req->iCurrsequence;	// 连接已断开时由发送线程丢弃
-
-	PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + m_iLenMsgHeader);
-	memset(pPkgHead, 0, sizeof(PKGHEAD));
-	pPkgHead->id = GETRESPONSE;
-	strncpy(pPkgHead->itemname, req->requestTag.c_str(), sizeof(pPkgHead->itemname) - 1);
-	strncpy(pPkgHead->qname, req->responseTag.c_str(), sizeof(pPkgHead->qname) - 1);
+	char* p_sendbuf = BuildPacket(req->pConn, req->iCurrsequence, GETRESPONSE, pBody, iBodyLen);
+	PPKGHEAD pPkgHead = PkgHeadOf(p_sendbuf);
+	CopyName(pPkgHead->itemname, req->requestTag.c_str());
+	CopyName(pPkgHead->qname, req->responseTag.c_str());
 	pPkgHead->error = error;
-	pPkgHead->bodysize = iBodyLen;
-	if (pBody != nullptr && iBodyLen > 0)
-	{
-		memcpy(p_sendbuf + m_iLenMsgHeader + m_iLenPkgHeader, pBody, iBodyLen);
-	}
 
 	msgSend(p_sendbuf);
 }
@@ -1584,13 +1187,13 @@ void CLogicSocket::CancelRequest(lpngx_connection_t pConn)
 		std::lock_guard<std::mutex> lock(m_reqMutex);
 
 		std::vector<PendingRequestPtr> owned;
-		for (auto& kv : m_mapReqChannel)
+		for (const auto& [tag, channel] : m_mapReqChannel)
 		{
-			if (kv.second.active && kv.second.active->pConn == pConn)
+			if (channel.active && channel.active->pConn == pConn)
 			{
-				owned.push_back(kv.second.active);
+				owned.push_back(channel.active);
 			}
-			for (auto& w : kv.second.waiting)
+			for (const auto& w : channel.waiting)
 			{
 				if (w->pConn == pConn)
 				{
@@ -1599,7 +1202,7 @@ void CLogicSocket::CancelRequest(lpngx_connection_t pConn)
 			}
 		}
 
-		for (auto& req : owned)
+		for (const auto& req : owned)
 		{
 			PendingRequestPtr next;
 			if (DetachRequestLocked(req, next) && next)

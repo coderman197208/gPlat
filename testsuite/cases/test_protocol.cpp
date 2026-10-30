@@ -10,6 +10,10 @@
 //   [S1] bodysize_u16_truncation —— bodysize 在线协议是 int，服务端须用 int 读取
 //                                 （原缺陷 S1 已修复：以前用 unsigned short，65536 截断为 0 → 0 长派发 → 流错位）。
 //                                 发 bodysize=65536 → 超限 → 连接被关闭。
+//   [N] read_size_out_of_range —— READB/READQ/READTYPE 的 datasize（应答缓冲区大小）为负或超过 MAXMSGLEN：
+//                                 服务端以 ERROR_RECORDSIZE 拒绝，不得按该长度分配内存而崩溃。
+//   [N] write_datasize_exceeds_body —— WRITEB/WRITEQ/WRITEBPLC 声明的 datasize 大于实际包体：
+//                                 服务端以 ERROR_RECORDSIZE 拒绝，不得越界读包体，tag 内容不变。
 //
 // 隔离纪律：每个用例自建私有 ServerFixture（独立 sandbox + 自动空闲端口，绝不碰 8777）。
 // 破坏性门控：全部标 TAG_PROTOCOL | TAG_DESTRUCTIVE，默认隐藏，仅 `make test-destructive` 运行。
@@ -209,4 +213,96 @@ TEST("protocol.bodysize_u16_truncation", TAG_PROTOCOL | TAG_DESTRUCTIVE)
     CHECK(ctx, well_defined,
               "S1 regression: bodysize u16 truncation desynced the connection (status=%d)",
               (int)rs);
+}
+
+// 发一个只有包头的请求并收应答；返回应答的 error，连接异常时返回 ~0u。
+static unsigned int head_only_roundtrip(int fd, const MSGHEAD& h, int expectId)
+{
+    if (!send_msg(fd, h)) return ~0u;
+    MSGHEAD out{};
+    std::vector<char> body;
+    if (recv_msg(fd, out, body) != RecvStatus::OK || out.id != expectId || out.bodysize != 0 || !body.empty())
+        return ~0u;
+    return out.error;
+}
+
+// ===========================================================================
+// [N] 读请求的 datasize 越界 → ERROR_RECORDSIZE，服务端存活
+// ===========================================================================
+TEST("protocol.read_size_out_of_range", TAG_PROTOCOL | TAG_DESTRUCTIVE)
+{
+    PRIVATE_PROTO_SERVER(srv);
+
+    int fd = raw_connect(srv.ip(), srv.port(), 1500);
+    ASSERT(ctx, fd >= 0, "raw connect failed");
+
+    const int sizes[] = {-1, INT32_MIN, MAXMSGLEN + 1, INT32_MAX};
+    for (int size : sizes) {
+        MSGHEAD h = make_head(READB, "BOARD", fx::TAG_I32);
+        h.datasize = size;
+        CHECK(ctx, head_only_roundtrip(fd, h, READB) == ERROR_RECORDSIZE, "READB datasize=%d not rejected", size);
+
+        h = make_head(READTYPE, "BOARD", fx::TAG_I32);
+        h.datasize = size;
+        CHECK(ctx, head_only_roundtrip(fd, h, READTYPE) == ERROR_RECORDSIZE, "READTYPE datasize=%d not rejected", size);
+
+        h = make_head(READQ, "NO_SUCH_QUEUE", "");
+        h.datasize = size;
+        CHECK(ctx, head_only_roundtrip(fd, h, READQ) == ERROR_RECORDSIZE, "READQ datasize=%d not rejected", size);
+    }
+
+    // READBSTRING 的缓冲区大小超过 MAXMSGLEN 时按 MAXMSGLEN 处理，仍能正常读取
+    MSGHEAD h = make_head(READBSTRING, "BOARD", fx::TAG_I32);
+    h.datasize = INT32_MAX;
+    CHECK(ctx, head_only_roundtrip(fd, h, READBSTRING) != ~0u, "READBSTRING with huge buffer size broke the connection");
+
+    CHECK(ctx, valid_roundtrip(fd), "connection unusable after out-of-range read sizes");
+    close(fd);
+    CHECK(ctx, srv.running(), "server died on out-of-range read size");
+}
+
+// ===========================================================================
+// [N] 写请求的 datasize 大于实际包体 → ERROR_RECORDSIZE，不越界读，tag 不变
+// ===========================================================================
+TEST("protocol.write_datasize_exceeds_body", TAG_PROTOCOL | TAG_DESTRUCTIVE)
+{
+    PRIVATE_PROTO_SERVER(srv);
+
+    int fd = raw_connect(srv.ip(), srv.port(), 1500);
+    ASSERT(ctx, fd >= 0, "raw connect failed");
+
+    const int32_t before = 0x11223344;
+    MSGHEAD h = make_head(WRITEB, "BOARD", fx::TAG_I32);
+    h.datasize = sizeof(before);
+    h.bodysize = sizeof(before);
+    ASSERT(ctx, send_msg(fd, h, &before, sizeof(before)), "send WRITEB failed");
+    MSGHEAD out{};
+    std::vector<char> body;
+    ASSERT(ctx, recv_msg(fd, out, body) == RecvStatus::OK && out.error == 0, "baseline WRITEB failed");
+
+    // 声明 4 字节、实际只带 2 字节包体
+    const int ids[] = {WRITEB, WRITEQ, WRITEBSTRING, WRITEBPLC, WRITEBSTRINGPLC};
+    const char partial[2] = {0x55, 0x66};
+    for (int id : ids) {
+        h = make_head(id, id == WRITEQ ? "NO_SUCH_QUEUE" : "BOARD", fx::TAG_I32);
+        h.datasize = sizeof(int32_t);
+        h.bodysize = sizeof(partial);
+        h.start = 1;
+        ASSERT(ctx, send_msg(fd, h, partial, sizeof(partial)), "send short-body write failed");
+        out = MSGHEAD{};
+        ASSERT(ctx, recv_msg(fd, out, body) == RecvStatus::OK && out.id == id, "no reply for id=%d", id);
+        CHECK(ctx, out.error == ERROR_RECORDSIZE, "id=%d short body: error=%u", id, out.error);
+    }
+
+    h = make_head(READB, "BOARD", fx::TAG_I32);
+    h.datasize = sizeof(int32_t);
+    ASSERT(ctx, send_msg(fd, h), "send READB failed");
+    out = MSGHEAD{};
+    ASSERT(ctx, recv_msg(fd, out, body) == RecvStatus::OK && out.error == 0 && body.size() == sizeof(int32_t), "READB failed");
+    int32_t after = 0;
+    memcpy(&after, body.data(), sizeof(after));
+    CHECK(ctx, after == before, "tag changed by rejected writes: 0x%x", (unsigned)after);
+
+    close(fd);
+    CHECK(ctx, fresh_server_ok(srv), "server no longer serves fresh connections");
 }

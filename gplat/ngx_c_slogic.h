@@ -2,7 +2,9 @@
 #define __NGX_C_SLOGIC_H__
 
 #include <sys/socket.h>
+#include <cstddef>
 #include <deque>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -12,16 +14,16 @@
 
 #include "CSubscribe.h"
 
-#define REQUEST_QUEUE_MAX 64	// 每个 request_tag 的最大排队数（不含正在处理的）
+inline constexpr std::size_t REQUEST_QUEUE_MAX = 64;	// 每个 request_tag 的最大排队数（不含正在处理的）
 
 struct PendingRequest
 {
-	lpngx_connection_t pConn;
-	uint64_t iCurrsequence;
+	lpngx_connection_t pConn{ nullptr };
+	uint64_t iCurrsequence{ 0 };
 	std::string requestTag;
 	std::string responseTag;
 	std::vector<char> requestData;
-	int responseSize;
+	int responseSize{ 0 };
 	int timerId{ -1 };
 };
 using PendingRequestPtr = std::shared_ptr<PendingRequest>;
@@ -36,9 +38,9 @@ struct RequestChannel
 class CLogicSocket : public CSocekt
 {
 public:
-	CLogicSocket();
-	virtual ~CLogicSocket();
-	virtual bool Initialize();
+	CLogicSocket() = default;
+	~CLogicSocket() override = default;
+	bool Initialize() override;
 
 public:
 	bool noop(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
@@ -62,26 +64,33 @@ public:
 	bool HandleListQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
 	bool HandleListTags(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
 
-	void NotifySubscriber(std::string tagName, char* pPkgBody, unsigned short iBodyLength);
-	void NotifyTimerSubscriber(std::string timerName, char* pPkgBody, unsigned short iBodyLength);
-	void CancelSubscribe(lpngx_connection_t pConn, const std::list<std::string>& tagList, const std::list<std::string>& plcTagList);
+	void NotifySubscriber(const std::string& tagName, const char* pPkgBody, unsigned short iBodyLength);
+	void NotifyTimerSubscriber(const std::string& timerName, const char* pPkgBody, unsigned short iBodyLength);
+	void CancelSubscribe(lpngx_connection_t pConn, const std::list<std::string>& tagList, const std::list<std::string>& plcTagList) override;
 
 	bool HandleRegisterPlcServer(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
 	bool HandleWriteBPlc(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
 	bool HandleWriteBStringPlc(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
-	void NotifyPlcIoSever(std::string tagName, char* pPkgBody, unsigned short iBodyLength);
+	void NotifyPlcIoSever(const std::string& tagName, const char* pPkgBody, unsigned short iBodyLength);
 
 	bool HandleGetResponse(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength);
-	void CancelRequest(lpngx_connection_t pConn);
+	void CancelRequest(lpngx_connection_t pConn) override;
 
 public:
-	virtual void threadRecvProcFunc(char *pMsgBuf);
+	void threadRecvProcFunc(char *pMsgBuf) override;
 
 	CSubscribe m_subscriber;
 
 private:
+	// 应答：以请求的消息头 + 已改写的包头组装并发送（包体须已写入 p_sendbuf）
+	void SendReply(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, PPKGHEAD pPkgHead, char* p_sendbuf);
+	void SendReplyLocked(LPSTRUC_MSG_HEADER pMsgHeader, PPKGHEAD pPkgHead, char* p_sendbuf);		// 调用者须持有 logicPorcMutex
+	void SendHeadReply(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, PPKGHEAD pPkgHead);	// 无包体应答
+	// 投递发布事件包；调用者须持有 pConn->logicPorcMutex
+	void DeliverPostLocked(lpngx_connection_t pConn, char* p_sendbuf, const char* name);
+
 	void StartRequest(PendingRequestPtr req);
-	bool DeliverResponse(const char* responseTag, char* pData, int iDataLen);
+	bool DeliverResponse(const char* responseTag, const char* pData, int iDataLen);
 	void OnRequestTimeout(const std::weak_ptr<PendingRequest>& weakReq);
 	void ForgetDeletedTag(const char* tagName);
 	bool DetachRequestLocked(const PendingRequestPtr& req, PendingRequestPtr& next);
