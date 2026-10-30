@@ -91,15 +91,14 @@ extern "C" bool new_command(
 - 使用清晰的参数命名
 
 #### 4.2 实现 API
-**文件**: `higplat/higplat.cpp`
+**文件**: `higplat/net_client.cpp`
 
-参考模板: `.claude/templates/api_function.template.cpp`
+参考模板: `Doc/api_function.template.cpp`
 
 关键点:
-- 构造请求消息
-- 发送请求 (sendmsg)
-- 接收响应 (recvmsg)
-- 解析响应
+- 构造请求消息头 (`make_head` / `make_board_head`，名字用 `copy_name` 截断)
+- 发送请求并接收响应头 (`transact`)
+- 解析响应 (`recv_status` / `recv_ack` / `recv_body`)
 - 返回结果
 - 收发统一用 `send_request` / `recv_response`，响应错位用 `fail_connection(sockfd, error, ERROR_INVALID_RESPONSE)`，包体比缓冲区大用 `discard_body`；不得 `close(sockfd)`，fd 归调用方（见 `Doc/ERROR_CODE.md` 2.2）
 

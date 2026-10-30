@@ -13,78 +13,38 @@ extern "C" bool function_name(
 );
 */
 
-// 2. 在 higplat/higplat.cpp 实现 API
-bool function_name(
-    int sockfd,
-    const char* param1,
-    void* param2,
-    int param3,
-    unsigned int* error
-) {
-    // 参数验证
-    if (sockfd < 0 || param1 == nullptr || error == nullptr) {
-        if (error) *error = ERROR_INVALID_PARAM;
+// 2. 在 higplat/net_client.cpp 实现 API（辅助函数都在该文件的匿名命名空间里）
+//    - 每个导出函数开头声明 AutoErrorCheck，错误码非 0 时恰好上报一次；内部辅助函数里不要声明
+//    - transact 发送包头（自动设置 bodysize）和包体，再收响应包头；失败时已 shutdown 连接并置 CONNECTION 类错误
+//    - 响应无包体用 recv_status（或要求回显 id 的 recv_ack），有包体用 recv_body（放不下时读掉丢弃，连接保留）
+//    - 不得 close(sockfd)：fd 归调用方
+extern "C" bool function_name(int sockfd, const char* tagname, void* value, int actsize, unsigned int* error)
+{
+    if (error == nullptr)
+        return false;
+
+    AutoErrorCheck _checker(error, __func__);
+    if (!tagname || !value || actsize <= 0) {
+        *error = ERROR_INVALID_PARAMETER;
+        return false;
+    }
+    if (actsize > MAXMSGLEN) {
+        *error = ERROR_PARAMETER_SIZE;
         return false;
     }
 
-    // 构造请求消息
-    MSGHEAD msgHead;
-    memset(&msgHead, 0, sizeof(MSGHEAD));
-    msgHead.id = MSGID::NEW_COMMAND_NAME;  // 对应的消息 ID
-
-    // 填充消息头
-    strncpy(msgHead.qname, param1, sizeof(msgHead.qname) - 1);
-    msgHead.datasize = param3;
-    clock_gettime(CLOCK_REALTIME, &msgHead.timestamp);
-
-    // 计算消息体大小
-    int bodySize = 0;
-    if (param2 != nullptr && param3 > 0) {
-        bodySize = param3;
-    }
-    msgHead.bodysize = bodySize;
-
-    // 发送请求
-    int totalSize = sizeof(MSGHEAD) + bodySize;
-    char* sendBuffer = new char[totalSize];
-    memcpy(sendBuffer, &msgHead, sizeof(MSGHEAD));
-    if (bodySize > 0) {
-        memcpy(sendBuffer + sizeof(MSGHEAD), param2, bodySize);
-    }
-
-    bool sendResult = sendmsg(sockfd, sendBuffer, totalSize, error);
-    delete[] sendBuffer;
-
-    if (!sendResult) {
+    // 请求：MSGHEAD + actsize 字节包体
+    MSGHEAD head = make_board_head(NEW_COMMAND_NAME, tagname);  // 非 Board 请求用 make_head + copy_name
+    head.datasize = actsize;
+    if (!transact(sockfd, head, value, actsize, error))
         return false;
-    }
 
-    // 接收响应
-    MSGHEAD recvMsgHead;
-    char* recvBody = nullptr;
-    int recvBodySize = 0;
+    // 响应不带包体时：
+    return recv_status(sockfd, head, error);
 
-    bool recvResult = recvmsg(sockfd, &recvMsgHead, &recvBody, &recvBodySize, error);
-    if (!recvResult) {
-        return false;
-    }
-
-    // 处理响应
-    *error = recvMsgHead.error;
-    bool result = (recvMsgHead.id == MSGID::SUCCEED);
-
-    // 如果需要返回数据
-    if (result && recvBodySize > 0 && recvBody != nullptr) {
-        // TODO: 复制返回数据到输出参数
-        // memcpy(outputParam, recvBody, recvBodySize);
-    }
-
-    // 清理
-    if (recvBody) {
-        delete[] recvBody;
-    }
-
-    return result;
+    // 响应带包体时（读入调用方缓冲区 out，容量 outsize）：
+    // *error = head.error;
+    // return *error == 0 && recv_body(sockfd, head, out, outsize, error);
 }
 
 // 3. 使用示例

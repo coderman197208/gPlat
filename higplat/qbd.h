@@ -1,164 +1,57 @@
-﻿#if !defined(QBD_H_INCLUDED_)
+// Internal to libhigplat: layout of QBD files (queue / board) and the table of files loaded by this process.
+// The layout is persisted in the mmap'd files; the static_asserts below guard it.
+#if !defined(QBD_H_INCLUDED_)
 #define QBD_H_INCLUDED_
 
-#include <chrono>
+#include <cstddef>
 #include <cstring>
+#include <ctime>
+#include <functional>
 #include <mutex>
+#include <string>
 
 #include "../include/higplat.h"
+#include "error.h"
 
-#define MAXDQNAMELENTH 40
+#pragma GCC visibility push(hidden)
+
+constexpr int MAXDQNAMELENTH = 40;		// name buffer size including '\0'
 static_assert(MAXDQNAMELENTH == GPLAT_TAGNAME_SIZE, "tag name size mismatch");
 
-#define QUEUEHEADSIZE   sizeof(QUEUE_HEAD)
-#define RECORDHEADSIZE  sizeof(RECORD_HEAD)
+constexpr std::size_t QUEUEHEADSIZE = sizeof(QUEUE_HEAD);
+constexpr std::size_t RECORDHEADSIZE = sizeof(RECORD_HEAD);
 
-// Error category decides how callers react; GplatConnection throws for Usage and Connection
-enum class ErrorCategory {
-    Result = GPLAT_ERRCAT_RESULT,           // outcome the caller branches on: not exist, empty/full, timeout, capacity
-    Usage = GPLAT_ERRCAT_USAGE,             // caller bug: bad parameter, size mismatch, buffer too small
-    Connection = GPLAT_ERRCAT_CONNECTION    // connection unusable: the network API has shut it down, the caller must disconnectgplat()
-};
-
-struct ErrorInfo {
-    ErrorCategory category;
-    const char* message;
-};
-
-// strerror_r is the GNU variant (returns char*) under _GNU_SOURCE, the XSI one (returns int) otherwise
-inline const char* StrerrorResult(char* result, char*) { return result; }
-inline const char* StrerrorResult(int result, char* buf) { return result == 0 ? buf : "unknown errno"; }
-
-// The returned text stays valid until the next call on the same thread.
-inline const char* ErrnoMessage(int err) {
-    thread_local char buf[128];
-    return StrerrorResult(strerror_r(err, buf, sizeof(buf)), buf);
-}
-
-inline ErrorInfo GetErrorInfo(unsigned int errorCode) {
-    // the network API stores errno from failed send/recv as the error code
-    if (errorCode != 0 && errorCode < MY_ERR_OFFSET)
-        return { ErrorCategory::Connection, ErrnoMessage((int)errorCode) };
-
-    switch (errorCode) {
-        case 0:
-            return { ErrorCategory::Result, "no error" };
-
-        // ---- Usage ----
-        case ERROR_FILENAME_TOO_LONG:
-            return { ErrorCategory::Usage, "filename too long" };
-        case ERROR_RECORDSIZE:
-            return { ErrorCategory::Usage, "record size invalid" };
-        case ERROR_STARTPOSITION:
-            return { ErrorCategory::Usage, "bad start position" };
-        case ERROR_OPERATE_PROHIBIT:
-            return { ErrorCategory::Usage, "unsupported operation" };
-        case ERROR_TABLE_ROWID:
-            return { ErrorCategory::Usage, "table bad row id" };
-        case ERROR_PARAMETER_SIZE:
-            return { ErrorCategory::Usage, "parameter size invalid" };
-        case STRING_TOO_LONG:
-            return { ErrorCategory::Usage, "string too long" };
-        case BUFFER_TOO_SMALL:
-            return { ErrorCategory::Usage, "string longer than buffer" };
-        case ERROR_INVALID_PARAMETER:
-            return { ErrorCategory::Usage, "invalid parameter" };
-        case ERROR_BUFFER_TOO_SMALL:
-            return { ErrorCategory::Usage, "data larger than buffer" };
-
-        // ---- Connection ----
-        case ERROR_SOCKET_NOT_CONNECTED:
-            return { ErrorCategory::Connection, "socket not connected" };
-        case ERROR_INVALID_RESPONSE:
-            return { ErrorCategory::Connection, "invalid response" };
-
-        // ---- Result ----
-        case ERROR_DQ_EMPTY:
-            return { ErrorCategory::Result, "queue empty" };
-        case ERROR_DQ_FULL:
-            return { ErrorCategory::Result, "queue full" };
-        case ERROR_FILE_IN_USE:
-            return { ErrorCategory::Result, "file already in use" };
-        case ERROR_FILE_CREATE_FAILSURE:
-            return { ErrorCategory::Result, "failed to create file" };
-        case ERROR_TABLE_OVERFLOW:
-            return { ErrorCategory::Result, "table overflow" };
-        case ERROR_RECORD_NOT_EXIST:
-            return { ErrorCategory::Result, "record not exist" };
-        case ERROR_ALREADY_LOAD:
-            return { ErrorCategory::Result, "queue already loaded" };
-        case ERROR_NO_SPACE:
-            return { ErrorCategory::Result, "no space" };
-        case ERROR_TABLE_NOT_EXIST:
-            return { ErrorCategory::Result, "table not exist" };
-        case ERROR_TABLE_ALREADY_EXIST:
-            return { ErrorCategory::Result, "table already exist" };
-        case ERROR_ITEM_NOT_EXIST:
-            return { ErrorCategory::Result, "item not exist" };
-        case ERROR_ITEM_ALREADY_EXIST:
-            return { ErrorCategory::Result, "item already exist" };
-        case ERROR_ITEM_OVERFLOW:
-            return { ErrorCategory::Result, "item overflow" };
-        case ERROR_TAG_NOT_EXIST:
-            return { ErrorCategory::Result, "tag not exist" };
-        case ERROR_WAIT_TIMEOUT:
-            return { ErrorCategory::Result, "wait post timeout" };
-        case ERROR_RESPONSE_TIMEOUT:
-            return { ErrorCategory::Result, "wait response timeout" };
-        case ERROR_REQUEST_QUEUE_FULL:
-            return { ErrorCategory::Result, "request queue full" };
-
-        // no longer produced
-        case ERROR_DQFILE_NOT_FOUND:
-        case ERROR_DQ_NOT_OPEN:
-        case ERROR_FILE_OPEN_FAILSURE:
-        case ERROR_CREATE_FILEMAPPINGOBJECT:
-        case ERROR_OPEN_FILEMAPPINGOBJECT:
-        case ERROR_MAPVIEWOFFILE:
-        case ERROR_CREATE_MUTEX:
-        case ERROR_OPEN_MUTEX:
-        case ERROR_RECORD_ALREAD_EXIST:
-        case ERROR_ALREADY_OPEN:
-        case ERROR_ALREADY_CLOSE:
-        case ERROR_ALREADY_UNLOAD:
-        case ERROR_MSGSIZE:
-        case ERROR_BUFFER_SIZE:
-        case CODE_QEMPTY:
-        case CODE_QFULL:
-            return { ErrorCategory::Result, "deprecated error code" };
-        default:
-            return { ErrorCategory::Result, "unknown error" };
-    }
-}
-
-enum{
+enum QbdType : int {
 	QUEUE_T,
 	BOARD_T,
 	DATABASE_T
 };
-#define MUTEXSIZE	  64	// 一个BOARD或DB中读写锁的数量，必须是2的n次幂 mark，必须和dataqueue.h中的定义一致
-#define TABLESIZE     277	// 必须为质数
-#define INDEXSIZE     7177 	// 必须为质数，必须和higplat.h中的定义一致
-#define TYPEMAXSIZE   2048  // 数据类型的最大序列化长度   必须与msg.h中的MAXMSGLEN一致	//mark 与QbdServer项目中MyIOCP::HandleSUBSCRIBE里的缓冲区大小有矛盾，似乎没必要那么大
-#define TYPEAVGSIZE	  32	// 数据类型的平均序列化长度	mark
 
-#pragma pack( push, enter_qbd_h_, 8)
+constexpr int MUTEXSIZE = 64;		// stripe locks per board, must be a power of 2
+constexpr int TABLESIZE = 277;		// prime; size of the loaded-file table and modulus of hash1/hash2
+constexpr int INDEXSIZE = 7177;		// prime; slots of the board index
+constexpr int TYPEMAXSIZE = 2048;	// max serialized type descriptor size
+constexpr int TYPEAVGSIZE = 32;		// average serialized type descriptor size, sizes the board type area
+static_assert((MUTEXSIZE & (MUTEXSIZE - 1)) == 0, "MUTEXSIZE must be a power of 2");
 
+// Name left in a freed slot (loaded-file table, board index): non-empty, so probe chains continue through it
+constexpr char kErasedName[] = "CT0D9GG_~$59";
+
+#pragma pack(push, 8)
+
+// A file loaded by this process; copies returned by fetchtab share the mapping and the locks
 struct TABLE_MSG
 {
-	char dqname[MAXDQNAMELENTH];
-	int  hFile;
-	void* lpMapAddress;
-	int hMapFile;
-	pthread_mutex_t* hMutex;	// 队列锁，fetchtab 返回的副本必须指向同一把锁
-	std::mutex * pmutex_rw;
-	bool erased;
-	int count;
-	long filesize;	// 文件大小 linux平台新增
+	char dqname[MAXDQNAMELENTH] = {};
+	int hFile = -1;
+	void* lpMapAddress = nullptr;
+	std::mutex* hMutex = nullptr;		// queue lock, owned by the table
+	std::mutex* pmutex_rw = nullptr;	// board index lock, placement-new'd in the mapped file; nullptr for queues
+	bool erased = false;
+	int count = 0;						// load reference count
+	long filesize = 0;
 };
 
-//clock_gettime(CLOCK_REALTIME, &ts);
-//printf("秒: %ld, 纳秒: %ld\n", ts.tv_sec, ts.tv_nsec);
 struct BOARD_INDEX_STRUCT
 {
 	char  itemname[MAXDQNAMELENTH];
@@ -176,25 +69,103 @@ struct BOARD_HEAD
 	int qbdtype;
 	int counter;
 	int totalsize;		// BOARD_HEAD和后面数据区大小的和，不包括最后面的类型区
-	int typesize;		// 最后面的类型区的大小	mark
+	int typesize;		// 最后面的类型区的大小
 	int nextpos;		// reference to the beginning of unused date part.
-	int nexttypepos;	// reference to the beginning of unused type part. mark
+	int nexttypepos;	// reference to the beginning of unused type part.
 	int remain;
-	int typeremain;		// 类型区剩余大小 mark
+	int typeremain;		// 类型区剩余大小
 	int indexcount;
-	std::mutex mutex_rw;
-	std::mutex mutex_rw_tag[MUTEXSIZE];
+	std::mutex mutex_rw;					// index lock: hash index traversal and layout changes
+	std::mutex mutex_rw_tag[MUTEXSIZE];		// stripe locks (by index slot) for item data
 	BOARD_INDEX_STRUCT index[INDEXSIZE];
 };
 
-bool inserttab(const struct TABLE_MSG &tabmsg);
-bool fetchtab(const char* dqname, struct TABLE_MSG &tabmsg);
-bool fetchtab1(const char* dqname, struct TABLE_MSG &tabmsg);
-bool deletetab(const char* dqname, struct TABLE_MSG &tabmsg);
-inline int  hash1(const char* s);
-inline int  hash2(const char* s);
-inline void gettime(const char* timebuf);
+#pragma pack(pop)
 
-#pragma pack( pop, enter_qbd_h_ )
+static_assert(sizeof(QUEUE_HEAD) == 56 && sizeof(RECORD_HEAD) == 48, "queue file layout changed");
+#if defined(__LP64__)
+static_assert(sizeof(BOARD_INDEX_STRUCT) == 80, "board file layout changed");
+static_assert(offsetof(BOARD_HEAD, mutex_rw) == 40, "board file layout changed");
+#endif
+
+// ---- loaded-file table (qbd_table.cpp) ----
+
+// Copies the entry of a loaded file; sets g_lastError = ERROR_RECORD_NOT_EXIST when it isn't loaded
+bool fetchtab(const char* dqname, TABLE_MSG& tabmsg);
+bool IsLoaded(const char* dqname);
+// Calls visit on each loaded file under the table lock, stopping when it returns false; returns that result
+bool ForEachLoaded(const std::function<bool(const TABLE_MSG&)>& visit);
+
+// Path of a QBD file in the QBD directory (SetQbdPath / GPLAT_QBD_PATH)
+std::string QbdFilePath(const char* name);
+// Creates the file, replacing an existing one, as fileSize zero bytes mapped for init to fill in
+bool CreateQbdFile(const char* name, long fileSize, const std::function<void(char* base)>& init);
+// Writes local time as "YYYY-MM-DD hh:mm:ss" into buf[20]
+void FormatLocalTime(char* buf);
+
+// hash1/hash2 hash the character sum modulo TABLESIZE, also for the board index: index slots are
+// persisted in board files, so these must stay bit-exact.
+inline int hash1(const char* s)
+{
+	int k = 0;
+	for (; *s; ++s)
+		k += static_cast<int>(*s);
+	return k % TABLESIZE;
+}
+
+inline int hash2(const char* s)
+{
+	int k = 0;
+	for (; *s; ++s)
+		k += static_cast<int>(*s);
+	const int remain = k % (TABLESIZE - 2);
+	return remain == 0 ? 1 : remain;
+}
+
+// ---- board index (caller holds the index lock) ----
+
+// Follows the probe chain to the slot holding name, or to the first never-used slot
+inline int BoardProbe(const BOARD_INDEX_STRUCT* index, const char* name)
+{
+	int loc = hash1(name);
+	const int c = hash2(name);
+	while (index[loc].itemname[0] != '\0' && strcmp(index[loc].itemname, name) != 0)
+		loc = (loc + c) % INDEXSIZE;
+	return loc;
+}
+
+// Slot of a live item, or -1
+inline int FindBoardItem(const BOARD_INDEX_STRUCT* index, const char* name)
+{
+	const int loc = BoardProbe(index, name);
+	return (index[loc].itemname[0] == '\0' || index[loc].erased) ? -1 : loc;
+}
+
+inline std::mutex& StripeMutex(BOARD_HEAD* head, int loc)
+{
+	return head->mutex_rw_tag[loc & (MUTEXSIZE - 1)];
+}
+
+// Data area (item startpos is relative to it)
+inline char* BoardData(BOARD_HEAD* head)
+{
+	return reinterpret_cast<char*>(head) + sizeof(BOARD_HEAD);
+}
+
+// Type area after the data area (item typeaddr is relative to it)
+inline char* BoardTypeArea(BOARD_HEAD* head)
+{
+	return reinterpret_cast<char*>(head) + head->totalsize;
+}
+
+// ---- queue records ----
+
+// RECORD_HEAD of a slot; the record data follows it. QueueRecord(head, head->num) is the type area.
+inline char* QueueRecord(QUEUE_HEAD* head, int slot)
+{
+	return reinterpret_cast<char*>(head) + QUEUEHEADSIZE + slot * (head->size + RECORDHEADSIZE);
+}
+
+#pragma GCC visibility pop
 
 #endif // !defined(QBD_H_INCLUDED_)

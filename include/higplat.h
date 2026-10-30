@@ -105,7 +105,7 @@ typedef struct TAG_META
 #define GPLAT_MAX_DATA_SIZE	16384	// 单次读写数据的最大长度
 #define GPLAT_TAGNAME_SIZE	40		// tag 名缓冲区长度（含 '\0'）
 
-// 错误类别（错误钩子的 category 参数、GetErrorCategory 的返回值；分类见 higplat/qbd.h 的 GetErrorInfo）
+// 错误类别（错误钩子的 category 参数、GetErrorCategory 的返回值；分类见 higplat/error.h 的 GetErrorInfo）
 #define GPLAT_ERRCAT_RESULT			0	// 运行结果，调用方按返回码分支：tag/队列不存在、队列空/满、等待/响应超时、容量不足等
 #define GPLAT_ERRCAT_USAGE			1	// 编程错误：参数非法、大小不符、缓冲区太小等；GplatConnection 抛 GplatUsageError
 #define GPLAT_ERRCAT_CONNECTION		2	// 连接不可用：errno（< MY_ERR_OFFSET）、ERROR_SOCKET_NOT_CONNECTED、ERROR_INVALID_RESPONSE；库已 shutdown 该连接，调用方应 disconnectgplat 后重连；GplatConnection 抛 GplatConnectionError

@@ -6,7 +6,7 @@
 //   2) Server 就绪探针：C API 的阻塞 recv 没有超时，若 worker 未就绪会挂死；这里用带 SO_RCVTIMEO
 //      的裸连接做一次 READBOARDINFO 往返来判定“worker 已在处理请求”。
 //
-// 线协议（已核对 higplat.cpp）：请求 = MSGHEAD(180B，置 id/datasize/bodysize) + bodysize 字节 body；
+// 线协议（已核对 higplat/net_client.cpp）：请求 = MSGHEAD(180B，置 id/datasize/bodysize) + bodysize 字节 body；
 //   响应同构。服务端按 header.bodysize 取 body。
 #pragma once
 

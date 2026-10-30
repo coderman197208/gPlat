@@ -46,7 +46,7 @@ enum class ErrorCategory {
 
 ### 2.3 错误信息映射
 
-`higplat/qbd.h` 的 `GetErrorInfo` 用 switch-case 把错误码映射到类别和描述，O(1) 查询；每个错误码都有显式的 case。导出的 `GetErrorCategory(error, &message)` 和 `IsFatalError(error, &message)`（兼容旧接口，等价于类别为 Usage）都基于它。
+`higplat/error.h` 的 `GetErrorInfo` 用 switch-case 把错误码映射到类别和描述，O(1) 查询；每个错误码都有显式的 case。导出的 `GetErrorCategory(error, &message)` 和 `IsFatalError(error, &message)`（兼容旧接口，等价于类别为 Usage）都基于它。
 
 ```cpp
 struct ErrorInfo {
@@ -79,7 +79,7 @@ errno 的描述放在线程局部缓冲区里，在本线程下次查询前有�
 
 这种设计不需要修改函数签名，也不需要在每个调用点显式地检查错误码。
 
-拦截器只放在导出函数里，内部 helper（如 `writeb_`、`writeb_plc`）不放，所以每次 API 调用至多上报一次，不需要重入计数。
+拦截器只放在导出函数里，内部 helper（如 `write_board`、`write_board_string`）不放，所以每次 API 调用至多上报一次，不需要重入计数。
 
 ```cpp
 namespace {
@@ -124,7 +124,7 @@ struct AutoErrorCheck {
 
 ### 3.1 库实现端
 
-接口维护者只需要在对外导出的网络 API 函数首行声明拦截器，原函数逻辑无需改动；转调内部 helper 的导出函数（如 `writeb` → `writeb_`）在导出函数里声明，helper 里不声明。以下是一个示例：
+接口维护者只需要在对外导出的网络 API 函数首行声明拦截器，原函数逻辑无需改动；转调内部 helper 的导出函数（如 `writeb` → `write_board`）在导出函数里声明，helper 里不声明。以下是一个示例：
 
 ```cpp
 extern "C" bool readq(int sockfd, const char* qname, void* record, int actsize, unsigned int* error) {

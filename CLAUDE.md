@@ -34,7 +34,7 @@ Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `
 1. Append enum value to `MSGID`
 2. Implement handler in `gplat/ngx_c_slogic.cxx`
 3. Register in `statusHandler[]` at the matching index
-4. Add client API in `higplat/higplat.cpp`, declare in `include/higplat.h` (C types only, no default args, must not throw); optionally wrap in `include/gplat_connection.h`
+4. Add client API in `higplat/net_client.cpp` (helpers `make_head`/`make_board_head`, `transact`, `recv_status`/`recv_ack`/`recv_body`), declare in `include/higplat.h` (C types only, no default args, must not throw); optionally wrap in `include/gplat_connection.h`
 
 ## Struct Reflection (Board tags with typed display in toolgplat)
 
@@ -51,13 +51,13 @@ Runtime paths are relative to `bin/`: config `../config/gplat.conf`, QBD files `
 
 ## Network API (pure C header `include/higplat.h`, blocking TCP)
 
-`higplat.h` compiles as C99+ and C++ (`extern "C"` block under `__cplusplus`): C types only, no default args/templates/`std::string`, never throws (null `error` → return false). `higplat/qbd.h` includes it, so `higplat.cpp` definitions are checked against the declarations. Constants `GPLAT_MAX_DATA_SIZE` (=MAXMSGLEN), `GPLAT_TAGNAME_SIZE` (=40, static_assert'ed); `GetErrorCategory(error, &msg)`; `IsFatalError` kept for compatibility (== USAGE).
+`higplat.h` compiles as C99+ and C++ (`extern "C"` block under `__cplusplus`): C types only, no default args/templates/`std::string`, never throws (null `error` → return false). The library's internal headers (`higplat/error.h`, `higplat/qbd.h`) include it, so the definitions are checked against the declarations; they declare internals under `#pragma GCC visibility push(hidden)`, so `libhigplat.so` exports only the `extern "C"` API. Constants `GPLAT_MAX_DATA_SIZE` (=MAXMSGLEN), `GPLAT_TAGNAME_SIZE` (=40, static_assert'ed); `GetErrorCategory(error, &msg)`; `IsFatalError` kept for compatibility (== USAGE).
 
-**Error categories** (`GetErrorInfo` in `qbd.h`, one explicit case per code; see `Doc/ERROR_CODE.md`): `GPLAT_ERRCAT_RESULT` (not exist, empty/full, wait/response timeout, capacity — caller branches on the code), `GPLAT_ERRCAT_USAGE` (caller bug: invalid parameter, size mismatch, buffer too small), `GPLAT_ERRCAT_CONNECTION` (errno `< MY_ERR_OFFSET`, `ERROR_SOCKET_NOT_CONNECTED`, `ERROR_INVALID_RESPONSE`). New codes must get a case and a category.
+**Error categories** (`GetErrorInfo` in `higplat/error.h`, one explicit case per code; see `Doc/ERROR_CODE.md`): `GPLAT_ERRCAT_RESULT` (not exist, empty/full, wait/response timeout, capacity — caller branches on the code), `GPLAT_ERRCAT_USAGE` (caller bug: invalid parameter, size mismatch, buffer too small), `GPLAT_ERRCAT_CONNECTION` (errno `< MY_ERR_OFFSET`, `ERROR_SOCKET_NOT_CONNECTED`, `ERROR_INVALID_RESPONSE`). New codes must get a case and a category.
 
-**Error reporting**: each exported network function (never internal helpers like `writeb_`/`writeb_plc`) declares `AutoErrorCheck _checker(error, __func__)`; on return with a non-zero code it calls the error hook once with the category. `SetErrorHook(hook, user)` replaces it (NULL = silent); the default writes USAGE/CONNECTION as one stderr line `[higplat usage] writeb: record size invalid (code 1014)`. `connectgplat` (no `error` param) reports failures through the same hook (errno or `ERROR_INVALID_PARAMETER`, message with host:port) and sets errno; the library never writes stdout.
+**Error reporting**: each exported network function (never internal helpers like `write_board`/`write_board_string`) declares `AutoErrorCheck _checker(error, __func__)`; on return with a non-zero code it calls the error hook once with the category. `SetErrorHook(hook, user)` replaces it (NULL = silent); the default writes USAGE/CONNECTION as one stderr line `[higplat usage] writeb: record size invalid (code 1014)`. `connectgplat` (no `error` param) reports failures through the same hook (errno or `ERROR_INVALID_PARAMETER`, message with host:port) and sets errno; the library never writes stdout.
 
-**fd ownership**: the network API never closes the caller's fd (only `disconnectgplat` does). All I/O goes through `send_request`/`recv_response`/`fail_connection`/`discard_body` in `higplat.cpp`: when the stream can't be trusted (send/recv failure, EOF → `ERROR_SOCKET_NOT_CONNECTED`, malformed response → `ERROR_INVALID_RESPONSE`) they `shutdown(SHUT_RDWR)` and return a CONNECTION code, so CONNECTION ⇔ connection unusable and the caller must `disconnectgplat` + reconnect; RESULT/USAGE leave it usable (`ERROR_BUFFER_TOO_SMALL` drains the body, `subscribe` of a missing tag keeps the connection). `send` uses `MSG_NOSIGNAL`.
+**fd ownership**: the network API never closes the caller's fd (only `disconnectgplat` does). All I/O goes through `send_request`/`recv_response`/`fail_connection`/`discard_body` in `higplat/net_client.cpp`: when the stream can't be trusted (send/recv failure, EOF → `ERROR_SOCKET_NOT_CONNECTED`, malformed response → `ERROR_INVALID_RESPONSE`) they `shutdown(SHUT_RDWR)` and return a CONNECTION code, so CONNECTION ⇔ connection unusable and the caller must `disconnectgplat` + reconnect; RESULT/USAGE leave it usable (`ERROR_BUFFER_TOO_SMALL` drains the body, `subscribe` of a missing tag keeps the connection). `send` uses `MSG_NOSIGNAL`.
 
 - Connection: `connectgplat(server, port)` → fd (2s timeout, TCP_NODELAY), `disconnectgplat`
 - Queue: `readq`, `writeq`, `clearq`, `createqueue`, `readhead` (QUEUE_HEAD), `peekq` (non-consuming, `PEEK_NEXT`/`PEEK_LATEST`), `listq` (loaded queue names)
@@ -72,13 +72,13 @@ Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 
 `GplatConnection(server, port)`: header-only C++ layer over `higplat.h` (all C++ features — `std::string`, exceptions, default args, `=delete` overloads, `read_value<T>` — live here, in the caller's TU). `open()`/`close()`/`is_open()`; methods drop `sockfd`, return 0 or a RESULT-category code (`[[nodiscard]] unsigned int`), take `const std::string&` names; `std::string` overloads of `readb_string`/`writeb_string`/`waitpostdata`. Exceptions by category, all derived from `GplatError : std::runtime_error` (`code()`): USAGE → `GplatUsageError` (connection kept); CONNECTION or calls when not open → `GplatConnectionError`, no auto-reconnect — on CONNECTION `call()` first `close()`s its own fd, since the library only shut the connection down. Non-copyable, movable, not thread-safe.
 
-## Local API (direct mmap on QBD files, `higplat/higplat.cpp`)
+## Local API (direct mmap on QBD files; `higplat/local_board.cpp`, `local_queue.cpp`, `qbd_table.cpp`)
 
 - Board: `CreateB`, `CreateItem`, `DeleteItem`, `ReadB`, `WriteB`, `ReadB_String`, `WriteB_String`, `WriteBOffSet`, `ClearB`, `ReadInfoB`, `ReadBoardInfo`, `ReadType`, `ListTags`
 - Queue: `CreateQ`, `ReadQ`, `WriteQ`, `ClearQ`, `PeekQ`, `PeekQRecord`, `ListQ`, `IsEmptyQ`, `IsFullQ`, `MulReadQ`, `MulReadQ2`, `SetPtrQ`, `PopJustRecordFromQueue`, `ReadHead`
 - Lifecycle: `SetQbdPath`, `LoadQ`, `UnloadQ`, `UnloadAll`, `FlushQFile`; `CreateAndLoadQ` (used by `HandleCreateQueue`: rejects loaded names incl. BOARD and path-like names, then loads at runtime)
 
-**Board locking** (`higplat/qbd.h`): global `std::mutex mutex_rw` for hash index traversal + striped `mutex_rw_tag[MUTEXSIZE=64]` (by tag hash) for data access; placement-new'd into the mmap'd file.
+**Board locking** (`higplat/qbd.h`, `local_board.cpp`): index lock `BOARD_HEAD::mutex_rw` for hash index traversal + striped `mutex_rw_tag[MUTEXSIZE=64]` (by index slot) for data access; placement-new'd into the mmap'd file. Reads/writes look up under the index lock, take the stripe lock, then release the index lock (`ItemAccess`); `DeleteItem`/`ClearB` hold the index lock + all stripes. The loaded-file table (`qbd_table.cpp`) has its own lock; local functions reject a file of the wrong kind with `ERROR_OPERATE_PROHIBIT`. File layout and `hash1`/`hash2` are persisted: don't change them (`static_assert`s in `qbd.h`).
 
 ## Dependencies & Conventions
 
@@ -91,7 +91,7 @@ Full reference: `Doc/api_reference.md`; error codes: `Doc/ERROR_CODE.md`.
 | Dir | Description |
 |---|---|
 | `gplat/` | Server. Entry `nginx.cxx`; network `ngx_c_socket*`; logic `ngx_c_slogic.*`; `CSubscribe.*` |
-| `higplat/` | `libhigplat.so`: local mmap QBD ops + network client |
+| `higplat/` | `libhigplat.so`: `net_client.cpp` (network API), `local_board.cpp` / `local_queue.cpp` (local API), `qbd_table.cpp` (loaded-file table, create/load/unload, `ReadType`), `error.cpp` (error hook, `GetLastErrorQ`); internal headers `qbd.h` (file layout), `error.h` |
 | `include/` | Shared headers (`higplat.h`, `gplat_connection.h`, `msg.h`, `timer_manager.h`, `podstring.h`, `type_code.h`, `struct_reflect.h`, `struct_registry.h`, `user_types.h`); also a header-compile test project |
 | `createq/`, `createb/` | CLI to create Queue / Board files |
 | `toolgplat/` | Interactive REPL client (readline, type-aware display). Scoped commands: global / board (`open board`) / queue (`open queue <name>`: desc, peek, last, clear, write). `export script [file]` rebuilds create commands from stored types (`export.cpp`); script files accept tag and queue create lines |

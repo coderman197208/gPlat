@@ -89,9 +89,14 @@
     <RemoteDeployDir>$(RemoteRootDir)/$(ProjectName)</RemoteDeployDir>
   </PropertyGroup>
   <ItemGroup>
-    <ClCompile Include="higplat.cpp" />
+    <ClCompile Include="error.cpp" />
+    <ClCompile Include="local_board.cpp" />
+    <ClCompile Include="local_queue.cpp" />
+    <ClCompile Include="net_client.cpp" />
+    <ClCompile Include="qbd_table.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="error.h" />
     <ClInclude Include="qbd.h" />
   </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
