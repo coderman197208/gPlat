@@ -14,6 +14,8 @@
 //                                 服务端以 ERROR_RECORDSIZE 拒绝，不得按该长度分配内存而崩溃。
 //   [N] write_datasize_exceeds_body —— WRITEB/WRITEQ/WRITEBPLC 声明的 datasize 大于实际包体：
 //                                 服务端以 ERROR_RECORDSIZE 拒绝，不得越界读包体，tag 内容不变。
+//   [N] createqueue_bad_size   —— CREATEQUEUE 的 recsize/count<=0 或超大：服务端以 ERROR_PARAMETER_SIZE
+//                                 拒绝，绝不建出 num==0 的队列（原缺陷：随后 writeq/peekq 的 %num → SIGFPE 杀死 worker）。
 //
 // 隔离纪律：每个用例自建私有 ServerFixture（独立 sandbox + 自动空闲端口，绝不碰 8777）。
 // 破坏性门控：全部标 TAG_PROTOCOL | TAG_DESTRUCTIVE，默认隐藏，仅 `make test-destructive` 运行。
@@ -305,4 +307,77 @@ TEST("protocol.write_datasize_exceeds_body", TAG_PROTOCOL | TAG_DESTRUCTIVE)
 
     close(fd);
     CHECK(ctx, fresh_server_ok(srv), "server no longer serves fresh connections");
+}
+
+// ===========================================================================
+// [N] CREATEQUEUE 的 recsize/count 非法 → ERROR_PARAMETER_SIZE，绝不建出会崩溃的队列
+//     （原缺陷：count<=0 服务端照建 num==0 的队列，随后 writeq/peekq 的 %num → SIGFPE 杀死 worker；
+//      客户端的 createqueue 校验只在客户端侧，裸协议可绕过。）
+// ===========================================================================
+TEST("protocol.createqueue_bad_size", TAG_PROTOCOL | TAG_DESTRUCTIVE)
+{
+    PRIVATE_PROTO_SERVER(srv);
+
+    int fd = raw_connect(srv.ip(), srv.port(), 1500);
+    ASSERT(ctx, fd >= 0, "raw connect failed");
+
+    // {名字, recsize, count}：零/负/超大都必须被拒（超大 count 还会触发多 TB 文件分配）。
+    struct { const char* name; int recsize; int count; } bad[] = {
+        {"BADQ_C0",   64,  0},
+        {"BADQ_CNEG", 64, -5},
+        {"BADQ_CMAX", 64, INT32_MAX},
+        {"BADQ_R0",    0,  4},
+        {"BADQ_RNEG", -1,  4},
+    };
+    for (auto& b : bad) {
+        MSGHEAD h = make_head(CREATEQUEUE, b.name, "");
+        h.recsize = b.recsize;
+        h.count = b.count;
+        h.start = NORMAL_MODE;
+        h.bodysize = 0;
+        CHECK(ctx, head_only_roundtrip(fd, h, CREATEQUEUE) == ERROR_PARAMETER_SIZE,
+              "CREATEQUEUE recsize=%d count=%d not rejected", b.recsize, b.count);
+
+        // 被拒的队列不得存在：写它只会得到“不存在”，而不是让服务端崩溃。
+        MSGHEAD w = make_head(WRITEQ, b.name, "");
+        w.datasize = (b.recsize > 0 ? b.recsize : 64);
+        w.bodysize = w.datasize;
+        std::vector<char> payload(w.datasize, (char)0x5A);
+        ASSERT(ctx, send_msg(fd, w, payload.data(), (int)payload.size()), "send WRITEQ failed");
+        MSGHEAD out{};
+        std::vector<char> body;
+        ASSERT(ctx, recv_msg(fd, out, body) == RecvStatus::OK && out.id == WRITEQ,
+               "no WRITEQ reply for %s", b.name);
+        CHECK(ctx, out.error == ERROR_RECORD_NOT_EXIST,
+              "WRITEQ on rejected queue %s: error=%u", b.name, out.error);
+    }
+
+    // 合法创建仍工作，且可正常读写（确认修复没有误伤正常路径）。
+    MSGHEAD hc = make_head(CREATEQUEUE, "OKQ", "");
+    hc.recsize = 64;
+    hc.count = 8;
+    hc.start = NORMAL_MODE;
+    hc.bodysize = 0;
+    CHECK(ctx, head_only_roundtrip(fd, hc, CREATEQUEUE) == 0, "valid CREATEQUEUE rejected");
+
+    MSGHEAD hw = make_head(WRITEQ, "OKQ", "");
+    hw.datasize = 64;
+    hw.bodysize = 64;
+    std::vector<char> rec(64, (char)0x5A);
+    ASSERT(ctx, send_msg(fd, hw, rec.data(), (int)rec.size()), "send WRITEQ OKQ failed");
+    MSGHEAD out{};
+    std::vector<char> body;
+    ASSERT(ctx, recv_msg(fd, out, body) == RecvStatus::OK && out.id == WRITEQ, "no WRITEQ OKQ reply");
+    CHECK(ctx, out.error == 0, "valid queue write failed: error=%u", out.error);
+
+    MSGHEAD hr = make_head(READQ, "OKQ", "");
+    hr.datasize = 64;
+    ASSERT(ctx, send_msg(fd, hr), "send READQ OKQ failed");
+    out = MSGHEAD{};
+    ASSERT(ctx, recv_msg(fd, out, body) == RecvStatus::OK && out.id == READQ, "no READQ OKQ reply");
+    CHECK(ctx, out.error == 0 && body.size() == 64, "valid queue read failed: error=%u", out.error);
+
+    close(fd);
+    CHECK(ctx, srv.running(), "server died on malformed CREATEQUEUE");
+    CHECK(ctx, fresh_server_ok(srv), "server no longer serves fresh connections after malformed CREATEQUEUE");
 }

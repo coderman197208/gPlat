@@ -228,6 +228,8 @@ void CSocekt::ngx_close_and_recycle(lpngx_connection_t pConn)
 		{
 			CMemory::GetInstance()->FreeMemory(pConn->psendMemPointer);
 			pConn->psendMemPointer = NULL;
+			pConn->psendbuf = NULL;	// 保持 psendMemPointer==NULL ⟹ psendbuf 失效 的不变式
+			pConn->isendlen = 0;
 			pConn->iThrowsendCount = 0;
 		}
 	}
@@ -326,11 +328,13 @@ void* CSocekt::ServerRecyConnectionThread(void* threadData)
 //我们把ngx_close_accepted_connection()函数改名为让名字更通用，并从文件ngx_socket_accept.cxx迁移到本文件中，并改造其中代码，注意顺序
 void CSocekt::ngx_close_connection(lpngx_connection_t pConn)
 {
-	//pConn->fd = -1; //官方nginx这么写，不要这个东西，回收时不要轻易动连接里边的内容
-	ngx_free_connection(pConn);
-	if (close(pConn->fd) == -1)
+	//先把 fd 关掉再归还连接：ngx_free_connection() 会把该连接放回空闲池，之后它可能被复用，
+	//那时再读 pConn->fd 就是读到被复用连接的句柄了。所以先用本地变量保存 fd 并关闭。
+	int fd = pConn->fd;
+	if (fd != -1 && close(fd) == -1)
 	{
-		ngx_log_error_core(NGX_LOG_ALERT, errno, "CSocekt::ngx_close_connection()中close(%d)失败!", pConn->fd);
+		ngx_log_error_core(NGX_LOG_ALERT, errno, "CSocekt::ngx_close_connection()中close(%d)失败!", fd);
 	}
+	ngx_free_connection(pConn);
 	return;
 }

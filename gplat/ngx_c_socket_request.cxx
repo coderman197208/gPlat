@@ -35,6 +35,11 @@ void CSocekt::ngx_cleanup_closed_connection(lpngx_connection_t pConn)
 	CancelSubscribe(pConn, pConn->GetTagList(), pConn->GetPlcTagList());
 	pConn->ClearPostList();
 
+	// 清理等待态：连接已关闭、序号已自增。此后若有迟到的 NotifySubscriber（持有旧订阅快照）
+	// 落到本连接对象上，m_bWaitingPost=false 会让它走 EnqueuePost（随对象回收一并释放），
+	// 而不是 msgSend 到可能已被新连接复用的 fd 号上，避免串扰。
+	pConn->m_bWaitingPost = false;
+
 	if (pConn->m_bWaitingTimeout)
 	{
 		pConn->m_bWaitingTimeout = false;
@@ -310,6 +315,11 @@ void CSocekt::ngx_write_request_handler(lpngx_connection_t pConn)
 	{
 		CLock sendLock(&pConn->sendMutex);
 
+		//没有待续发的数据：可能对端断开路径（ngx_close_and_recycle / EPOLLOUT 错误分支）已清理完毕，
+		//此时 psendbuf 为悬垂指针、iThrowsendCount 已为 0，绝不能再 sendproc 或再次 --iThrowsendCount
+		if (pConn->iThrowsendCount <= 0 || pConn->psendMemPointer == NULL)
+			return;
+
 		ssize_t sendsize = sendproc(pConn, pConn->psendbuf, pConn->isendlen);
 
 		if (sendsize > 0 && sendsize != pConn->isendlen)
@@ -345,6 +355,9 @@ void CSocekt::ngx_write_request_handler(lpngx_connection_t pConn)
 		//能走下来的，要么数据发送完毕了，要么对端断开了，那么执行收尾工作吧
 		p_memory->FreeMemory(pConn->psendMemPointer);  //释放内存
 		pConn->psendMemPointer = NULL;
+		//psendbuf 指向刚释放的内存，必须一并失效，防止断线后 EPOLLOUT 再次进入时读到悬垂指针
+		pConn->psendbuf = NULL;
+		pConn->isendlen = 0;
 		--pConn->iThrowsendCount;
 		hasBacklog = pConn->iSendQueued > 0;
 	}

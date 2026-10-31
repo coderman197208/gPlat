@@ -10,6 +10,9 @@ namespace {
 
 constexpr size_t kIpSize = sizeof(RECORD_HEAD::remoteIp);
 
+// 队列文件尺寸上限，防止超大 recordNum 造成多 GB/TB 的 ftruncate+memset（磁盘写满时 SIGBUS）
+constexpr long long kMaxQueueFileSize = 1LL << 30;	// 1 GiB
+
 // Head of a loaded queue, or nullptr with g_lastError set
 QUEUE_HEAD* FetchQueue(const char* name, TABLE_MSG& tab)
 {
@@ -17,6 +20,11 @@ QUEUE_HEAD* FetchQueue(const char* name, TABLE_MSG& tab)
 		return nullptr;
 	auto* head = static_cast<QUEUE_HEAD*>(tab.lpMapAddress);
 	if (head->qbdtype != QUEUE_T) {
+		g_lastError = ERROR_OPERATE_PROHIBIT;
+		return nullptr;
+	}
+	// num<=0 的队列（非法创建或文件损坏）会让后续 %head->num 触发 SIGFPE，这里统一拦截
+	if (head->num <= 0 || head->size < 0) {
 		g_lastError = ERROR_OPERATE_PROHIBIT;
 		return nullptr;
 	}
@@ -82,13 +90,23 @@ bool IsValidQueueName(const char* name)
 // dateType: ASCII_TYPE / BINARY_TYPE; operateMode: SHIFT_MODE / NORMAL_MODE
 extern "C" bool CreateQ(const char* lpFileName, int recordSize, int recordNum, int dateType, int operateMode, void* pType, int typeSize)
 {
-	if (recordSize > GPLAT_MAX_DATA_SIZE || typeSize > TYPEMAXSIZE) {
+	// recordNum<=0 会建出 num==0 的队列，之后 readq/writeq/peekq 的 %num 触发 SIGFPE（崩溃整个 worker）；
+	// recordSize<=0 建出无意义的 0 长记录。这些值经网络的 createqueue 可达，必须在此拦截（客户端校验不可信）。
+	if (recordSize <= 0 || recordSize > GPLAT_MAX_DATA_SIZE
+		|| recordNum <= 0 || typeSize < 0 || typeSize > TYPEMAXSIZE) {
 		g_lastError = ERROR_PARAMETER_SIZE;
 		return false;
 	}
 
-	const long fileSize = recordNum * (recordSize + RECORDHEADSIZE) + QUEUEHEADSIZE + TYPEMAXSIZE;
-	return CreateQbdFile(lpFileName, fileSize, [&](char* base) {
+	// 用 64 位计算避免溢出，并限制总文件尺寸，防止超大 recordNum 造成多 GB/TB 分配导致磁盘写满/SIGBUS
+	const long long fileSize = static_cast<long long>(recordNum) * (recordSize + static_cast<int>(RECORDHEADSIZE))
+		+ QUEUEHEADSIZE + TYPEMAXSIZE;
+	if (fileSize > kMaxQueueFileSize) {
+		g_lastError = ERROR_PARAMETER_SIZE;
+		return false;
+	}
+
+	return CreateQbdFile(lpFileName, static_cast<long>(fileSize), [&](char* base) {
 		auto* head = reinterpret_cast<QUEUE_HEAD*>(base);
 		head->qbdtype = QUEUE_T;
 		head->dataType = dateType;

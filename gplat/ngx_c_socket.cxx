@@ -780,6 +780,8 @@ int CSocekt::ngx_epoll_process_events(int timer)
 					ngx_epoll_oper_event(p_Conn->fd, EPOLL_CTL_MOD, EPOLLOUT, 1, p_Conn);
 					CMemory::GetInstance()->FreeMemory(p_Conn->psendMemPointer);
 					p_Conn->psendMemPointer = NULL;
+					p_Conn->psendbuf = NULL;	// 保持 psendMemPointer==NULL ⟹ psendbuf 失效 的不变式
+					p_Conn->isendlen = 0;
 					p_Conn->iThrowsendCount = 0;
 				}
 			}
