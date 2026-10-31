@@ -26,6 +26,17 @@ typedef struct
 static void ngx_signal_handler(int signo, siginfo_t* siginfo, void* ucontext); //static表示该函数只在当前文件内可见
 static void ngx_process_get_status(void);                                      //获取子进程的结束状态，防止单独kill子进程时子进程变成僵尸进程
 
+//主进程通知子进程退出：写一个字节并关闭写端（关闭后 worker 也会读到 EOF）。
+//只做一次：重复的 SIGINT/SIGTERM 若再 write/close 旧 fd 号，可能写入并关闭恰好复用了该号的其它文件（如轮转后的日志）
+static void ngx_notify_workers_exit()
+{
+	if (sockpair[1] == -1)
+		return;
+	write(sockpair[1], "x", 1);
+	close(sockpair[1]);
+	sockpair[1] = -1;
+}
+
 //数组 ，定义本系统处理的各种信号，我们取一小部分nginx中的信号，并没有全部搬移到这里，日后若有需要根据具体情况再增加
 //在实际商业代码中，你能想到的要处理的信号，都弄进来
 ngx_signal_t  signals[] = {
@@ -38,6 +49,7 @@ ngx_signal_t  signals[] = {
 	{ SIGIO,     "SIGIO",            ngx_signal_handler },        //指示一个异步I/O事件【通用异步I/O信号】
 	{ SIGSYS,    "SIGSYS, SIG_IGN",  NULL               },        //我们想忽略这个信号，SIGSYS表示收到了一个无效系统调用，如果我们不忽略，进程会被操作系统杀死，--标识31
 	//所以我们把handler设置为NULL，代表 我要求忽略这个信号，请求操作系统不要执行缺省的该信号处理动作（杀掉我）
+	{ SIGPIPE,   "SIGPIPE, SIG_IGN", NULL               },        //向已断开的管道/套接字写（如 stderr 接到已退出的管道）默认会杀死进程，忽略后写操作返回 EPIPE
 	//日后根据需要再继续增加
 	{ 0,         NULL,               NULL               }         //信号对应的数字至少是1，所以可以用0作为一个特殊标记
 };
@@ -88,6 +100,7 @@ int ngx_init_signals()
 //siginfo：这个系统定义的结构中包含了信号产生原因的有关信息
 static void ngx_signal_handler(int signo, siginfo_t* siginfo, void* ucontext)
 {
+	const int saved_errno = errno;	//处理函数里的 waitpid/write 等会改 errno，返回前恢复，不能影响被打断的代码
 	ngx_signal_t* sig;	//自定义结构
 	char* action;		//一个字符串，用于记录一个动作字符串以往日志文件中写
 
@@ -114,16 +127,12 @@ static void ngx_signal_handler(int signo, siginfo_t* siginfo, void* ucontext)
 
 		case SIGINT:  //SIGINT信号，表示中断进程的信号，通常是Ctrl+C产生的
 			ngx_log_stderr(0, "SIGINT signal received, please wait");
-			// 主进程通知子进程退出
-			write(sockpair[1], "x", 1);
-			close(sockpair[1]);
+			ngx_notify_workers_exit();
 			break;
 
 		case SIGTERM: //SIGTERM信号，表示终止进程的信号，通常是kill -15 pid 产生的
 			ngx_log_stderr(0, "SIGTERM signal received, please wait");
-			// 主进程通知子进程退出
-			write(sockpair[1], "x", 1);
-			close(sockpair[1]);
+			ngx_notify_workers_exit();
 			break;
 
 		default:
@@ -164,6 +173,7 @@ static void ngx_signal_handler(int signo, siginfo_t* siginfo, void* ucontext)
 		g_stopEventMain = 1; //通知主进程退出
 	}
 
+	errno = saved_errno;
 	return;
 }
 

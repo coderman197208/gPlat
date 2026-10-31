@@ -52,7 +52,10 @@ struct ngx_connection_s
 
 	//------------------------------------	
 	//unsigned                  instance:1;                    //【位域】失效标志位：0：有效，1：失效【这个是官方nginx提供，到底有什么用，ngx_epoll_process_events()中详解】  
-	uint64_t                  iCurrsequence;                 //我引入的一个序号，每次分配出去时+1，此法也有可能在一定程度上检测错包废包，具体怎么用，用到了再说
+	//连接实例序号：分配、断开、回收时各+1，因此一个存活连接的序号恒定，断开/复用后必然不同。
+	//任何“稍后才处理”的消息/订阅/定时器都记下当时的序号，处理时与之比较以识别已断开或已复用的连接。
+	//多个线程不加锁读取，所以是原子的
+	std::atomic<uint64_t>     iCurrsequence;
 	struct sockaddr           s_sockaddr;                    //保存对方地址信息用的
 	//char                      addr_text[100]; //地址的文本信息，100足够，一般其实如果是ipv4地址，255.255.255.255，其实只需要20字节就够
 
@@ -84,7 +87,7 @@ struct ngx_connection_s
 	unsigned int              isendlen;                       //要发送多少数据
 
 	//和回收有关
-	time_t                    inRecyTime;                     //入到资源回收站里去的时间
+	time_t                    inRecyTime;                     //入到资源回收站里去的时间（CLOCK_MONOTONIC 秒，不受系统校时影响）
 
 	//--------------------------------------------------
 	lpngx_connection_t        next;                           //这是个指针，指向下一个本类型对象，用于把空闲的连接池对象串起来构成一个单向链表，方便取用
@@ -120,6 +123,8 @@ struct ngx_connection_s
 		m_listPlcTag.push_back(tagname);
 	}
 
+	// waitpostdata 的超时定时器；调用者须持有 logicPorcMutex。
+	// TimerManager::cancel() 不等待已开始执行的回调，所以回调持锁后还要核对等待代次和连接序号
 	void StartTimeoutTimer(int dwMilliseconds);
 	void StopTimeoutTimer();
 	void ClearPostList();		// 调用者须持有 logicPorcMutex
@@ -136,7 +141,8 @@ struct ngx_connection_s
 	time_t m_lastDropLog{ 0 };				// 上次记录丢弃日志的时间，用于限频
 
 private:
-	int m_timerID{ -1 };	// 定时器ID
+	TimerManager::TimerId m_timerID{ -1 };	// 当前等待的超时定时器ID，没有为 -1
+	uint64_t m_waitGen{ 0 };	// 等待代次：每次启动超时定时器 +1，过期回调据此识别自己已被取代
 };
 
 //消息头，引入的目的是当收到数据包时，额外记录一些内容以备将来使用

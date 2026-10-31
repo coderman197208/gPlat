@@ -406,10 +406,12 @@ int CSocekt::ngx_epoll_init()
 		exit(2); //这是致命问题了，直接退，资源由系统释放吧，这里不刻意释放了，比较麻烦
 	}
 
-	// 将socketpair读端加入epoll
+	// 将socketpair读端加入epoll。连接事件的 data 用的是 ptr（连接对象指针，非空），
+	// 这里用 ptr=nullptr 作标记；不能用 data.fd 判断，否则会拿连接指针的低 32 位去和 fd 号比较
 	struct epoll_event ev;
+	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;  // 监听可读事件
-	ev.data.fd = sockpair[0];
+	ev.data.ptr = nullptr;
 	if (epoll_ctl(m_epollhandle, EPOLL_CTL_ADD, sockpair[0], &ev) == -1) {
 		perror("epoll_ctl");
 		exit(EXIT_FAILURE);
@@ -675,7 +677,7 @@ int CSocekt::ngx_epoll_process_events(int timer)
 	uint32_t           revents;
 	for (int i = 0; i < events; ++i)    //遍历本次epoll_wait返回的所有事件，注意events才是返回的实际事件数量
 	{
-		if (m_events[i].data.fd == sockpair[0]) {
+		if (m_events[i].data.ptr == nullptr) {
 			// 收到退出通知
 			ngx_log_stderr(0, "收到主进程退出通知");
 			char buf;
@@ -873,51 +875,54 @@ void* CSocekt::ServerSendQueueThread(void* threadData)
 	return (void*)0;
 }
 
-//gyb
+//启动 waitpostdata 的超时定时器，调用者须持有 logicPorcMutex
 void ngx_connection_s::StartTimeoutTimer(int dwMilliseconds)
 {
-	//mark 使用了全局变量
-	m_timerID = g_tm.add_once(dwMilliseconds, [](void* user) {
-		std::cout << "超时时间到" << std::endl;
+	//新的等待取代尚未结束的上一次等待：先取消它的定时器
+	StopTimeoutTimer();
 
+	//回调执行时连接可能已断开或被复用、本次等待可能已被投递结束并开始了下一次等待，
+	//而 cancel() 挡不住已经开始执行的回调，所以把“这一次等待”的身份带进回调，持锁后核对
+	const uint64_t seq = iCurrsequence;
+	const uint64_t gen = ++m_waitGen;
+	m_timerID = g_tm.add_once(dwMilliseconds, [seq, gen](void* user) {
 		lpngx_connection_t pConn = (lpngx_connection_t)user;
 
-		//mark 有必要互斥吗？写入发送队列m_MsgSendQueue的时候已经互斥了，这里又不是真正的发送线程
 		CLock lock(&pConn->logicPorcMutex); //凡是和本用户有关的访问都互斥
 
-		if (pConn->m_bWaitingTimeout)
-		{
-			pConn->m_bWaitingTimeout = false;
-			pConn->m_bWaitingPost = false;
+		if (!pConn->m_bWaitingTimeout || pConn->m_waitGen != gen || pConn->iCurrsequence != seq)
+			return;
 
-			CMemory* p_memory = CMemory::GetInstance();
-			char* p_sendbuf = (char*)p_memory->AllocMemory(sizeof(STRUC_MSG_HEADER) + sizeof(PKGHEAD) + 0, false); //分配内存【长度是 消息头长度  + 包头长度 + 包体长度】，最后参数先给false，表示内存不需要memset;
+		pConn->m_bWaitingTimeout = false;
+		pConn->m_bWaitingPost = false;
+		pConn->m_timerID = -1;
 
-			//a)先填写消息头内容
-			LPSTRUC_MSG_HEADER ptmpMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
-			ptmpMsgHeader->pConn = pConn;
-			ptmpMsgHeader->iCurrsequence = pConn->iCurrsequence; //收到包时的连接池中连接序号记录到消息头里来，以备将来用；
-			//b)再填写包头内容
-			PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + sizeof(STRUC_MSG_HEADER));
-			memset(pPkgHead, 0, sizeof(PKGHEAD));
-			pPkgHead->id = POSTWAIT;
-			pPkgHead->itemname[0] = '\0';
-			pPkgHead->error = ERROR_WAIT_TIMEOUT;
-			pPkgHead->bodysize = 0;
-			//f)发送数据包
-			g_socket.msgSend(p_sendbuf);
-		}
+		CMemory* p_memory = CMemory::GetInstance();
+		char* p_sendbuf = (char*)p_memory->AllocMemory(sizeof(STRUC_MSG_HEADER) + sizeof(PKGHEAD) + 0, false); //分配内存【长度是 消息头长度  + 包头长度 + 包体长度】，最后参数先给false，表示内存不需要memset;
+
+		//a)先填写消息头内容：用等待开始时的序号，连接一旦断开发送路径就会丢弃它
+		LPSTRUC_MSG_HEADER ptmpMsgHeader = (LPSTRUC_MSG_HEADER)p_sendbuf;
+		ptmpMsgHeader->pConn = pConn;
+		ptmpMsgHeader->iCurrsequence = seq;
+		//b)再填写包头内容
+		PPKGHEAD pPkgHead = (PPKGHEAD)(p_sendbuf + sizeof(STRUC_MSG_HEADER));
+		memset(pPkgHead, 0, sizeof(PKGHEAD));
+		pPkgHead->id = POSTWAIT;
+		pPkgHead->itemname[0] = '\0';
+		pPkgHead->error = ERROR_WAIT_TIMEOUT;
+		pPkgHead->bodysize = 0;
+		//f)发送数据包
+		g_socket.msgSend(p_sendbuf);
 		},
 		this);
 }
 
+//取消 waitpostdata 的超时定时器（没有则什么也不做），调用者须持有 logicPorcMutex
 void ngx_connection_s::StopTimeoutTimer()
 {
-	if (m_timerID < 0)
+	if (m_timerID >= 0)
 	{
-		ngx_log_stderr(0, "StopTimeoutTimer : m_timerID < 0!");
-		return;
+		g_tm.cancel(m_timerID);
+		m_timerID = -1;
 	}
-
-	g_tm.cancel(m_timerID); //删除定时器
 }

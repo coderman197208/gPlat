@@ -33,7 +33,7 @@ private:
     {
         pthread_t   _Handle;                        //线程句柄
         CThreadPool *_pThis;                        //记录线程池的指针	
-        bool        ifrunning;                      //标记是否正式启动起来，启动起来后，才允许调用StopAll()来释放
+        std::atomic<bool> ifrunning;                //标记是否正式启动起来，启动起来后，才允许调用StopAll()来释放（Create() 会轮询它）
 
         //构造函数
         ThreadItem(CThreadPool *pthis):_pThis(pthis),ifrunning(false){}                             

@@ -3,6 +3,7 @@
 
 #include <signal.h>
 #include <pthread.h>
+#include <atomic>
 
 #include "ngx_c_slogic.h"
 #include "ngx_c_threadpool.h"
@@ -45,7 +46,7 @@ extern pid_t         ngx_parent;
 extern ngx_log_t     ngx_log;
 extern int           ngx_process;   
 extern sig_atomic_t  ngx_reap;   
-extern int           g_stopEventChild;
+extern std::atomic<int> g_stopEventChild;	//worker 退出标志，主线程置位，发送/回收线程轮询
 extern int           g_stopEventMain;
 
 extern int sockpair[2]; //socketpair的文件描述符，父进程和子进程之间的通信管道

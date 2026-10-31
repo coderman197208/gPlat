@@ -41,7 +41,7 @@ pid_t   ngx_pid;                //当前进程的pid
 pid_t   ngx_parent;             //父进程的pid
 int     ngx_process;            //进程类型，比如master,worker进程等
 
-int     g_stopEventChild;		//子进程退出标志,0不退出1退出
+std::atomic<int> g_stopEventChild{ 0 };	//子进程退出标志,0不退出1退出（其它线程会读，必须是原子的）
 int     g_stopEventMain;		//主程序退出标志,0不退出1退出
 
 //gyb 控制子进程退出的socketpair

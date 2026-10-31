@@ -24,7 +24,7 @@ struct PendingRequest
 	std::string responseTag;
 	std::vector<char> requestData;
 	int responseSize{ 0 };
-	int timerId{ -1 };
+	TimerManager::TimerId timerId{ -1 };
 };
 using PendingRequestPtr = std::shared_ptr<PendingRequest>;
 
@@ -86,8 +86,8 @@ private:
 	void SendReply(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, PPKGHEAD pPkgHead, char* p_sendbuf);
 	void SendReplyLocked(LPSTRUC_MSG_HEADER pMsgHeader, PPKGHEAD pPkgHead, char* p_sendbuf);		// 调用者须持有 logicPorcMutex
 	void SendHeadReply(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, PPKGHEAD pPkgHead);	// 无包体应答
-	// 投递发布事件包；调用者须持有 pConn->logicPorcMutex
-	void DeliverPostLocked(lpngx_connection_t pConn, char* p_sendbuf, const char* name);
+	// 投递发布事件包；调用者须持有 pConn->logicPorcMutex。返回 false 表示事件所属的连接实例已不存在（已丢弃）
+	bool DeliverPostLocked(lpngx_connection_t pConn, char* p_sendbuf, const char* name);
 
 	void StartRequest(PendingRequestPtr req);
 	bool DeliverResponse(const char* responseTag, const char* pData, int iDataLen);

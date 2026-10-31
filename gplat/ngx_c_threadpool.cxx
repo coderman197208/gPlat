@@ -157,7 +157,11 @@ void CThreadPool::StopAll()
 	{
 		return;
 	}
+	//必须在互斥量内修改等待条件：否则某个线程刚判断完 m_shutdown==false、还没进入 pthread_cond_wait() 时，
+	//这里的 broadcast 就会丢失，该线程永远等下去，下面的 pthread_join() 随之卡死，进程无法退出
+	pthread_mutex_lock(&m_pthreadMutex);
 	m_shutdown = true;
+	pthread_mutex_unlock(&m_pthreadMutex);
 
 	//唤醒等待该条件【卡在pthread_cond_wait()的】的所有线程，一定要在改变条件状态以后再给线程发信号
 	int err = pthread_cond_broadcast(&m_pthreadCond);

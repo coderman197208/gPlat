@@ -104,10 +104,11 @@ namespace
 		return p_sendbuf;
 	}
 
-	// 发布事件包，itemname 为事件名（订阅端据此识别事件）
-	char* BuildPostPacket(lpngx_connection_t pConn, const char* name, const char* pBody, unsigned short iBodyLen)
+	// 发布事件包，itemname 为事件名（订阅端据此识别事件）。
+	// seq 必须是订阅/注册时记下的连接序号（不是投递时的当前序号），这样连接一旦断开或被复用，投递和发送路径都会丢弃它
+	char* BuildPostPacket(lpngx_connection_t pConn, uint64_t seq, const char* name, const char* pBody, unsigned short iBodyLen)
 	{
-		char* p_sendbuf = BuildPacket(pConn, pConn->iCurrsequence, POST, pBody, iBodyLen);
+		char* p_sendbuf = BuildPacket(pConn, seq, POST, pBody, iBodyLen);
 		CopyName(PkgHeadOf(p_sendbuf)->itemname, name);
 		return p_sendbuf;
 	}
@@ -254,9 +255,17 @@ void CLogicSocket::SendHeadReply(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pM
 	SendReply(pConn, pMsgHeader, pPkgHead, AllocSendBuf(0));
 }
 
-// 连接正在 waitpostdata 则立即发送并停止等待超时定时器，否则放入待发队列（满则丢弃）
-void CLogicSocket::DeliverPostLocked(lpngx_connection_t pConn, char* p_sendbuf, const char* name)
+// 连接正在 waitpostdata 则立即发送并停止等待超时定时器，否则放入待发队列（满则丢弃）。
+// 包头里的序号是订阅/注册时的连接序号：与当前序号不符说明那个连接已断开（对象可能已被新连接复用），
+// 此时丢弃事件并返回 false——绝不能进入新连接的待发队列、改动它的等待状态或发到复用的 fd 上
+bool CLogicSocket::DeliverPostLocked(lpngx_connection_t pConn, char* p_sendbuf, const char* name)
 {
+	if (reinterpret_cast<LPSTRUC_MSG_HEADER>(p_sendbuf)->iCurrsequence != pConn->iCurrsequence)
+	{
+		CMemory::GetInstance()->FreeMemory(p_sendbuf);
+		return false;
+	}
+
 	if (pConn->m_bWaitingTimeout)
 	{
 		pConn->m_bWaitingTimeout = false;
@@ -272,6 +281,7 @@ void CLogicSocket::DeliverPostLocked(lpngx_connection_t pConn, char* p_sendbuf, 
 	{
 		pConn->EnqueuePost(p_sendbuf, name);
 	}
+	return true;
 }
 
 bool CLogicSocket::HandleReadQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char *pPkgHeader, unsigned short iBodyLength)
@@ -322,13 +332,13 @@ bool CLogicSocket::HandleWriteQ(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 		ok = WriteQ(pPkgHead->qname, PayloadOf(pPkgHead), pPkgHead->datasize, nullptr);
 		pPkgHead->error = ResultCode(ok);
 	}
-	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 
-	// 发布订阅：队列以队列名作为事件名
+	// 发布订阅：队列以队列名作为事件名。先投递再应答（见 HandleWriteB）
 	if (ok)
 	{
 		NotifySubscriber(pPkgHead->qname, PayloadOf(pPkgHead), pPkgHead->datasize);
 	}
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 	return true;
 }
 
@@ -393,9 +403,10 @@ bool CLogicSocket::HandleWriteB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 		ok = WriteB(pPkgHead->qname, pPkgHead->itemname, PayloadOf(pPkgHead), pPkgHead->datasize, nullptr, 0);
 		pPkgHead->error = ResultCode(ok);
 	}
-	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 
-	// 发布订阅：start 为 1 表示触发发布，0 表示不触发
+	// 发布订阅：start 为 1 表示触发发布，0 表示不触发。
+	// 必须先投递再应答：发布者收到应答才会发下一次写，下一次写可能由另一个消息线程处理；
+	// 若先应答，后一次写的事件可能抢在这一次之前投递，订阅者（及经它写 PLC 的 IO 服务器）最终停在旧值
 	if (ok && pPkgHead->start == 1)
 	{
 		// response_tag 只投递给等待的请求方，不通知普通订阅者
@@ -404,6 +415,7 @@ bool CLogicSocket::HandleWriteB(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMs
 			NotifySubscriber(pPkgHead->itemname, PayloadOf(pPkgHead), pPkgHead->datasize);
 		}
 	}
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 	return true;
 }
 
@@ -455,13 +467,13 @@ bool CLogicSocket::HandleWriteBString(lpngx_connection_t pConn, LPSTRUC_MSG_HEAD
 		ok = WriteB_String(pPkgHead->qname, pPkgHead->itemname, PayloadOf(pPkgHead), pPkgHead->datasize, nullptr, 0);
 		pPkgHead->error = ResultCode(ok);
 	}
-	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 
-	// 发布订阅：start 为 1 表示触发发布，0 表示不触发
+	// 发布订阅：start 为 1 表示触发发布，0 表示不触发。先投递再应答（见 HandleWriteB）
 	if (ok && pPkgHead->start == 1)
 	{
 		NotifySubscriber(pPkgHead->itemname, PayloadOf(pPkgHead), pPkgHead->datasize);
 	}
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 	return true;
 }
 
@@ -490,12 +502,19 @@ bool CLogicSocket::HandleSubscribe(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER 
 	const bool tagOk = IsTimerTag(pPkgHead->itemname) || ExistsB("BOARD", pPkgHead->itemname);
 
 	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	// 线程池入口的序号检查不持锁：本请求在途时连接可能已断开并完成清理，此时不得再留下订阅
+	if (pConn->iCurrsequence != pMsgHeader->iCurrsequence)
+	{
+		return true;
+	}
+
 	if (tagOk)
 	{
 		pConn->Attach(pPkgHead->itemname);
 
 		EventNode eventnode{};
 		eventnode.subscriber = pConn;
+		eventnode.seq = pMsgHeader->iCurrsequence;
 		eventnode.eventid = static_cast<EVENTID>(pPkgHead->eventid);
 		eventnode.eventarg = pPkgHead->eventarg;
 		CopyName(eventnode.eventname, pPkgHead->qname); // 用qname字段保存用户定义的事件名！
@@ -518,6 +537,19 @@ bool CLogicSocket::HandlePostWait(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER p
 	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
 
 	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	// 本请求在途时连接已断开并完成清理：不得在已关闭的连接上重新进入等待、启动超时定时器，
+	// 否则定时器到期会把 WAIT_TIMEOUT 发到已关闭、可能已被新连接复用的 fd 上
+	if (pConn->iCurrsequence != pMsgHeader->iCurrsequence)
+	{
+		return true;
+	}
+
+	// 新的一次等待取代尚未结束的上一次（裸协议可以连发 POSTWAIT）：先停掉上一次的超时定时器
+	if (pConn->m_bWaitingTimeout)
+	{
+		pConn->m_bWaitingTimeout = false;
+		pConn->StopTimeoutTimer();
+	}
 
 	if (!pConn->m_listPost.empty())
 	{
@@ -558,37 +590,46 @@ void CLogicSocket::NotifySubscriber(const std::string& tagName, const char *pPkg
 	for (const EventNode& subscriber : m_subscriber.GetSubscriber(tagName))
 	{
 		auto* pConn = static_cast<lpngx_connection_t>(subscriber.subscriber);
-		char* p_sendbuf = BuildPostPacket(pConn, tagName.c_str(), pPkgBody, iBodyLength);
+		char* p_sendbuf = BuildPostPacket(pConn, subscriber.seq, tagName.c_str(), pPkgBody, iBodyLength);
 
-		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-
-		switch (subscriber.eventid)
+		bool alive = true;
 		{
-		case EVENTID::DEFAULT:
-			DeliverPostLocked(pConn, p_sendbuf, tagName.c_str());
-			break;
-		case EVENTID::POST_DELAY:
-			CopyName(PkgHeadOf(p_sendbuf)->itemname, subscriber.eventname); // 延时事件以用户定义的事件名发布
-			g_tm.add_once(subscriber.eventarg, [this](void *arg)
-						  {
-				char* p_postbuf = static_cast<char*>(arg);
-				auto* pPostMsgHeader = reinterpret_cast<LPSTRUC_MSG_HEADER>(p_postbuf);
-				lpngx_connection_t pconn = pPostMsgHeader->pConn;
+			CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
 
-				// 定时器线程中执行，必须与 NotifySubscriber/HandlePostWait/超时回调互斥，否则一次 waitpostdata 可能收到两个包
-				CLock postLock(&pconn->logicPorcMutex);
-				if (pconn->iCurrsequence != pPostMsgHeader->iCurrsequence)
+			switch (subscriber.eventid)
+			{
+			case EVENTID::DEFAULT:
+				alive = DeliverPostLocked(pConn, p_sendbuf, tagName.c_str());
+				break;
+			case EVENTID::POST_DELAY:
+				alive = pConn->iCurrsequence == subscriber.seq;
+				if (!alive)
 				{
-					// 延时期间连接已断开或已被复用
-					CMemory::GetInstance()->FreeMemory(p_postbuf);
-					return;
+					CMemory::GetInstance()->FreeMemory(p_sendbuf);
+					break;
 				}
-				DeliverPostLocked(pconn, p_postbuf, PkgHeadOf(p_postbuf)->itemname); }, p_sendbuf);
-			break;
-		default:
-			ngx_log_stderr(0, "ERROR:unknown eventid");
-			CMemory::GetInstance()->FreeMemory(p_sendbuf);
-			break;
+				CopyName(PkgHeadOf(p_sendbuf)->itemname, subscriber.eventname); // 延时事件以用户定义的事件名发布
+				g_tm.add_once(subscriber.eventarg, [this](void *arg)
+							  {
+					char* p_postbuf = static_cast<char*>(arg);
+					lpngx_connection_t pconn = reinterpret_cast<LPSTRUC_MSG_HEADER>(p_postbuf)->pConn;
+
+					// 定时器线程中执行，必须与 NotifySubscriber/HandlePostWait/超时回调互斥，否则一次 waitpostdata 可能收到两个包；
+					// 延时期间连接已断开或已被复用时 DeliverPostLocked 会丢弃它
+					CLock postLock(&pconn->logicPorcMutex);
+					DeliverPostLocked(pconn, p_postbuf, PkgHeadOf(p_postbuf)->itemname); }, p_sendbuf);
+				break;
+			default:
+				ngx_log_stderr(0, "ERROR:unknown eventid");
+				CMemory::GetInstance()->FreeMemory(p_sendbuf);
+				break;
+			}
+		}
+
+		// 订阅者所在的连接实例已不存在：清掉这条遗留的订阅记录
+		if (!alive)
+		{
+			m_subscriber.DetachStale(tagName, pConn, subscriber.seq);
 		}
 	}
 }
@@ -598,10 +639,17 @@ void CLogicSocket::NotifyTimerSubscriber(const std::string& timerName, const cha
 	for (const EventNode& subscriber : m_subscriber.GetSubscriber(timerName))
 	{
 		auto* pConn = static_cast<lpngx_connection_t>(subscriber.subscriber);
-		char* p_sendbuf = BuildPostPacket(pConn, timerName.c_str(), pPkgBody, iBodyLength);
+		char* p_sendbuf = BuildPostPacket(pConn, subscriber.seq, timerName.c_str(), pPkgBody, iBodyLength);
 
-		CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-		DeliverPostLocked(pConn, p_sendbuf, timerName.c_str());
+		bool alive;
+		{
+			CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+			alive = DeliverPostLocked(pConn, p_sendbuf, timerName.c_str());
+		}
+		if (!alive)
+		{
+			m_subscriber.DetachStale(timerName, pConn, subscriber.seq);
+		}
 	}
 }
 
@@ -696,8 +744,13 @@ bool CLogicSocket::HandleRegisterPlcServer(lpngx_connection_t pConn, LPSTRUC_MSG
 	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
 
 	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+	// 本请求在途时连接已断开并完成清理：不得让已断开的连接顶替（或占住）该 tag 的 PLC 服务器
+	if (pConn->iCurrsequence != pMsgHeader->iCurrsequence)
+	{
+		return true;
+	}
 	pConn->AttachPlcTag(pPkgHead->itemname);
-	m_subscriber.AttachPlcIoServer(pPkgHead->itemname, pConn);
+	m_subscriber.AttachPlcIoServer(pPkgHead->itemname, pConn, pMsgHeader->iCurrsequence);
 
 	pPkgHead->error = 0;
 	pPkgHead->bodysize = 0;
@@ -721,9 +774,9 @@ bool CLogicSocket::HandleWriteBPlc(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER 
 	}
 
 	pPkgHead->error = 0; // 先假设写PLC成功了，等发布订阅的时候再根据实际情况修改这个值
-	SendHeadReply(pConn, pMsgHeader, pPkgHead);
-
+	// 先转发再应答（见 HandleWriteB）：同一客户端相邻两次写 PLC 不能被不同消息线程颠倒，否则 PLC 最终停在旧值
 	NotifyPlcIoSever(pPkgHead->itemname, PayloadOf(pPkgHead), pPkgHead->datasize);
+	SendHeadReply(pConn, pMsgHeader, pPkgHead);
 	return true;
 }
 
@@ -735,17 +788,26 @@ bool CLogicSocket::HandleWriteBStringPlc(lpngx_connection_t pConn, LPSTRUC_MSG_H
 
 void CLogicSocket::NotifyPlcIoSever(const std::string& tagName, const char *pPkgBody, unsigned short iBodyLength)
 {
-	auto* pConn = static_cast<lpngx_connection_t>(m_subscriber.GetPlcIoServer(tagName));
-	if (pConn == nullptr)
+	const PlcIoServer server = m_subscriber.GetPlcIoServer(tagName);
+	auto* pConn = static_cast<lpngx_connection_t>(server.subscriber);
+	if (pConn != nullptr)
 	{
-		ngx_log_stderr(0, "ERROR:没有PLCIO服务器订阅这个TAG，请检查应用程序,%s这个TAG没有PLCIO服务器订阅了", tagName.c_str());
-		return;
+		char* p_sendbuf = BuildPostPacket(pConn, server.seq, tagName.c_str(), pPkgBody, iBodyLength);
+
+		bool alive;
+		{
+			CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
+			alive = DeliverPostLocked(pConn, p_sendbuf, tagName.c_str());
+		}
+		if (alive)
+		{
+			return;
+		}
+		// 注册它的连接已断开（对象可能已被复用）：清掉遗留注册，按“没有PLC服务器”处理
+		m_subscriber.DetachStalePlcIoServer(tagName, pConn, server.seq);
 	}
 
-	char* p_sendbuf = BuildPostPacket(pConn, tagName.c_str(), pPkgBody, iBodyLength);
-
-	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
-	DeliverPostLocked(pConn, p_sendbuf, tagName.c_str());
+	ngx_log_stderr(0, "ERROR:没有PLCIO服务器订阅这个TAG，请检查应用程序,%s这个TAG没有PLCIO服务器订阅了", tagName.c_str());
 }
 
 bool CLogicSocket::HandleReadBoardInfo(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER pMsgHeader, char* pPkgHeader, unsigned short iBodyLength)
@@ -960,6 +1022,13 @@ bool CLogicSocket::HandleGetResponse(lpngx_connection_t pConn, LPSTRUC_MSG_HEADE
 	bool startNow = false;
 	{
 		std::lock_guard<std::mutex> lock(m_reqMutex);
+
+		// 本请求在途时连接已断开：断连清理（CancelRequest）在序号自增之后持 m_reqMutex 执行，
+		// 晚于它拿到锁的请求若照常入队，会以已断开的请求方占住该 request_tag 直到超时，直接丢弃
+		if (pConn->iCurrsequence != req->iCurrsequence)
+		{
+			return true;
+		}
 
 		auto owner = m_mapResponseOwner.find(req->responseTag);
 		if (owner != m_mapResponseOwner.end() && owner->second != req->requestTag)

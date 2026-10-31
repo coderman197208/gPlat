@@ -262,7 +262,7 @@ test-asan:
 	@echo "Running leak-sensitive suite under ASan..."
 	@build/asan/bin/testsuite --expect-asan --tag asan
 
-# 全量回归：ASan 隔离构建下放行破坏性/压力用例，确保 90 个用例全部实际执行
+# 全量回归：ASan 隔离构建下放行破坏性/压力用例，确保 95 个用例全部实际执行
 test-all:
 	@$(MAKE) ASAN=1 asan-build
 	@echo "Running all tests under ASan..."

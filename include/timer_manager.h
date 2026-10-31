@@ -2,22 +2,31 @@
 
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
-#include <unistd.h>
-#include <functional>
-#include <queue>
-#include <mutex>
-#include <atomic>
-#include <memory>
-#include <chrono>
-#include <unordered_map>
-#include <thread> // Ensure this header is included for std::thread
-#include <stdexcept> // Include this for std::runtime_error
 #include <sys/eventfd.h>
+#include <unistd.h>
+#include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <climits>
+#include <cstdint>
+#include <cstdio>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 
-
+// 单线程定时器：epoll + timerfd + 最小堆。回调在定时器线程中执行，执行期间不持有内部锁，回调里可以再加/取消定时器。
+// cancel() 只保证尚未开始执行的回调不再执行；已经开始执行的回调它不会等待（调用者常常持有回调也要获取的锁，等待会死锁），
+// 所以回调必须自己核对要处理的对象/状态是否仍然有效。
 class TimerManager {
 public:
 	using TimerCallback = std::function<void(void*)>;
+	// 64 位且单调递增：每次 waitpostdata/getresponse/延时投递都会分配一个 ID，32 位在高负载下几天就会溢出回绕
+	using TimerId = int64_t;
 
 	TimerManager() :
 		epoll_fd_(epoll_create1(EPOLL_CLOEXEC)),
@@ -25,7 +34,7 @@ public:
 		wakeup_fd_(eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)),
 		running_(false) {
 
-		if (epoll_fd_ == -1 || timer_fd_ == -1) {
+		if (epoll_fd_ == -1 || timer_fd_ == -1 || wakeup_fd_ == -1) {
 			throw std::runtime_error("Failed to create timer resources");
 		}
 
@@ -45,6 +54,7 @@ public:
 	~TimerManager() {
 		stop();
 		close(timer_fd_);
+		close(wakeup_fd_);
 		close(epoll_fd_);
 	}
 
@@ -54,6 +64,7 @@ public:
 		}
 	}
 
+	// 停止定时器线程并等待它退出；返回后不会再有回调执行。不能在回调里调用
 	void stop() {
 		if (running_.exchange(false)) {
 			uint64_t one = 1;
@@ -64,29 +75,40 @@ public:
 		}
 	}
 
-	int add_periodic(uint64_t interval_ms, TimerCallback cb, void* arg) {
+	TimerId add_periodic(uint64_t interval_ms, TimerCallback cb, void* arg) {
 		return addTimer(interval_ms, interval_ms, std::move(cb), arg);
 	}
 
-	int add_once(uint64_t delay_ms, TimerCallback cb, void* arg) {
+	TimerId add_once(uint64_t delay_ms, TimerCallback cb, void* arg) {
 		return addTimer(delay_ms, 0, std::move(cb), arg);
 	}
 
-	bool cancel(int timer_id) {
+	// 返回 true 表示该定时器存在且已标记取消（回调若已开始执行，仍会执行完，见类注释）
+	bool cancel(TimerId timer_id) {
 		std::lock_guard<std::mutex> lock(mutex_);
 		auto it = timers_.find(timer_id);
 		if (it == timers_.end()) return false;
 
-		// 从堆中移除
-		auto& timer = it->second;
-		timer->valid = false; // 标记为无效
-
-		// 如果取消的是下一个要触发的定时器，需要重置timerfd
-		if (!heap_.empty() && heap_.top()->id == timer_id) {
-			resetTimerFd();
-		}
-
+		std::shared_ptr<TimerNode> timer = it->second;
+		timer->valid = false; // 惰性删除：仍在堆中的节点到期弹出时跳过
 		timers_.erase(it);
+
+		if (timer->in_heap) {
+			++cancelled_in_heap_;
+			if (heap_.front() == timer) {
+				// 取消的是下一个要触发的定时器：去掉堆顶的已取消节点，按新的堆顶重置timerfd
+				while (!heap_.empty() && !heap_.front()->valid) {
+					popHeap();
+					--cancelled_in_heap_;
+				}
+				resetTimerFd();
+			}
+			else if (cancelled_in_heap_ >= kCompactThreshold && cancelled_in_heap_ * 2 > heap_.size()) {
+				// 已取消的节点要到原定到期时间才弹出，超时长、取消频繁（waitpostdata/getresponse）时会大量堆积；
+				// 超过一半时整体清理一次，均摊 O(1)
+				compactHeap();
+			}
+		}
 		return true;
 	}
 
@@ -94,19 +116,25 @@ private:
 	struct TimerNode {
 		uint64_t expire;      // 绝对到期时间(ms)
 		uint64_t interval;    // 间隔时间(ms)
-		int id;               // 定时器ID
+		TimerId id;           // 定时器ID
 		TimerCallback cb;     // 回调函数
 		void* arg;            // 回调参数
 		bool valid = true;    // 是否有效
 		bool periodic;        // 是否周期性
+		bool in_heap = false; // 是否在堆中（回调执行期间不在堆中）
 	};
 
 	struct TimerCompare {
 		bool operator()(const std::shared_ptr<TimerNode>& a,
 			const std::shared_ptr<TimerNode>& b) const {
-			return a->expire > b->expire; // 最小堆
+			// 最小堆；同一毫秒到期的按创建顺序触发（同一 tag 连续两次写的延时投递不会颠倒）
+			if (a->expire != b->expire)
+				return a->expire > b->expire;
+			return a->id > b->id;
 		}
 	};
+
+	static constexpr size_t kCompactThreshold = 1024;
 
 	int epoll_fd_;
 	int timer_fd_;
@@ -114,16 +142,36 @@ private:
 	std::atomic<bool> running_;
 	std::thread worker_thread_;
 	std::mutex mutex_;
-	std::unordered_map<int, std::shared_ptr<TimerNode>> timers_;
-	//std::priority_queue<std::shared_ptr<TimerNode>> heap_;
-	std::priority_queue<
-		std::shared_ptr<TimerNode>,
-		std::vector<std::shared_ptr<TimerNode>>,
-		TimerCompare // 自定义比较器
-	> heap_;
-	int next_id_ = 1;
+	std::unordered_map<TimerId, std::shared_ptr<TimerNode>> timers_;	// 未取消、未结束的定时器
+	std::vector<std::shared_ptr<TimerNode>> heap_;					// 按 TimerCompare 组织的最小堆，含尚未弹出的已取消节点
+	size_t cancelled_in_heap_ = 0;									// heap_ 中已取消节点的个数
+	TimerId next_id_ = 1;
 
-	int addTimer(uint64_t delay_ms, uint64_t interval_ms, TimerCallback cb, void* arg) {
+	void pushHeap(std::shared_ptr<TimerNode> timer) {
+		timer->in_heap = true;
+		heap_.push_back(std::move(timer));
+		std::push_heap(heap_.begin(), heap_.end(), TimerCompare());
+	}
+
+	std::shared_ptr<TimerNode> popHeap() {
+		std::pop_heap(heap_.begin(), heap_.end(), TimerCompare());
+		std::shared_ptr<TimerNode> timer = std::move(heap_.back());
+		heap_.pop_back();
+		timer->in_heap = false;
+		return timer;
+	}
+
+	void compactHeap() {
+		heap_.erase(std::remove_if(heap_.begin(), heap_.end(), [](const std::shared_ptr<TimerNode>& t) {
+			if (t->valid) return false;
+			t->in_heap = false;
+			return true;
+			}), heap_.end());
+		std::make_heap(heap_.begin(), heap_.end(), TimerCompare());
+		cancelled_in_heap_ = 0;
+	}
+
+	TimerId addTimer(uint64_t delay_ms, uint64_t interval_ms, TimerCallback cb, void* arg) {
 		std::lock_guard<std::mutex> lock(mutex_);
 
 		auto timer = std::make_shared<TimerNode>();
@@ -134,11 +182,11 @@ private:
 		timer->arg = arg;
 		timer->periodic = (interval_ms > 0);
 
-		bool is_next_timer = !heap_.empty() && (timer->expire < heap_.top()->expire);
+		bool is_next_timer = heap_.empty() || (timer->expire < heap_.front()->expire);
 		timers_[timer->id] = timer;
-		heap_.push(timer);
+		pushHeap(timer);
 
-		if (is_next_timer || heap_.size() == 1) {
+		if (is_next_timer) {
 			resetTimerFd();
 
 			// 下面的代码有误，不能通过wakeup_fd_唤醒epoll_wait
@@ -162,7 +210,7 @@ private:
 			return;
 		}
 
-		auto next_timer = heap_.top();
+		const auto& next_timer = heap_.front();
 		uint64_t now = getCurrentMs();
 		uint64_t delay = (next_timer->expire > now) ? (next_timer->expire - now) : 1; // 至少1ms
 
@@ -185,7 +233,9 @@ private:
 				std::lock_guard<std::mutex> lock(mutex_);
 				if (!heap_.empty()) {
 					uint64_t now = getCurrentMs();
-					timeout = std::max(1, (int)(heap_.top()->expire - now));
+					uint64_t expire = heap_.front()->expire;
+					// 无符号相减后再窄化成 int 可能得到负数（变成 1ms 忙等），这里先比较再截断
+					timeout = expire <= now ? 1 : (int)std::min<uint64_t>(expire - now, INT_MAX);
 				}
 			}
 
@@ -213,10 +263,8 @@ private:
 				}
 			}
 
-			//mark 处理超时未触发的情况（补偿机制）?
+			// epoll_wait 的毫秒超时可能先于 timerfd 到点：补偿检查一次
 			if (nfds == 0) {
-				// 没有事件，检查是否有过期的定时器
-				printf("......No events, checking for expired timers......\n");
 				processExpiredTimers();
 			}
 		}
@@ -226,11 +274,11 @@ private:
 		std::unique_lock<std::mutex> lock(mutex_);
 		uint64_t now = getCurrentMs();
 
-		while (!heap_.empty() && heap_.top()->expire <= now) {
-			auto timer = heap_.top();
-			heap_.pop();
+		while (!heap_.empty() && heap_.front()->expire <= now) {
+			std::shared_ptr<TimerNode> timer = popHeap();
 
 			if (!timer->valid) {
+				--cancelled_in_heap_;
 				continue; // 已被取消
 			}
 
@@ -244,7 +292,7 @@ private:
 				// 时间补偿逻辑
 				uint64_t drift = now - timer->expire;
 				timer->expire = now + timer->interval - std::min(drift, timer->interval);
-				heap_.push(timer);
+				pushHeap(timer);
 			}
 			else {
 				timers_.erase(timer->id);

@@ -22,6 +22,17 @@
 #include "ngx_c_memory.h"
 #include "ngx_c_lockmutex.h"
 
+namespace
+{
+	//回收等待用单调时钟计时：系统校时（NTP/GPS 跳变、手工改时间）不能缩短或拉长回收宽限期
+	time_t MonotonicSeconds()
+	{
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		return ts.tv_sec;
+	}
+}
+
 ngx_connection_s::ngx_connection_s()
 {
 	iCurrsequence = 0;
@@ -37,8 +48,10 @@ ngx_connection_s::~ngx_connection_s()
 }
 
 //分配出去一个连接的时候初始化一些内容,原来内容放在 ngx_get_connection()里，现在放在这里
+//锁顺序与 PutOneToFree 相同：logicPorcMutex → sendMutex
 void ngx_connection_s::GetOneToUse()
 {
+	CLock logicLock(&logicPorcMutex);
 	CLock sendLock(&sendMutex);
 
 	++iCurrsequence;
@@ -60,6 +73,8 @@ void ngx_connection_s::GetOneToUse()
 	m_timerID = -1;
 	m_droppedPost = 0;
 	m_lastDropLog = 0;
+	// 对象躺在空闲表期间若有迟到的投递入队，不能带给新客户端
+	ClearPostList();
 }
 
 //回收一个连接的时候做一些事
@@ -107,7 +122,6 @@ bool ngx_connection_s::EnqueuePost(char* postbuf, const char* tagname)
 		return true;
 	}
 
-	CMemory::GetInstance()->FreeMemory(postbuf);
 	++m_droppedPost;
 	time_t now = time(NULL);
 	if (now - m_lastDropLog >= 5) // 风暴期间限频，避免日志本身成为负担
@@ -116,6 +130,8 @@ bool ngx_connection_s::EnqueuePost(char* postbuf, const char* tagname)
 		ngx_log_stderr(0, "WARN:连接待发事件队列已满(%d)，丢弃最新事件 tag=%s，本连接累计丢弃=%lu，请检查是否存在事件风暴或订阅者不取事件",
 			s_maxPendingPost.load(), tagname ? tagname : "", m_droppedPost);
 	}
+	// tagname 可能指向 postbuf 内部（延时投递以包头里的事件名作为 tagname），所以记完日志才能释放
+	CMemory::GetInstance()->FreeMemory(postbuf);
 	return false;
 }
 
@@ -205,7 +221,7 @@ void CSocekt::inRecyConnectQueue(lpngx_connection_t pConn)
 {
 	CLock lock(&m_recyconnqueueMutex); //针对连接回收列表的互斥量，因为线程ServerRecyConnectionThread()也要访问回收列表；
 
-	pConn->inRecyTime = time(NULL);        //记录回收时间
+	pConn->inRecyTime = MonotonicSeconds(); //记录回收时间
 	m_recyconnectionList.push_back(pConn); //等待ServerRecyConnectionThread线程自会处理 
 	++m_totol_recyconnection_n;            //待释放连接队列大小+1
 	return;
@@ -255,7 +271,7 @@ void* CSocekt::ServerRecyConnectionThread(void* threadData)
 		//不管啥情况，先把这个条件成立时该做的动作做了
 		if (pSocketObj->m_totol_recyconnection_n > 0)
 		{
-			currtime = time(NULL);
+			currtime = MonotonicSeconds();
 			err = pthread_mutex_lock(&pSocketObj->m_recyconnqueueMutex);
 			if (err != 0) ngx_log_stderr(err, "CSocekt::ServerRecyConnectionThread()中pthread_mutex_lock()失败，返回的错误码为%d!", err);
 

@@ -35,16 +35,12 @@ void CSocekt::ngx_cleanup_closed_connection(lpngx_connection_t pConn)
 	CancelSubscribe(pConn, pConn->GetTagList(), pConn->GetPlcTagList());
 	pConn->ClearPostList();
 
-	// 清理等待态：连接已关闭、序号已自增。此后若有迟到的 NotifySubscriber（持有旧订阅快照）
-	// 落到本连接对象上，m_bWaitingPost=false 会让它走 EnqueuePost（随对象回收一并释放），
-	// 而不是 msgSend 到可能已被新连接复用的 fd 号上，避免串扰。
+	// 清理等待态：连接已关闭、序号已自增。迟到的投递（持有旧订阅快照的 NotifySubscriber、延时投递）
+	// 带的是订阅时的序号，DeliverPostLocked 会因序号不符直接丢弃，不会再碰这些状态或发到可能已被复用的 fd 号上。
+	// 清理之后才拿到连接锁的在途请求（SUBSCRIBE/POSTWAIT/REGISTERPLCSERVER）会因序号不符而放弃，不会再改回这些状态
 	pConn->m_bWaitingPost = false;
-
-	if (pConn->m_bWaitingTimeout)
-	{
-		pConn->m_bWaitingTimeout = false;
-		pConn->StopTimeoutTimer();
-	}
+	pConn->m_bWaitingTimeout = false;
+	pConn->StopTimeoutTimer();
 }
 
 //来数据时候的处理，当连接上有数据来的时候，本函数会被ngx_epoll_process_events()所调用  ,官方的类似函数为ngx_http_wait_request_handler();

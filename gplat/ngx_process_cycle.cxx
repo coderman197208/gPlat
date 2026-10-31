@@ -20,6 +20,22 @@ static int ngx_spawn_process(int threadnums, const char* pprocname);
 static void ngx_worker_process_cycle(int inum, const char* pprocname);
 static void ngx_worker_process_init(int inum);
 
+//master 平时屏蔽、只在 sigsuspend() 中接收的信号；worker 始终屏蔽它们
+static void ngx_fill_blocked_signals(sigset_t* set)
+{
+	sigemptyset(set);
+	sigaddset(set, SIGCHLD);     //子进程状态改变
+	sigaddset(set, SIGALRM);     //定时器超时
+	sigaddset(set, SIGIO);       //异步I/O
+	sigaddset(set, SIGINT);      //终端中断符
+	sigaddset(set, SIGHUP);      //连接断开
+	sigaddset(set, SIGUSR1);     //用户定义信号
+	sigaddset(set, SIGUSR2);     //用户定义信号
+	sigaddset(set, SIGWINCH);    //终端窗口大小改变
+	sigaddset(set, SIGTERM);     //终止
+	sigaddset(set, SIGQUIT);     //终端退出符
+}
+
 //变量声明
 static u_char  master_process[] = "gplat master";
 
@@ -28,21 +44,10 @@ void ngx_master_process_cycle()
 {
 	sigset_t set;        //信号集
 
-	sigemptyset(&set);   //清空信号集
-
 	//下列这些信号在执行本函数期间不希望收到【考虑到官方nginx中有这些信号，老师就都搬过来了】（保护不希望由信号中断的代码临界区）
 	//建议fork()子进程时学习这种写法，防止信号的干扰；
-	sigaddset(&set, SIGCHLD);     //子进程状态改变
-	sigaddset(&set, SIGALRM);     //定时器超时
-	sigaddset(&set, SIGIO);       //异步I/O
-	sigaddset(&set, SIGINT);      //终端中断符
-	sigaddset(&set, SIGHUP);      //连接断开
-	sigaddset(&set, SIGUSR1);     //用户定义信号
-	sigaddset(&set, SIGUSR2);     //用户定义信号
-	sigaddset(&set, SIGWINCH);    //终端窗口大小改变
-	sigaddset(&set, SIGTERM);     //终止
-	sigaddset(&set, SIGQUIT);     //终端退出符
-	//.........可以根据开发的实际需要往其中添加其他要屏蔽的信号......
+	//.........可以根据开发的实际需要往 ngx_fill_blocked_signals() 中添加其他要屏蔽的信号......
+	ngx_fill_blocked_signals(&set);
 
 	//设置，此时无法接受的信号；阻塞期间，你发过来的上述信号，多个会被合并为一个，暂存着，等你放开信号屏蔽后才能收到这些信号。。。
 	//sigprocmask()在第三章第五节详细讲解过
@@ -181,20 +186,26 @@ static void ngx_worker_process_cycle(int inum, const char* pprocname)
 
 	}
 
-	//如果从这个循环跳出来
-	g_threadpool.StopAll();      //考虑在这里停止线程池；
-	g_socket.Shutdown_subproc(); //socket需要释放的东西考虑释放；
-	g_tm.stop();                 //停止定时器线程；
+	//如果从这个循环跳出来，按依赖关系依次停止：
+	//(1) 定时器线程最先停：它的回调（定时器订阅、waitpostdata 超时、延时投递、getresponse 超时）会访问连接对象并调用 msgSend，
+	//    若晚于 Shutdown_subproc()，回调就可能碰到已释放的连接对象和已销毁的发送队列互斥量/信号量
+	//(2) 线程池：在途请求处理完后退出（之后它们新加的定时器不会再触发）
+	//(3) socket：发送/回收线程退出后释放连接池
+	g_tm.stop();
+	g_threadpool.StopAll();
+	g_socket.Shutdown_subproc();
 	return;
 }
 
 //描述：子进程创建时调用本函数进行一些初始化工作
 static void ngx_worker_process_init(int inum)
 {
+	//worker 不处理这些异步信号（退出由 master 经 socketpair 通知），继续屏蔽它们，所有线程都继承这个屏蔽字。
+	//若放开，信号可能落在任何一个线程上执行 ngx_signal_handler，它写日志要取 ngx_log.log_mutex：
+	//该线程若正持有这把锁（正在写日志）就会自死锁，随后所有写日志的线程都卡死；SIGUSR1 等默认动作还会直接杀死 worker
 	sigset_t  set;      //信号集
-
-	sigemptyset(&set);  //清空信号集
-	if (sigprocmask(SIG_SETMASK, &set, NULL) == -1)  //原来是屏蔽那10个信号【防止fork()期间收到信号导致混乱】，现在不再屏蔽任何信号【接收任何信号】
+	ngx_fill_blocked_signals(&set);
+	if (sigprocmask(SIG_SETMASK, &set, NULL) == -1)
 	{
 		ngx_log_error_core(NGX_LOG_ALERT, errno, "ngx_worker_process_init()中sigprocmask()失败!");
 	}
@@ -217,35 +228,30 @@ static void ngx_worker_process_init(int inum)
 
 		//启动0.5秒定时器
 		g_tm.add_periodic(500, [](void* user) {
-			std::cout << "500毫秒定时器时间到" << std::endl;
 			g_socket.NotifyTimerSubscriber("timer_500ms", NULL,0); //通知定时器到达了
 			},
 			nullptr);
 
 		//启动1秒定时器
 		g_tm.add_periodic(1000, [](void* user) {
-			std::cout << "1秒定时器时间到" << std::endl;
 			g_socket.NotifyTimerSubscriber("timer_1s", NULL, 0); //通知定时器到达了
 			},
 			nullptr);
 
 		//启动2秒定时器
 		g_tm.add_periodic(2000, [](void* user) {
-			std::cout << "2秒定时器时间到" << std::endl;
 			g_socket.NotifyTimerSubscriber("timer_2s", NULL, 0); //通知定时器到达了
 			},
 			nullptr);
 
 		//启动3秒定时器
 		g_tm.add_periodic(3000, [](void* user) {
-			std::cout << "3秒定时器时间到" << std::endl;
 			g_socket.NotifyTimerSubscriber("timer_3s", NULL, 0); //通知定时器到达了
 			},
 			nullptr);
 
 		//启动5秒定时器
 		g_tm.add_periodic(5000, [](void* user) {
-			std::cout << "5秒定时器时间到" << std::endl;
 			g_socket.NotifyTimerSubscriber("timer_5s", NULL, 0); //通知定时器到达了
 			},
 			nullptr);
