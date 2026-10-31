@@ -197,7 +197,8 @@ bool subscribedelaypost(int sockfd, const char* tagname,
                         const char* eventname, int delaytime,
                         unsigned int* error);
 ```
-- **参数**: `delaytime` - 延迟时间（毫秒）
+- **参数**: `delaytime` - 延迟时间（毫秒），取值 0 到服务端配置 `Sock_MaxPostDelay`（默认 300000）；负数或超出上限返回 `ERROR_INVALID_PARAMETER`
+- **功能**: `tagname` 每次被 `writeb` 触发后，延迟 `delaytime` 毫秒以 `eventname` 投递一个事件（不合并，每次写各投递一次）。尚未到期的延时事件计入每连接待发事件上限 `Sock_MaxPendingPost`，达到上限时丢弃最新事件；连接断开时一并丢弃
 
 ### waitpostdata
 ```cpp
@@ -226,7 +227,7 @@ bool getresponse(int sockfd, const char* request_tag, void* request_value, int r
                  unsigned int* error, int timeout_ms);
 ```
 - **功能**: 写入 `request_tag` 并通知其订阅者（响应方），阻塞等待响应方 `writeb(response_tag)` 后把响应复制到 `response_value`
-- **参数**: `request_size` / `response_size` 必须等于对应 tag 的大小（tag 需事先 `createtag`）；`timeout_ms` 必须 > 0（建议 2000，GplatConnection 默认值），计时包含服务端排队时间
+- **参数**: `request_size` / `response_size` 必须等于对应 tag 的大小（tag 需事先 `createtag`）；`timeout_ms` 必须 > 0 且不超过服务端配置 `Sock_MaxRequestTimeout`（默认 300000，超出返回 `ERROR_INVALID_PARAMETER`；建议 2000，GplatConnection 默认值），计时包含服务端排队时间
 - **返回**: 超时返回 false，`error = ERROR_RESPONSE_TIMEOUT`；同名请求排队超过 64 个返回 `ERROR_REQUEST_QUEUE_FULL`
 - **服务端语义**:
   - 同一 `request_tag` 同一时刻只处理 1 个请求，其余排队；一个 `response_tag` 只能对应一个 `request_tag`，否则返回 `ERROR_INVALID_PARAMETER`；该绑定在 `response_tag`（或其 `request_tag`，且无挂起请求时）经 `deletetag` 删除后解除

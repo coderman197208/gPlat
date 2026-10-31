@@ -9,6 +9,7 @@
 #include <pthread.h>    //多线程
 #include <semaphore.h>  //信号量 
 #include <atomic>       //c++11里的原子操作
+#include <unordered_map>
 
 #include <iostream> 
 #include <string>      //string
@@ -136,12 +137,27 @@ struct ngx_connection_s
 	// TimerManager::cancel() 不等待已开始执行的回调，所以回调持锁后还要核对等待代次和连接序号
 	void StartTimeoutTimer(int dwMilliseconds);
 	void StopTimeoutTimer();
-	void ClearPostList();		// 调用者须持有 logicPorcMutex
+	// 清空待发队列，并取消、释放尚未到期的延时投递。调用者须持有 logicPorcMutex
+	void ClearPostList();
 	// 事件入队（事件风暴保护）。队列已达上限时丢弃新事件：释放 postbuf 并返回 false。调用者须持有 logicPorcMutex
 	bool EnqueuePost(char* postbuf, const char* tagname);
+	// 待发事件与在途延时投递合计未达 Sock_MaxPendingPost。调用者须持有 logicPorcMutex
+	bool HasPostRoom() const;
+	// 因达到上限丢弃一个事件：限频记日志并释放 postbuf（tagname 可以指向 postbuf 内部）。调用者须持有 logicPorcMutex
+	void DropPost(char* postbuf, const char* tagname);
 
 	static constexpr int kDefaultMaxPendingPost = 1000;
 	inline static std::atomic<int> s_maxPendingPost{ kDefaultMaxPendingPost };	// 每连接待发事件上限，Sock_MaxPendingPost
+
+	// 在途的延时投递（POST_DELAY）：定时器尚未到期的事件包。到期回调持 logicPorcMutex 按 key 取走；
+	// 找不到说明连接已清理且没能取消该定时器（回调已开始执行），由回调释放事件包
+	struct DelayedPost
+	{
+		TimerManager::TimerId timerId;
+		char* postbuf;
+	};
+	std::unordered_map<uint64_t, DelayedPost> m_delayedPosts;	// 调用者须持有 logicPorcMutex
+	inline static std::atomic<uint64_t> s_nextDelayedKey{ 1 };	// 全局唯一，连接对象复用后也不会重号
 
 	std::list<std::string> m_listTag;		// 订阅的TAG列表
 	std::list<std::string> m_listPlcTag;	// 订阅的PLC TAG列表
@@ -232,6 +248,12 @@ protected:
 	//一些和网络通讯有关的成员变量
 	size_t                         m_iLenPkgHeader;						//sizeof(MSGHEAD)
 	size_t                         m_iLenMsgHeader;						//sizeof(STRUC_MSG_HEADER);
+
+	//客户端传来的时长上限（毫秒），超出的请求返回 ERROR_INVALID_PARAMETER
+	static constexpr int           kDefaultMaxPostDelay = 300000;
+	static constexpr int           kDefaultMaxRequestTimeout = 300000;
+	int                            m_maxPostDelay{ kDefaultMaxPostDelay };				//Sock_MaxPostDelay：POST_DELAY 订阅的延时
+	int                            m_maxRequestTimeout{ kDefaultMaxRequestTimeout };	//Sock_MaxRequestTimeout：getresponse 的超时
 
 private:
 	struct ThreadItem

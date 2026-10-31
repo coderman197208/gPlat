@@ -214,6 +214,10 @@ void CSocekt::ReadConf()
 	m_RecyConnectionWaitTime = p_config->GetIntDefault("Sock_RecyConnectionWaitTime", m_RecyConnectionWaitTime); //等待这么些秒后才回收连接
 	int maxPost = p_config->GetIntDefault("Sock_MaxPendingPost", ngx_connection_s::kDefaultMaxPendingPost); //每连接待发事件队列上限
 	ngx_connection_s::s_maxPendingPost = maxPost > 0 ? maxPost : ngx_connection_s::kDefaultMaxPendingPost;
+	int maxPostDelay = p_config->GetIntDefault("Sock_MaxPostDelay", kDefaultMaxPostDelay); //POST_DELAY 延时上限（毫秒）
+	m_maxPostDelay = maxPostDelay > 0 ? maxPostDelay : kDefaultMaxPostDelay;
+	int maxRequestTimeout = p_config->GetIntDefault("Sock_MaxRequestTimeout", kDefaultMaxRequestTimeout); //getresponse 超时上限（毫秒）
+	m_maxRequestTimeout = maxRequestTimeout > 0 ? maxRequestTimeout : kDefaultMaxRequestTimeout;
 
 	//TCP keepalive，取值超出内核允许的范围时回退缺省值
 	m_keepAlive = p_config->GetIntDefault("Sock_KeepAlive", m_keepAlive);

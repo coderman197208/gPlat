@@ -112,27 +112,46 @@ void ngx_connection_s::ClearPostList()
 		p_memory->FreeMemory(p);
 	}
 	m_listPost.clear();
+
+	// 取消成功则回调不会再执行，由这里释放；取消失败说明回调已开始执行（正等本锁），它找不到自己的 key 会自行释放
+	for (const auto& item : m_delayedPosts)
+	{
+		if (g_tm.cancel(item.second.timerId))
+		{
+			p_memory->FreeMemory(item.second.postbuf);
+		}
+	}
+	m_delayedPosts.clear();
+}
+
+bool ngx_connection_s::HasPostRoom() const
+{
+	return m_listPost.size() + m_delayedPosts.size() < (size_t)s_maxPendingPost.load(std::memory_order_relaxed);
 }
 
 bool ngx_connection_s::EnqueuePost(char* postbuf, const char* tagname)
 {
-	if ((int)m_listPost.size() < s_maxPendingPost.load(std::memory_order_relaxed))
+	if (HasPostRoom())
 	{
 		m_listPost.push_back(postbuf);
 		return true;
 	}
+	DropPost(postbuf, tagname);
+	return false;
+}
 
+void ngx_connection_s::DropPost(char* postbuf, const char* tagname)
+{
 	++m_droppedPost;
 	time_t now = time(NULL);
 	if (now - m_lastDropLog >= 5) // 风暴期间限频，避免日志本身成为负担
 	{
 		m_lastDropLog = now;
-		ngx_log_stderr(0, "WARN:连接待发事件队列已满(%d)，丢弃最新事件 tag=%s，本连接累计丢弃=%lu，请检查是否存在事件风暴或订阅者不取事件",
+		ngx_log_stderr(0, "WARN:连接待发事件（含未到期的延时投递）已达上限(%d)，丢弃最新事件 tag=%s，本连接累计丢弃=%lu，请检查是否存在事件风暴或订阅者不取事件",
 			s_maxPendingPost.load(), tagname ? tagname : "", m_droppedPost);
 	}
 	// tagname 可能指向 postbuf 内部（延时投递以包头里的事件名作为 tagname），所以记完日志才能释放
 	CMemory::GetInstance()->FreeMemory(postbuf);
-	return false;
 }
 
 //初始化连接池

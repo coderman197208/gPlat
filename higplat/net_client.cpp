@@ -717,7 +717,7 @@ extern "C" bool subscribedelaypost(int sockfd, const char* tagname, const char* 
 		return false;
 
 	AutoErrorCheck _checker(error, __func__);
-	if (!tagname || !eventname) {
+	if (!tagname || !eventname || delaytime < 0) {
 		*error = ERROR_INVALID_PARAMETER;
 		return false;
 	}

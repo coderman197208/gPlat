@@ -13,6 +13,8 @@
 // 跨连接前提：sandbox 配置 WorkerProcesses=1（单 worker 进程），m_subscriber 进程内共享。
 // 共享 server 纪律：订阅随连接断开被 CancelSubscribe 清理（见 ngx_c_socket_request.cxx:44），
 //   故每个用例用全新 ScopedConn 订阅、退出即净；只 writeb 夹具 tag TAG_POST，不碰其它夹具。
+#include <unistd.h>
+
 #include <cstring>
 #include <memory>
 #include <string>
@@ -222,6 +224,126 @@ TEST("pubsub.duplicate_subscribe", TAG_PUBSUB)
     }
     CHECK(ctx, defaults == 1, "DEFAULT deliveries=%d want 1 (duplicate subscribe must be deduped)", defaults);
     CHECK(ctx, delayed == 1, "POST_DELAY deliveries=%d want 1 (duplicate subscribe must be deduped)", delayed);
+}
+
+// --- [I] 延时越界：负数（客户端拦截；裸协议发来时服务端拒绝）、超过 Sock_MaxPostDelay（默认 300000ms）→ INVALID_PARAMETER ---
+// 定时器参数是 uint64_t，负延时原先会回绕成“立即触发”或“永不触发”（事件包一直占着内存）。
+TEST("pubsub.delaypost_invalid_delay", TAG_PUBSUB)
+{
+    ScopedConn sub(ctx.server()), pub(ctx.server());
+    ASSERT(ctx, sub.ok() && pub.ok(), "connect failed");
+    unsigned err = 0;
+    Rng rng(ctx.seed);
+
+    EXPECT_ERR(ctx, subscribedelaypost(sub.fd(), fx::TAG_POST, "EVT_NEG", -1, &err), err, ERROR_INVALID_PARAMETER);
+    EXPECT_ERR(ctx, subscribedelaypost(sub.fd(), fx::TAG_POST, "EVT_BIG", 300001, &err), err, ERROR_INVALID_PARAMETER);
+
+    int fd = raw_connect(ctx.server().ip(), ctx.server().port(), 2000);
+    ASSERT(ctx, fd >= 0, "raw connect failed");
+    MSGHEAD h = make_head(SUBSCRIBE, "EVT_RAW_NEG", fx::TAG_POST);
+    h.bodysize = 0;
+    h.eventid = 2;  // POST_DELAY
+    h.eventarg = -5;
+    MSGHEAD out{};
+    std::vector<char> body;
+    CHECK(ctx, send_msg(fd, h) && recv_msg(fd, out, body) == RecvStatus::OK && out.id == SUBSCRIBE &&
+              out.error == ERROR_INVALID_PARAMETER,
+          "raw POST_DELAY subscribe with eventarg=-5: id=%d err=%u, want INVALID_PARAMETER", out.id, out.error);
+    close(fd);
+
+    // 被拒绝的订阅不得生效；边界值 0 合法（到期即投递）
+    REQUIRE_OK(ctx, subscribedelaypost(sub.fd(), fx::TAG_POST, "EVT_ZERO", 0, &err), err);
+    publish(ctx, pub.fd(), 3, rng, /*post=*/true);
+    Recv r = receive(sub.fd(), 2000);
+    ASSERT(ctx, r.ok && r.err == 0, "delay=0 recv: ret=%d err=%u(%s)", (int)r.ok, r.err, err_name(r.err));
+    CHECK(ctx, strcmp(r.tag, "EVT_ZERO") == 0, "delay=0 tagname='%s' want EVT_ZERO", r.tag);
+    r = receive(sub.fd(), 300);
+    CHECK(ctx, r.ok && r.err == ERROR_WAIT_TIMEOUT, "rejected subscription delivered '%s' (err=%u)", r.tag, r.err);
+}
+
+// --- [I] 裸协议 POSTWAIT timeout < -1 → INVALID_PARAMETER（原先回绕成立即超时），连接保留 --------
+TEST("pubsub.postwait_invalid_timeout", TAG_PUBSUB)
+{
+    int fd = raw_connect(ctx.server().ip(), ctx.server().port(), 2000);
+    ASSERT(ctx, fd >= 0, "raw connect failed");
+    MSGHEAD w = make_head(POSTWAIT, "BOARD", "");
+    w.bodysize = 0;
+    w.timeout = -2;
+    MSGHEAD out{};
+    std::vector<char> body;
+    CHECK(ctx, send_msg(fd, w) && recv_msg(fd, out, body) == RecvStatus::OK && out.id == POSTWAIT &&
+              out.error == ERROR_INVALID_PARAMETER,
+          "POSTWAIT timeout=-2: id=%d err=%u, want INVALID_PARAMETER", out.id, out.error);
+
+    w.timeout = 0;
+    out = MSGHEAD{};
+    CHECK(ctx, send_msg(fd, w) && recv_msg(fd, out, body) == RecvStatus::OK && out.id == POSTWAIT &&
+              out.error == ERROR_WAIT_TIMEOUT,
+          "connection unusable after invalid POSTWAIT: id=%d err=%u", out.id, out.error);
+    close(fd);
+}
+
+// --- [B] 在途延时投递计入每连接上限（Sock_MaxPendingPost）：延时内写入超过上限 → 只投递最早的 CAP 条 ---
+// 原缺陷：每次写都为延时订阅挂一个带事件包的定时器，不受上限约束，内存按 写入频率 × 延时 增长。
+TEST("pubsub.delaypost_capped", TAG_PUBSUB | TAG_DESTRUCTIVE)
+{
+    constexpr int CAP = 10, TOTAL = 25, DELAY = 1500;
+    ServerConfig cfg;
+    cfg.threads = 2;
+    cfg.asan = ctx.expectAsan;
+    cfg.extraConf = {"Sock_MaxPendingPost = 10"};
+    ServerFixture srv(cfg);
+    ASSERT(ctx, srv.start(), "private fixture start failed: %s", srv.startup_error().c_str());
+
+    unsigned err = 0;
+    ScopedConn sub(srv), pub(srv);
+    ASSERT(ctx, sub.ok() && pub.ok(), "connect failed");
+    REQUIRE_OK(ctx, subscribedelaypost(sub.fd(), fx::TAG_POST, "EVT_CAP", DELAY, &err), err);
+
+    Rng rng(ctx.seed);
+    uint64_t t0 = now_nanos();
+    for (int i = 0; i < TOTAL; i++) publish(ctx, pub.fd(), (uint32_t)i, rng, /*post=*/true);
+    double pubMs = (double)(now_nanos() - t0) / 1e6;
+    ASSERT(ctx, pubMs < DELAY / 2, "publishing took %.0f ms, too slow for the %d ms delay window", pubMs, DELAY);
+
+    int got = 0;
+    for (;; got++) {
+        Recv r = receive(sub.fd(), got == 0 ? DELAY + 2000 : 500);
+        ASSERT(ctx, r.ok, "waitpostdata failed: err=%u(%s)", r.err, err_name(r.err));
+        if (r.err == ERROR_WAIT_TIMEOUT) break;
+        std::string perr;
+        CHECK(ctx, strcmp(r.tag, "EVT_CAP") == 0 && check_payload(r.val.data(), POST_SZ, got, &perr),
+              "event #%d tag='%s': %s", got, r.tag, perr.c_str());
+        if (got > TOTAL) break;
+    }
+    CHECK(ctx, got == CAP, "delivered %d delayed events, want exactly %d (in-flight delayed posts must be capped)", got, CAP);
+}
+
+// --- [B][asan] 断开时立即取消并释放在途的延时投递（原先要等到期，停机时则泄漏）-----------------
+TEST("pubsub.delaypost_freed_on_disconnect", TAG_PUBSUB | TAG_DESTRUCTIVE | TAG_ASAN)
+{
+    if (!ctx.expectAsan) { ctx.skip("requires ASan build (make test-asan)"); return; }
+    ServerConfig cfg;
+    cfg.threads = 2;
+    cfg.asan = true;
+    cfg.recyWait = 1;
+    ServerFixture srv(cfg);
+    ASSERT(ctx, srv.start(), "private fixture start failed: %s", srv.startup_error().c_str());
+
+    unsigned err = 0;
+    {
+        ScopedConn sub(srv), pub(srv);
+        ASSERT(ctx, sub.ok() && pub.ok(), "connect failed");
+        REQUIRE_OK(ctx, subscribedelaypost(sub.fd(), fx::TAG_POST, "EVT_LONG", 300000, &err), err);
+        Rng rng(ctx.seed);
+        for (int i = 0; i < 20; i++) publish(ctx, pub.fd(), (uint32_t)i, rng, /*post=*/true);
+    }  // 两条连接都干净断开：20 个尚未到期的延时投递应随订阅方的断开一起释放
+
+    usleep(1500 * 1000);  // > recyWait(1s)：SIGTERM 时没有驻留连接
+    srv.stop();
+    AsanReport rep = srv.collect_asan();
+    CHECK(ctx, !rep.hasError, "ASan memory error: %s", rep.summary.c_str());
+    CHECK(ctx, !rep.hasLeak, "pending delayed posts leaked: %ld bytes / %d blocks", rep.leakBytes, rep.leakBlocks);
 }
 
 // --- [B] 订阅不存在的 tag：应校验并拒绝，置 TAG_NOT_EXIST（原 P1，已修复）-----

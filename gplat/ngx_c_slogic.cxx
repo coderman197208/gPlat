@@ -500,6 +500,9 @@ bool CLogicSocket::HandleSubscribe(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER 
 
 	auto* pPkgHead = reinterpret_cast<PPKGHEAD>(pPkgHeader);
 	const bool tagOk = IsTimerTag(pPkgHead->itemname) || ExistsB("BOARD", pPkgHead->itemname);
+	// 延时直接交给定时器（参数是 uint64_t，负数会回绕）；在途延时投递的数量由每连接上限约束，时长由 Sock_MaxPostDelay 约束
+	const bool argOk = static_cast<EVENTID>(pPkgHead->eventid) != EVENTID::POST_DELAY ||
+		(pPkgHead->eventarg >= 0 && pPkgHead->eventarg <= m_maxPostDelay);
 
 	CLock lock(&pConn->logicPorcMutex); // 凡是和本用户有关的访问都互斥
 	// 线程池入口的序号检查不持锁：本请求在途时连接可能已断开并完成清理，此时不得再留下订阅
@@ -508,7 +511,7 @@ bool CLogicSocket::HandleSubscribe(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER 
 		return true;
 	}
 
-	if (tagOk)
+	if (tagOk && argOk)
 	{
 		pConn->Attach(pPkgHead->itemname);
 
@@ -521,7 +524,7 @@ bool CLogicSocket::HandleSubscribe(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER 
 		m_subscriber.Attach(pPkgHead->itemname, eventnode);
 	}
 
-	pPkgHead->error = tagOk ? 0 : ERROR_TAG_NOT_EXIST;
+	pPkgHead->error = !argOk ? ERROR_INVALID_PARAMETER : (tagOk ? 0 : ERROR_TAG_NOT_EXIST);
 	pPkgHead->bodysize = 0;
 	SendReplyLocked(pMsgHeader, pPkgHead, AllocSendBuf(0));
 	return true;
@@ -544,6 +547,16 @@ bool CLogicSocket::HandlePostWait(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER p
 		return true;
 	}
 
+	const int waitMs = pPkgHead->timeout;
+	// -1 为无限等待；更小的负数会在交给定时器（uint64_t）时回绕。非法请求不改变当前的等待状态
+	if (waitMs < -1)
+	{
+		char* p_sendbuf = BuildPacket(pMsgHeader->pConn, pMsgHeader->iCurrsequence, POSTWAIT, nullptr, 0);
+		PkgHeadOf(p_sendbuf)->error = ERROR_INVALID_PARAMETER;
+		msgSend(p_sendbuf);
+		return true;
+	}
+
 	// 新的一次等待取代尚未结束的上一次（裸协议可以连发 POSTWAIT）：先停掉上一次的超时定时器
 	if (pConn->m_bWaitingTimeout)
 	{
@@ -560,7 +573,6 @@ bool CLogicSocket::HandlePostWait(lpngx_connection_t pConn, LPSTRUC_MSG_HEADER p
 		return true;
 	}
 
-	const int waitMs = pPkgHead->timeout;
 	if (waitMs == -1) // 无限等待
 	{
 		pConn->m_bWaitingPost = true;
@@ -609,15 +621,19 @@ void CLogicSocket::NotifySubscriber(const std::string& tagName, const char *pPkg
 					break;
 				}
 				CopyName(PkgHeadOf(p_sendbuf)->itemname, subscriber.eventname); // 延时事件以用户定义的事件名发布
-				g_tm.add_once(subscriber.eventarg, [this](void *arg)
-							  {
-					char* p_postbuf = static_cast<char*>(arg);
-					lpngx_connection_t pconn = reinterpret_cast<LPSTRUC_MSG_HEADER>(p_postbuf)->pConn;
-
-					// 定时器线程中执行，必须与 NotifySubscriber/HandlePostWait/超时回调互斥，否则一次 waitpostdata 可能收到两个包；
-					// 延时期间连接已断开或已被复用时 DeliverPostLocked 会丢弃它
-					CLock postLock(&pconn->logicPorcMutex);
-					DeliverPostLocked(pconn, p_postbuf, PkgHeadOf(p_postbuf)->itemname); }, p_sendbuf);
+				// 在途的延时投递与待发队列共用每连接上限，否则内存按 写入频率 × 延时 增长
+				if (!pConn->HasPostRoom())
+				{
+					pConn->DropPost(p_sendbuf, PkgHeadOf(p_sendbuf)->itemname);
+					break;
+				}
+				{
+					// 持有 logicPorcMutex 期间登记：回调要先拿到这把锁，不会早于登记查表
+					const uint64_t key = ngx_connection_s::s_nextDelayedKey.fetch_add(1, std::memory_order_relaxed);
+					const TimerManager::TimerId timerId = g_tm.add_once(static_cast<uint64_t>(subscriber.eventarg),
+						[this, pConn, key](void* arg) { OnDelayedPost(pConn, key, static_cast<char*>(arg)); }, p_sendbuf);
+					pConn->m_delayedPosts.emplace(key, ngx_connection_s::DelayedPost{ timerId, p_sendbuf });
+				}
 				break;
 			default:
 				ngx_log_stderr(0, "ERROR:unknown eventid");
@@ -632,6 +648,18 @@ void CLogicSocket::NotifySubscriber(const std::string& tagName, const char *pPkg
 			m_subscriber.DetachStale(tagName, pConn, subscriber.seq);
 		}
 	}
+}
+
+void CLogicSocket::OnDelayedPost(lpngx_connection_t pConn, uint64_t key, char* p_postbuf)
+{
+	// 必须与 NotifySubscriber/HandlePostWait/超时回调互斥，否则一次 waitpostdata 可能收到两个包
+	CLock lock(&pConn->logicPorcMutex);
+	if (pConn->m_delayedPosts.erase(key) == 0)
+	{
+		CMemory::GetInstance()->FreeMemory(p_postbuf);	// 连接已清理，且清理时本回调已开始执行、没能取消
+		return;
+	}
+	DeliverPostLocked(pConn, p_postbuf, PkgHeadOf(p_postbuf)->itemname);
 }
 
 void CLogicSocket::NotifyTimerSubscriber(const std::string& timerName, const char *pPkgBody, unsigned short iBodyLength)
@@ -998,7 +1026,7 @@ bool CLogicSocket::HandleGetResponse(lpngx_connection_t pConn, LPSTRUC_MSG_HEADE
 	unsigned int error = 0;
 
 	if (req->requestTag.empty() || req->responseTag.empty() || req->requestTag == req->responseTag ||
-		timeout <= 0 || requestSize <= 0 || requestSize != iBodyLength ||
+		timeout <= 0 || timeout > m_maxRequestTimeout || requestSize <= 0 || requestSize != iBodyLength ||
 		req->responseSize <= 0 || req->responseSize > MAXMSGLEN)
 	{
 		error = ERROR_INVALID_PARAMETER;

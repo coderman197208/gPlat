@@ -164,6 +164,19 @@ TEST("getresp.invalid_params", TAG_GETRESP)
                err, ERROR_INVALID_PARAMETER);
 }
 
+// --- [B] timeout_ms 超过 Sock_MaxRequestTimeout（默认 300000ms）→ 服务端 INVALID_PARAMETER，连接可连用 ---
+TEST("getresp.timeout_cap", TAG_GETRESP)
+{
+    ScopedConn c(ctx.server());
+    ASSERT(ctx, c.ok(), "connect failed");
+    unsigned err = 0;
+    std::vector<char> req(REQ_SZ, 0x12), rsp(REQ_SZ, 0);
+    EXPECT_ERR(ctx, getresponse(c.fd(), fx::REQ_TAG, req.data(), REQ_SZ, fx::RSP_TAG, rsp.data(), REQ_SZ, &err, 300001),
+               err, ERROR_INVALID_PARAMETER);
+    BOARD_INFO info{};
+    EXPECT_OK(ctx, readboardinfo(c.fd(), &info, sizeof(info), &err), err);
+}
+
 // --- [I] 尺寸超 MAXMSGLEN → PARAMETER_SIZE（客户端侧） ---------------------
 TEST("getresp.oversize_param", TAG_GETRESP)
 {
