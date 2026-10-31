@@ -173,12 +173,19 @@ TEST("race.postwait_close_no_crosstalk", TAG_PUBSUB | TAG_CONN | TAG_DESTRUCTIVE
 // ===========================================================================
 TEST("race.subscribe_close_no_stale", TAG_PUBSUB | TAG_CONN | TAG_DESTRUCTIVE)
 {
-    // 连接池只有 4 个对象、回收等待 1s：断开的连接对象很快回到空闲表并被后来的连接复用
-    PRIVATE_RACE_SERVER(srv, 4, 1);
-
     constexpr int kVictims = 24;
     constexpr int kPipelined = 300;
+    constexpr int kProbes = kVictims + 8;
     const char* kPlcTag = "RACE_PLC_TAG";
+
+    // 回收等待 1s：断开的连接对象很快回到空闲表并被后来的连接复用。空闲表先进先出，探针要取尽整个连接池，
+    // 才能保证每个受害连接用过的对象都被某个探针复用；worker_connections 是连接数上限（含监听 socket），
+    // 这里刚好容纳 监听 socket + 发布者 + 全部探针
+    PRIVATE_RACE_SERVER(srv, kProbes + 2, 1);
+
+    // 发布者最先连上，占住一个空闲对象，不与探针争抢受害连接用过的对象
+    ScopedConn pub(srv);
+    ASSERT(ctx, pub.ok(), "connect publisher failed");
 
     std::vector<MSGHEAD> heads;
     for (int i = 0; i < kPipelined; i++) {
@@ -212,7 +219,6 @@ TEST("race.subscribe_close_no_stale", TAG_PUBSUB | TAG_CONN | TAG_DESTRUCTIVE)
     usleep(2000 * 1000);
 
     // 足够多的新连接，覆盖整个连接池；它们都不订阅、不注册
-    constexpr int kProbes = kVictims + 8;
     std::vector<int> probes;
     for (int i = 0; i < kProbes; i++) {
         int fd = connectgplat(srv.ip(), srv.port());
@@ -220,8 +226,6 @@ TEST("race.subscribe_close_no_stale", TAG_PUBSUB | TAG_CONN | TAG_DESTRUCTIVE)
         probes.push_back(fd);
     }
 
-    ScopedConn pub(srv);
-    ASSERT(ctx, pub.ok(), "connect publisher failed");
     unsigned err = 0;
     std::vector<char> post(256, 'x');
     REQUIRE_OK(ctx, writeb(pub.fd(), fx::TAG_POST, post.data(), (int)post.size(), &err), err);

@@ -13,12 +13,40 @@
 #include <errno.h>     //errno
 #include <sys/ioctl.h> //ioctl
 #include <arpa/inet.h>
+#include <dirent.h>        //opendir
+#include <sys/resource.h>  //getrlimit/setrlimit
+#include <netinet/in.h>
+#include <netinet/tcp.h>   //TCP_KEEPIDLE/TCP_KEEPINTVL/TCP_KEEPCNT
 
 #include "ngx_c_conf.h"
 #include "ngx_macro.h"
 #include "ngx_global.h"
 #include "ngx_func.h"
 #include "ngx_c_socket.h"
+
+namespace
+{
+	//暂停/限频计时用单调时钟，不受系统校时影响
+	int64_t MonotonicMs()
+	{
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+	}
+
+	//当前进程已打开的 fd 数；读不到 /proc 时返回一个保守值
+	int CountOpenFds()
+	{
+		DIR* dir = opendir("/proc/self/fd");
+		if (dir == NULL)
+			return 64;
+		int n = 0;
+		while (readdir(dir) != NULL)
+			++n;
+		closedir(dir);
+		return n - 3; //不算 "."、".." 和 opendir 自己占用的 fd
+	}
+}
 
 //建立新连接专用函数，当新连接进入时，本函数会被ngx_epoll_process_events()所调用
 void CSocekt::ngx_event_accept(lpngx_connection_t oldc)
@@ -61,6 +89,16 @@ void CSocekt::ngx_event_accept(lpngx_connection_t oldc)
 				//除非你用一个循环不断的accept()取走所有的连接，不然一般不会有这个错误【我们这里只取一个连接，也就是accept()一次】
 				return;
 			}
+
+			//EMFILE:进程的fd已用尽；ENFILE:系统的fd已用尽；ENOBUFS/ENOMEM:内存不足
+			//这几种情况下连接不会从内核的已完成连接队列中取出，监听socket一直可读，水平触发下epoll_wait会立刻再次返回，
+			//不处理就会空转并每轮写一条日志，由ngx_accept_exhausted()拒绝排队的连接或暂停监听事件
+			if (err == EMFILE || err == ENFILE || err == ENOBUFS || err == ENOMEM)
+			{
+				ngx_accept_exhausted(oldc, err);
+				return;
+			}
+
 			level = NGX_LOG_ALERT;
 			if (err == ECONNABORTED)
 			{
@@ -71,15 +109,6 @@ void CSocekt::ngx_event_accept(lpngx_connection_t oldc)
 				//服务器进程一般可以忽略该错误，直接再次调用accept。
 				level = NGX_LOG_ERR;
 			}
-			else if (err == EMFILE || err == ENFILE)
-				//EMFILE:进程的fd已用尽【已达到系统所允许单一进程所能打开的文件/套接字总数】
-				//可参考：https://blog.csdn.net/sdn_prc/article/details/28661661   以及 https://bbs.csdn.net/topics/390592927
-				//ulimit -n ,看看文件描述符限制,如果是1024的话，需要改大;  打开的文件句柄数过多 ,把系统的fd软限制和硬限制都抬高
-				//ENFILE这个errno的存在，表明一定存在system-wide的resource limits，而不仅仅有process-specific的resource limits
-				//按照常识，process-specific的resource limits，一定受限于system-wide的resource limits。
-			{
-				level = NGX_LOG_CRIT;
-			}
 			ngx_log_error_core(level, errno, "CSocekt::ngx_event_accept()中accept4()失败!");
 
 			if (use_accept4 && err == ENOSYS) //accept4()函数没实现
@@ -87,21 +116,29 @@ void CSocekt::ngx_event_accept(lpngx_connection_t oldc)
 				use_accept4 = 0;  //标记不使用accept4()函数，改用accept()函数
 				continue;         //回去重新用accept()函数搞
 			}
+			return;
+		}
 
-			if (err == ECONNABORTED)  //对方关闭套接字
-			{
-				//这个错误因为可以忽略，所以不用干啥
-			}
+		//走到这里表示accept4()/accept()成功了
 
-			if (err == EMFILE || err == ENFILE)
+		//客户端连接数已达上限：立即关闭。客户端马上读到EOF，按连接错误处理（重连），而不是连上之后一直等不到应答；
+		//上限低于fd上限，正常过载时客户端连接用不光fd
+		if (m_onlineUserCount >= m_maxClientConnections)
+		{
+			close(s);
+			unsigned long suppressed;
+			if (m_logOverLimit.Allow(MonotonicMs() / 1000, &suppressed))
 			{
-				//do nothing，这个官方做法是先把读事件从listen socket上移除，然后再弄个定时器，定时器到了则继续执行该函数，但是定时器到了有个标记，会把读事件增加到listen socket上去；
-				//这里目前先不处理吧【因为上边已经写这个日志了】；
+				ngx_log_error_core(NGX_LOG_WARN, 0, "客户端连接数已达上限%d，拒绝新连接（上次记录后另拒绝%L个）",
+					m_maxClientConnections, (int64_t)suppressed);
 			}
 			return;
 		}
 
-		//走到这里表示accept4()/accept()成功了        
+		//预留fd在fd耗尽时被用掉、又没能重新打开：现在有空余fd，补上
+		if (m_idleFd == -1)
+			m_idleFd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+
 		newc = ngx_get_connection(s); //这是针对新连入用户的连接，和监听套接字 所对应的连接是两个不同的东西
 		if (newc == NULL)
 		{
@@ -112,7 +149,6 @@ void CSocekt::ngx_event_accept(lpngx_connection_t oldc)
 			}
 			return;
 		}
-		//将来这里会判断是否连接超过最大允许连接数，现在不处理
 
 		//成功的拿到了连接池中的一个连接
 		memcpy(&newc->s_sockaddr, &mysockaddr, socklen);  //拷贝客户端地址到连接对象【要转成字符串ip地址参考函数ngx_sock_ntop()】
@@ -140,6 +176,8 @@ void CSocekt::ngx_event_accept(lpngx_connection_t oldc)
 		newc->rhandler = &CSocekt::ngx_read_request_handler;  //设置数据来时的读处理函数，其实官方nginx中是ngx_http_wait_request_handler()
 		newc->whandler = &CSocekt::ngx_write_request_handler; //设置数据发送时的写处理函数。
 
+		ngx_set_keepalive(s);
+
 		//客户端应该主动发送第一次的数据，这里将读事件加入epoll监控，这样当客户端发送数据来时，会触发ngx_wait_request_handler()被ngx_epoll_process_events()调用        
 		if (ngx_epoll_oper_event(
 			s,						//socekt句柄
@@ -153,6 +191,7 @@ void CSocekt::ngx_event_accept(lpngx_connection_t oldc)
 			ngx_close_connection(newc);//关闭socket,这种可以立即回收这个连接，无需延迟，因为其上还没有数据收发，谈不到业务逻辑因此无需延迟；
 			return; //直接返回
 		}
+		++m_onlineUserCount;	//连接已建立，断开时在 ngx_close_and_recycle() 中 -1
 		/*
 		else
 		{
@@ -182,5 +221,164 @@ void CSocekt::ngx_event_accept(lpngx_connection_t oldc)
 	} while (1);
 
 	return;
+}
+
+//worker 中 epoll 初始化之后调用（此时固定占用的 fd 都已打开）：打开预留 fd，确定客户端连接上限
+//worker_connections 含监听 socket 占用的连接（与配置文件注释一致）。fd 不够时先把 RLIMIT_NOFILE 软上限抬到硬上限以内，
+//仍不够就降低连接上限，保证客户端连接用不光 fd：日志轮转、建队列文件、超限时临时 accept 再关闭都还有余量
+void CSocekt::ngx_init_accept_limits()
+{
+	m_idleFd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+	if (m_idleFd == -1)
+	{
+		ngx_log_error_core(NGX_LOG_ALERT, errno, "CSocekt::ngx_init_accept_limits()中open(/dev/null)失败，fd耗尽时只能暂停接受新连接!");
+	}
+
+	int maxClients = m_worker_connections - (int)m_ListenSocketList.size();
+	if (maxClients < 1)
+		maxClients = 1;
+
+	const int used = CountOpenFds();
+	const rlim_t need = (rlim_t)used + NGX_FD_SPARE + (rlim_t)maxClients;
+	struct rlimit rl;
+	if (getrlimit(RLIMIT_NOFILE, &rl) == -1)
+	{
+		ngx_log_error_core(NGX_LOG_ALERT, errno, "CSocekt::ngx_init_accept_limits()中getrlimit()失败，客户端连接上限按worker_connections确定!");
+		m_maxClientConnections = maxClients;
+		return;
+	}
+
+	if (rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur < need)
+	{
+		struct rlimit raised = rl;
+		raised.rlim_cur = (rl.rlim_max == RLIM_INFINITY || rl.rlim_max >= need) ? need : rl.rlim_max;
+		if (raised.rlim_cur > rl.rlim_cur)
+		{
+			if (setrlimit(RLIMIT_NOFILE, &raised) == 0)
+			{
+				ngx_log_error_core(NGX_LOG_NOTICE, 0, "RLIMIT_NOFILE软上限%L抬高到%L", (int64_t)rl.rlim_cur, (int64_t)raised.rlim_cur);
+				rl.rlim_cur = raised.rlim_cur;
+			}
+			else
+			{
+				ngx_log_error_core(NGX_LOG_ALERT, errno, "CSocekt::ngx_init_accept_limits()中setrlimit()失败!");
+			}
+		}
+	}
+	if (rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur < need)
+	{
+		const int64_t byFd = (int64_t)rl.rlim_cur - used - NGX_FD_SPARE;
+		maxClients = byFd < 1 ? 1 : (int)byFd;
+		ngx_log_error_core(NGX_LOG_WARN, 0, "进程可打开文件数上限RLIMIT_NOFILE=%L（硬上限%L）不足以支持worker_connections=%d，客户端连接上限降为%d；请调大ulimit -n或systemd的LimitNOFILE",
+			(int64_t)rl.rlim_cur, (int64_t)rl.rlim_max, m_worker_connections, maxClients);
+	}
+
+	m_maxClientConnections = maxClients;
+	ngx_log_error_core(NGX_LOG_NOTICE, 0, "客户端连接上限%d（worker_connections=%d，RLIMIT_NOFILE=%L，已打开fd %d）",
+		maxClients, m_worker_connections, (int64_t)rl.rlim_cur, used);
+}
+
+//accept 因 fd 或内存耗尽失败（EMFILE/ENFILE/ENOBUFS/ENOMEM），此时连接还留在内核的已完成连接队列里：
+//(1)fd 耗尽：关掉预留 fd 腾出一个名额，把排队的连接逐个取出并立即关闭。客户端马上读到 EOF/RST，按连接错误处理，
+//   队列清空后监听 socket 不再可读，epoll 线程不会空转
+//(2)做不到（预留 fd 已用掉、名额被别的线程抢走、内存不足）：暂停监听事件 NGX_ACCEPT_PAUSE_MS 毫秒，到期再试
+void CSocekt::ngx_accept_exhausted(lpngx_connection_t oldc, int err)
+{
+	int  rejected = 0;
+	bool stuck = true;	//队列里还有连接却取不出来，不暂停就会空转
+
+	if ((err == EMFILE || err == ENFILE) && m_idleFd != -1)
+	{
+		close(m_idleFd);
+		m_idleFd = -1;
+
+		int i;
+		for (i = 0; i < NGX_ACCEPT_DRAIN_MAX; ++i)
+		{
+			int s = accept(oldc->fd, NULL, NULL);
+			if (s != -1)
+			{
+				close(s);
+				++rejected;
+				continue;
+			}
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				stuck = false;		//队列已清空
+			if (errno != ECONNABORTED && errno != EINTR)
+				break;
+		}
+		if (i == NGX_ACCEPT_DRAIN_MAX)
+			stuck = false;			//取满一批，剩下的留给下一轮 epoll
+
+		m_idleFd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+	}
+
+	if (stuck)
+		ngx_pause_accept();
+
+	unsigned long suppressed;
+	if (m_logAcceptExhausted.Allow(MonotonicMs() / 1000, &suppressed))
+	{
+		ngx_log_error_core(NGX_LOG_CRIT, err, "CSocekt::ngx_event_accept()中accept4()失败，fd或内存耗尽：已拒绝%d个排队连接%s（上次记录后同类失败另有%L次）",
+			rejected, stuck ? "，暂停接受新连接" : "", (int64_t)suppressed);
+	}
+}
+
+//暂停所有监听 socket 的读事件：事件掩码置 0，epoll 不再报告可读；到期由 ngx_accept_wait_timeout() 恢复
+void CSocekt::ngx_pause_accept()
+{
+	if (!m_acceptPaused)
+	{
+		for (lpngx_listening_t ls : m_ListenSocketList)
+			ngx_epoll_oper_event(ls->fd, EPOLL_CTL_MOD, 0, 2, ls->connection);
+		m_acceptPaused = true;
+	}
+	m_acceptResumeAtMs = MonotonicMs() + NGX_ACCEPT_PAUSE_MS;
+}
+
+//每次 epoll_wait 之前调用：没暂停则原样返回 timer；暂停未到期则把等待时间限制在剩余时长内；到期则恢复监听事件
+int CSocekt::ngx_accept_wait_timeout(int timer)
+{
+	if (!m_acceptPaused)
+		return timer;
+
+	const int64_t left = m_acceptResumeAtMs - MonotonicMs();
+	if (left > 0)
+		return (timer < 0 || left < timer) ? (int)left : timer;
+
+	if (m_idleFd == -1)
+		m_idleFd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+
+	bool resumed = true;
+	for (lpngx_listening_t ls : m_ListenSocketList)
+	{
+		if (ngx_epoll_oper_event(ls->fd, EPOLL_CTL_MOD, EPOLLIN | EPOLLRDHUP, 2, ls->connection) == -1)
+			resumed = false;
+	}
+	if (!resumed)
+	{
+		//恢复失败（如内核内存不足）：保持暂停，稍后再试，否则监听 socket 会永远收不到新连接
+		m_acceptResumeAtMs = MonotonicMs() + NGX_ACCEPT_PAUSE_MS;
+		return (timer < 0 || NGX_ACCEPT_PAUSE_MS < timer) ? NGX_ACCEPT_PAUSE_MS : timer;
+	}
+	m_acceptPaused = false;
+	return timer;
+}
+
+//对端掉电、拔网线时不会发 FIN/RST，服务端从不主动发数据的空闲连接会一直占着 fd：用 TCP keepalive 探测并回收
+//（探测失败后 recv 返回 ETIMEDOUT，连接按出错关闭）
+void CSocekt::ngx_set_keepalive(int fd)
+{
+	if (!m_keepAlive)
+		return;
+
+	int on = 1;
+	if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &m_keepIdle, sizeof(m_keepIdle)) == -1 ||
+		setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &m_keepIntvl, sizeof(m_keepIntvl)) == -1 ||
+		setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &m_keepCnt, sizeof(m_keepCnt)) == -1 ||
+		setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof(on)) == -1)
+	{
+		ngx_log_error_core(NGX_LOG_ALERT, errno, "CSocekt::ngx_set_keepalive()中setsockopt(%d)失败!", fd);
+	}
 }
 

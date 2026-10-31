@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/resource.h>  // setrlimit（ServerConfig::nofile）
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -213,6 +214,8 @@ bool ServerFixture::write_config()
     fprintf(f, "Sock_RecyConnectionWaitTime = %d\n", cfg_.recyWait);
     fprintf(f, "[QBD]\n");
     fprintf(f, "QbdFilePath = %s\n", qbdPath_.c_str());
+    for (const std::string& line : cfg_.extraConf)
+        fprintf(f, "%s\n", line.c_str());
     bool ok = ferror(f) == 0;
     if (fclose(f) != 0) ok = false;
     if (!ok) startErr_ = "failed to flush test configuration";
@@ -270,6 +273,12 @@ bool ServerFixture::launch()
         if (!cfg_.suppFile.empty()) {
             std::string lsanOpt = "suppressions=" + cfg_.suppFile + ":print_suppressions=0";
             setenv("LSAN_OPTIONS", lsanOpt.c_str(), 1);
+        }
+
+        if (cfg_.nofile > 0) {
+            struct rlimit rl;
+            rl.rlim_cur = rl.rlim_max = (rlim_t)cfg_.nofile;
+            if (setrlimit(RLIMIT_NOFILE, &rl) != 0) _exit(125);
         }
 
         execl(gplatBin_.c_str(), "gplat", (char*)nullptr);

@@ -2,7 +2,7 @@
 //
 // 职责（对应方案第 4 节）：
 //   * 在 mkdtemp 临时目录建一棵与生产完全隔离的 sandbox：config/ qbdfile/ logs/ bin/(作 cwd)。
-//   * 生成 gplat.conf（动态端口、Daemon=0 前台、可调线程数/连接数/回收秒数）。
+//   * 生成 gplat.conf（动态端口、Daemon=0 前台、可调线程数/连接数/回收秒数，可追加配置行），可限定 RLIMIT_NOFILE。
 //   * 启动前用“本地 API”在 forked 子进程里把标准 fixtures 建进 sandbox/qbdfile（不污染本进程全局态）。
 //   * fork+exec 真实 gplat（按 /proc/self/exe 同目录定位，自动匹配普通/ASan 构建；rpath 自解析 ../lib）。
 //   * 就绪探针（net_raw READBOARDINFO 往返，带超时，避免挂死）。
@@ -40,6 +40,10 @@ struct ServerConfig {
     bool keepSandbox = false;  // true 或 env TS_KEEP_SANDBOX=1 时保留 sandbox 以便排查
     bool allowLeaks = false;   // 仅 shutdown-leak 特征化用例开启，不抑制内存错误
     bool allowAsanErrors = false; // 仅明确检查预期 ASan 故障的破坏性用例开启
+    int  nofile = 0;           // >0 时 exec 前把 gplat 的 RLIMIT_NOFILE 软/硬上限都设为该值（fd 预算用例）
+    // 追加到 gplat.conf 末尾的配置行（如 "Sock_KeepAliveIdle = 40"）。解析器取同名项第一次出现的值，
+    // 所以只能用于上面没有写出的配置项。
+    std::vector<std::string> extraConf;
 };
 
 // ASan/LSan 报告汇总。
@@ -83,6 +87,7 @@ public:
     const std::string& sandbox() const { return sandbox_; }
     const std::string& qbd_path() const { return qbdPath_; }
     const std::string& config_path() const { return confPath_; }
+    std::string log_path() const { return logDir_ + "/gplat.log"; }  // gplat 的日志文件（不含轮转出的 .1/.2/...）
 
     // connectgplat 便捷封装（调用方负责 disconnectgplat）。失败返回 <0。
     int open_conn();

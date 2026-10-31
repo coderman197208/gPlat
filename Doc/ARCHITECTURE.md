@@ -103,7 +103,7 @@ gPlat/
 ```
 
 **核心组件:**
-- `ngx_c_socket_accept.cxx`: 接受新连接
+- `ngx_c_socket_accept.cxx`: 接受新连接（连接数上限、fd 耗尽保护、TCP keepalive）
 - `ngx_c_socket_conn.cxx`: 连接池管理
 - `ngx_c_socket_request.cxx`: 请求接收和发送
 - `ngx_c_socket_inet.cxx`: 网络工具函数
@@ -415,15 +415,15 @@ ProcMsgRecvWorkThreadCount = 4
 ### 容量限制
 - 每个 Board/Database: 最大 7177 个项
 - 消息大小: 最大 128KB
-- 连接数: 可配置（`m_worker_connections`）
+- 连接数: 客户端连接上限 = `worker_connections` − 监听端口数，且受进程可打开文件数（`RLIMIT_NOFILE`）约束；超出的新连接被立即关闭
 
 ---
 
 ## 安全性考虑
 
 1. **序列号验证**: 防止消息重放
-2. **连接回收**: 心跳超时检测
-3. **资源限制**: 连接数、消息大小限制
+2. **连接回收**: TCP keepalive 探测死连接（`Sock_KeepAlive*`），断开的连接对象延迟回收
+3. **资源限制**: 连接数、消息大小限制；fd 耗尽时借预留 fd 拒绝排队连接或暂停监听，epoll 线程不空转
 
 ---
 

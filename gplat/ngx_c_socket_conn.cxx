@@ -249,6 +249,7 @@ void CSocekt::ngx_close_and_recycle(lpngx_connection_t pConn)
 			pConn->iThrowsendCount = 0;
 		}
 	}
+	--m_onlineUserCount;	//与 ngx_event_accept() 中的 +1 配对
 	inRecyConnectQueue(pConn);
 }
 

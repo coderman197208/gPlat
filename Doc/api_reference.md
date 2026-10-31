@@ -29,6 +29,7 @@ int connectgplat(const char* server, int port);
 ```
 - **功能**: 连接到 gPlat 服务器
 - **返回**: socket 文件描述符；失败返回 -1 并设置 errno（2 秒超时为 `ETIMEDOUT`），同时经错误钩子上报一次
+- **服务端连接数已满**: TCP 握手由内核完成，`connectgplat` 照常返回 fd，但服务端随即关闭该连接（客户端连接上限为 `worker_connections` 减监听端口数，并受服务端可打开文件数约束），之后第一个调用以 CONNECTION 类错误失败，按断线处理：`disconnectgplat` 后稍后重连
 - **示例**: `int sockfd = connectgplat("127.0.0.1", 8777);`
 
 ### disconnectgplat

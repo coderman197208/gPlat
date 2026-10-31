@@ -56,6 +56,18 @@ CSocekt::CSocekt()
 	//各种队列相关
 	m_iSendMsgQueueCount = 0;     //发消息队列大小
 	m_totol_recyconnection_n = 0; //待释放连接队列大小
+
+	//连接数上限、fd 耗尽保护：上限在 worker 的 ngx_init_accept_limits() 中确定
+	m_onlineUserCount = 0;
+	m_maxClientConnections = 0;
+	m_idleFd = -1;
+	m_acceptPaused = false;
+	m_acceptResumeAtMs = 0;
+
+	m_keepAlive = 1;
+	m_keepIdle = NGX_KEEPALIVE_IDLE;
+	m_keepIntvl = NGX_KEEPALIVE_INTERVAL;
+	m_keepCnt = NGX_KEEPALIVE_COUNT;
 	return;
 }
 
@@ -164,6 +176,12 @@ void CSocekt::Shutdown_subproc()
 	clearMsgSendQueue();
 	clearconnection();
 
+	if (m_idleFd != -1)
+	{
+		close(m_idleFd);
+		m_idleFd = -1;
+	}
+
 	//(4)多线程相关    
 	pthread_mutex_destroy(&m_connectionMutex);          //连接相关互斥量释放
 	pthread_mutex_destroy(&m_sendMessageQueueMutex);    //发消息互斥量释放    
@@ -196,6 +214,25 @@ void CSocekt::ReadConf()
 	m_RecyConnectionWaitTime = p_config->GetIntDefault("Sock_RecyConnectionWaitTime", m_RecyConnectionWaitTime); //等待这么些秒后才回收连接
 	int maxPost = p_config->GetIntDefault("Sock_MaxPendingPost", ngx_connection_s::kDefaultMaxPendingPost); //每连接待发事件队列上限
 	ngx_connection_s::s_maxPendingPost = maxPost > 0 ? maxPost : ngx_connection_s::kDefaultMaxPendingPost;
+
+	//TCP keepalive，取值超出内核允许的范围时回退缺省值
+	m_keepAlive = p_config->GetIntDefault("Sock_KeepAlive", m_keepAlive);
+	struct KeepAliveItem { const char* name; int* value; int def; int maxValue; };
+	const KeepAliveItem keepAliveItems[] = {
+		{ "Sock_KeepAliveIdle", &m_keepIdle, NGX_KEEPALIVE_IDLE, 32767 },
+		{ "Sock_KeepAliveInterval", &m_keepIntvl, NGX_KEEPALIVE_INTERVAL, 32767 },
+		{ "Sock_KeepAliveCount", &m_keepCnt, NGX_KEEPALIVE_COUNT, 127 },
+	};
+	for (const KeepAliveItem& item : keepAliveItems)
+	{
+		int v = p_config->GetIntDefault(item.name, item.def);
+		if (v < 1 || v > item.maxValue)
+		{
+			ngx_log_error_core(NGX_LOG_WARN, 0, "配置项%s=%d超出范围[1,%d]，改用缺省值%d", item.name, v, item.maxValue, item.def);
+			v = item.def;
+		}
+		*item.value = v;
+	}
 	return;
 }
 
@@ -483,6 +520,9 @@ int CSocekt::ngx_epoll_init()
 			exit(2); //有问题，直接退出，日志 已经写过了
 		}
 	} //end for 
+
+	//所有固定占用的 fd 都已打开，据此确定客户端连接上限
+	ngx_init_accept_limits();
 	return 1;
 }
 
@@ -635,6 +675,8 @@ int CSocekt::ngx_epoll_process_events(int timer)
 	//返回值：有错误发生返回-1，错误在errno中，比如你发个信号过来，就返回-1，错误信息是(4: Interrupted system call)
 	//       如果你等待的是一段时间，并且超时了，则返回0；
 	//       如果返回>0则表示成功捕获到这么多个事件【返回值里】
+	//暂停接受新连接期间不能无限等待：到期要恢复监听事件
+	timer = ngx_accept_wait_timeout(timer);
 	int events = epoll_wait(m_epollhandle, m_events, NGX_MAX_EVENTS, timer);
 
 	if (events == -1)

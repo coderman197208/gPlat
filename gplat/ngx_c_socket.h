@@ -22,6 +22,15 @@ extern TimerManager   g_tm;			//定时器全局对象
 #define NGX_LISTEN_BACKLOG  511    //已完成连接队列，nginx给511，我们也先按照这个来：不懂这个数字的同学参考第五章第四节
 #define NGX_MAX_EVENTS      512    //epoll_wait一次最多接收这么多个事件，nginx中缺省是512，我们这里固定给成512就行，没太大必要修改
 
+#define NGX_ACCEPT_DRAIN_MAX    64     //fd 耗尽时借预留 fd 一次最多取出并关闭这么多个排队连接，剩下的留给下一轮 epoll
+#define NGX_ACCEPT_PAUSE_MS     500    //腾不出 fd 时暂停接受新连接的时长（nginx 的 accept_mutex_delay 缺省也是 500ms）
+#define NGX_FD_SPARE            16     //fd 预算余量：日志轮转、建队列文件、超限时临时 accept 再关闭等
+#define NGX_LOG_THROTTLE_SEC    5      //accept 相关日志的限频间隔（秒）
+
+#define NGX_KEEPALIVE_IDLE      60     //Sock_KeepAliveIdle 缺省值：连接空闲多少秒后开始探测
+#define NGX_KEEPALIVE_INTERVAL  10     //Sock_KeepAliveInterval 缺省值：探测间隔（秒）
+#define NGX_KEEPALIVE_COUNT     6      //Sock_KeepAliveCount 缺省值：连续多少次探测无应答判定连接已死
+
 typedef struct ngx_listening_s   ngx_listening_t, * lpngx_listening_t;
 typedef struct ngx_connection_s  ngx_connection_t, * lpngx_connection_t;
 typedef class  CSocekt           CSocekt;
@@ -186,6 +195,11 @@ private:
 
 	//一些业务处理函数handler
 	void ngx_event_accept(lpngx_connection_t oldc);							//建立新连接
+	void ngx_init_accept_limits();											//worker 中 epoll 初始化之后调用：打开预留 fd，确定客户端连接上限，必要时抬高 RLIMIT_NOFILE
+	void ngx_accept_exhausted(lpngx_connection_t oldc, int err);			//accept 因 fd/内存耗尽失败：借预留 fd 拒绝排队连接，做不到就暂停监听事件
+	void ngx_pause_accept();												//暂停所有监听 socket 的读事件 NGX_ACCEPT_PAUSE_MS 毫秒
+	int  ngx_accept_wait_timeout(int timer);								//暂停到期则恢复监听事件；返回本轮 epoll_wait 应使用的超时
+	void ngx_set_keepalive(int fd);											//给新连接打开 TCP keepalive
 	void ngx_read_request_handler(lpngx_connection_t pConn);				//设置数据来时的读处理函数
 	void ngx_write_request_handler(lpngx_connection_t pConn);				//设置数据发送时的写处理函数
 	void ngx_close_connection(lpngx_connection_t pConn);					//通用连接关闭函数，资源用这个函数释放【因为这里涉及到好几个要释放的资源，所以写成函数】
@@ -250,6 +264,41 @@ private:
 
 	std::vector<lpngx_listening_t> m_ListenSocketList;					//监听套接字队列
 	struct epoll_event             m_events[NGX_MAX_EVENTS];			//用于在epoll_wait()中承载返回的所发生的事件
+
+	//连接数上限、fd 耗尽保护（除 m_onlineUserCount 外只在 epoll 线程访问）
+	struct LogThrottle													//限频日志：首条立即记，之后每 NGX_LOG_THROTTLE_SEC 秒最多一条
+	{
+		bool          logged = false;
+		time_t        last = 0;
+		unsigned long suppressed = 0;
+		//返回 true 表示现在该记一条，*suppressedOut 为上次记录之后被抑制的条数
+		bool Allow(time_t now, unsigned long* suppressedOut)
+		{
+			if (logged && now - last < NGX_LOG_THROTTLE_SEC)
+			{
+				++suppressed;
+				return false;
+			}
+			*suppressedOut = suppressed;
+			suppressed = 0;
+			last = now;
+			logged = true;
+			return true;
+		}
+	};
+	std::atomic<int>               m_onlineUserCount;					//已建立的客户端连接数：accept 成功 +1，ngx_close_and_recycle() -1
+	int                            m_maxClientConnections;				//客户端连接上限：worker_connections 扣除监听 socket，并受 RLIMIT_NOFILE 约束
+	int                            m_idleFd;							//预留 fd（/dev/null）：fd 耗尽时关掉它腾出名额，取出排队连接立即关闭
+	bool                           m_acceptPaused;						//监听 socket 的读事件已暂停
+	int64_t                        m_acceptResumeAtMs;					//暂停到期时刻（CLOCK_MONOTONIC 毫秒）
+	LogThrottle                    m_logAcceptExhausted;				//accept 因 fd/内存耗尽失败
+	LogThrottle                    m_logOverLimit;						//连接数达到上限而拒绝
+
+	//TCP keepalive：对端掉电、拔网线时不会发 FIN/RST，空闲连接会一直占着 fd，靠探测回收
+	int                            m_keepAlive;							//Sock_KeepAlive：0 关闭
+	int                            m_keepIdle;							//Sock_KeepAliveIdle：空闲多少秒后开始探测
+	int                            m_keepIntvl;							//Sock_KeepAliveInterval：探测间隔（秒）
+	int                            m_keepCnt;							//Sock_KeepAliveCount：连续多少次无应答判定连接已死
 
 	//消息队列
 	std::list<char*>              m_MsgSendQueue;						//发送数据消息队列
