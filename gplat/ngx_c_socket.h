@@ -211,7 +211,7 @@ private:
 
 	//一些业务处理函数handler
 	void ngx_event_accept(lpngx_connection_t oldc);							//建立新连接
-	void ngx_init_accept_limits();											//worker 中 epoll 初始化之后调用：打开预留 fd，确定客户端连接上限，必要时抬高 RLIMIT_NOFILE
+	void ngx_init_accept_limits();											//epoll 初始化之后调用：打开预留 fd，确定客户端连接上限，必要时抬高 RLIMIT_NOFILE
 	void ngx_accept_exhausted(lpngx_connection_t oldc, int err);			//accept 因 fd/内存耗尽失败：借预留 fd 拒绝排队连接，做不到就暂停监听事件
 	void ngx_pause_accept();												//暂停所有监听 socket 的读事件 NGX_ACCEPT_PAUSE_MS 毫秒
 	int  ngx_accept_wait_timeout(int timer);								//暂停到期则恢复监听事件；返回本轮 epoll_wait 应使用的超时

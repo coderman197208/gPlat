@@ -18,14 +18,14 @@
 int ngx_daemon()
 {
 	//(1)创建守护进程的第一步，fork()一个子进程出来
-	switch (fork())  //fork()出来这个子进程才会成为咱们这里讲解的master进程；
+	switch (fork())  //fork()出来的这个子进程就是以后唯一的服务进程；
 	{
 	case -1:
 		//创建子进程失败
 		ngx_log_error_core(NGX_LOG_EMERG, errno, "ngx_daemon()中fork()失败!");
 		return -1;
 	case 0:
-		//子进程，走到这里直接break;
+		//子进程，走到这里直接break;，它就是以后唯一的服务进程
 		break;
 	default:
 		//父进程以往直接退出exit(0);现在希望回到主流程去释放一些资源
@@ -33,7 +33,6 @@ int ngx_daemon()
 	} //end switch
 
 	//只有fork()出来的子进程才能走到这个流程
-	ngx_parent = ngx_pid;     //ngx_pid是原来父进程的id，因为这里是子进程，所以子进程的ngx_parent设置为原来父进程的pid
 	ngx_pid = getpid();       //当前子进程的id要重新取得
 
 	//(2)脱离终端，终端关闭，将跟此子进程无关

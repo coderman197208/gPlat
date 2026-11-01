@@ -94,7 +94,7 @@ int main(int argc, char** argv)
     unsetenv("ASAN_OPTIONS");
     unsetenv("LSAN_OPTIONS");
 
-    // SIGKILL master 后领养本套件的 worker，按具体 PID 回收，避免留下孤儿/僵尸。
+    // SIGKILL 杀掉 gplat 后，若有遗留的子进程由本套件领养，可按具体 PID 回收，避免留下孤儿/僵尸。
     if (prctl(PR_SET_CHILD_SUBREAPER, 1) != 0) {
         perror("PR_SET_CHILD_SUBREAPER");
         return 2;

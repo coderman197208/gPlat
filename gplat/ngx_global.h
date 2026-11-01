@@ -32,23 +32,13 @@ typedef struct
 }ngx_log_t;
 
 //外部全局量声明
-extern size_t        g_argvneedmem;
-extern size_t        g_envneedmem; 
-extern int           g_os_argc; 
-extern char          **g_os_argv;
-extern char          *gp_envmem; 
-extern int           g_daemonized;
 extern CLogicSocket  g_socket;  
 extern CThreadPool   g_threadpool;
 
 extern pid_t         ngx_pid;
-extern pid_t         ngx_parent;
 extern ngx_log_t     ngx_log;
-extern int           ngx_process;   
-extern sig_atomic_t  ngx_reap;   
-extern std::atomic<int> g_stopEventChild;	//worker 退出标志，主线程置位，发送/回收线程轮询
-extern int           g_stopEventMain;
+extern std::atomic<int> g_stopEvent;	//退出标志，主线程置位，发送/回收线程轮询
 
-extern int sockpair[2]; //socketpair的文件描述符，父进程和子进程之间的通信管道
+extern int g_signal_fd; //signalfd，由epoll线程读取SIGINT/SIGTERM等信号
 
 #endif

@@ -65,42 +65,6 @@ int pick_free_port(int preferred)
     return 0;
 }
 
-// 扫描 /proc 找第一个 ppid==parent 的进程。找不到返回 0。
-static pid_t find_child_of(pid_t parent)
-{
-    DIR* d = opendir("/proc");
-    if (!d) return 0;
-    pid_t found = 0;
-    struct dirent* e;
-    while ((e = readdir(d)) != nullptr) {
-        // 只看纯数字目录
-        const char* s = e->d_name;
-        bool numeric = s[0] != '\0';
-        for (const char* q = s; *q; q++) if (*q < '0' || *q > '9') { numeric = false; break; }
-        if (!numeric) continue;
-
-        char path[300];
-        snprintf(path, sizeof(path), "/proc/%s/stat", s);
-        FILE* f = fopen(path, "r");
-        if (!f) continue;
-        char line[512];
-        if (fgets(line, sizeof(line), f)) {
-            char* rp = strrchr(line, ')');  // comm 可能含空格/括号，取最后一个 ')'
-            if (rp) {
-                char state;
-                int ppid = 0;
-                if (sscanf(rp + 1, " %c %d", &state, &ppid) == 2 && ppid == (int)parent) {
-                    found = (pid_t)atoi(s);
-                }
-            }
-        }
-        fclose(f);
-        if (found) break;
-    }
-    closedir(d);
-    return found;
-}
-
 // ---------------------------------------------------------------------------
 // ServerFixture
 // ---------------------------------------------------------------------------
@@ -204,8 +168,7 @@ bool ServerFixture::write_config()
     fprintf(f, "LogRotateFileCount = 3\n");
     fprintf(f, "LogRotateFileSize = 5\n");
     fprintf(f, "[Proc]\n");
-    fprintf(f, "WorkerProcesses = 1\n");
-    fprintf(f, "Daemon = 0\n");  // 前台：exec 出来的进程即 master，便于拿 pid 与优雅退出
+    fprintf(f, "Daemon = 0\n");  // 前台：exec 出来的进程即 gplat，便于拿 pid 与优雅退出
     fprintf(f, "ProcMsgRecvWorkThreadCount = %d\n", cfg_.threads);
     fprintf(f, "[Net]\n");
     fprintf(f, "ListenPortCount = 1\n");
@@ -256,7 +219,7 @@ bool ServerFixture::launch()
         return false;
     }
     if (pid == 0) {
-        // 子进程 → 变成 gplat master
+        // 子进程 → 变成 gplat
         setpgid(0, 0);                 // 自成进程组，便于按组强杀
         if (chdir(cwdDir_.c_str()) != 0) _exit(126);
 
@@ -286,23 +249,20 @@ bool ServerFixture::launch()
     }
 
     // 父进程
-    masterPid_ = pid;
-    workerPid_ = 0;
+    pid_ = pid;
     alive_ = true;
     forcedStop_ = false;
     lastExitCode_ = -1;
     if (!wait_ready(15000)) {
-        reap_master();
-        startErr_ = masterPid_ <= 0 ? "gplat exited early with code " + std::to_string(lastExitCode_)
-                                   : "gplat not ready within timeout";
+        reap();
+        startErr_ = pid_ <= 0 ? "gplat exited early with code " + std::to_string(lastExitCode_)
+                              : "gplat not ready within timeout";
         escalate_kill();
         alive_ = false;
         return false;
     }
-    workerPid_ = find_child_of(masterPid_);
-    if (workerPid_ <= 0) { startErr_ = "cannot identify fixture worker"; stop(); return false; }
     if (cfg_.asan) {
-        std::ifstream maps("/proc/" + std::to_string(workerPid_) + "/maps");
+        std::ifstream maps("/proc/" + std::to_string(pid_) + "/maps");
         std::ostringstream text;
         text << maps.rdbuf();
         if (text.str().find("libasan.so") == std::string::npos) {
@@ -319,11 +279,11 @@ bool ServerFixture::wait_ready(int timeoutMs)
     int waited = 0;
     const int step = 100;
     while (waited < timeoutMs) {
-        // master 是否已提前死亡
+        // gplat 是否已提前死亡
         int st = 0;
-        if (waitpid(masterPid_, &st, WNOHANG) == masterPid_) {
+        if (waitpid(pid_, &st, WNOHANG) == pid_) {
             if (WIFEXITED(st)) lastExitCode_ = WEXITSTATUS(st);
-            masterPid_ = -1;
+            pid_ = -1;
             alive_ = false;
             return false;
         }
@@ -338,7 +298,7 @@ bool ServerFixture::wait_ready(int timeoutMs)
             RecvStatus rs = sent ? recv_msg(fd, out, body) : RecvStatus::PROTO_ERR;
             close(fd);
             if (sent && rs == RecvStatus::OK && out.id == READBOARDINFO &&
-                out.error == 0 && body.size() == sizeof(BOARD_INFO) && !reap_master())
+                out.error == 0 && body.size() == sizeof(BOARD_INFO) && !reap())
                 return true;
         }
         timespec tss{0, step * 1000000};
@@ -350,16 +310,14 @@ bool ServerFixture::wait_ready(int timeoutMs)
 
 void ServerFixture::stop()
 {
-    if (masterPid_ <= 0 && workerPid_ <= 0) { alive_ = false; return; }
-    if (masterPid_ > 0) kill(masterPid_, SIGTERM);
+    if (pid_ <= 0) { alive_ = false; return; }
+    kill(pid_, SIGTERM);
 
-    // 等待 master 优雅退出，最多 8 秒
+    // 等待 gplat 优雅退出，最多 8 秒
     int waited = 0;
     const int step = 50;
     while (waited < 8000) {
-        reap_master();
-        reap_worker();
-        if (masterPid_ <= 0 && workerPid_ <= 0) { alive_ = false; return; }
+        if (reap()) { alive_ = false; return; }
         timespec tss{0, step * 1000000};
         nanosleep(&tss, nullptr);
         waited += step;
@@ -378,40 +336,24 @@ void ServerFixture::kill9()
 
 void ServerFixture::escalate_kill()
 {
-    if (workerPid_ <= 0 && masterPid_ > 0) workerPid_ = find_child_of(masterPid_);
-    if (workerPid_ > 0) kill(workerPid_, SIGKILL);
-    if (masterPid_ > 0) kill(masterPid_, SIGKILL);
-    int st = 0;
-    if (masterPid_ > 0)
-        while (waitpid(masterPid_, &st, 0) < 0 && errno == EINTR) {}
-    if (workerPid_ > 0)
-        while (waitpid(workerPid_, &st, 0) < 0 && errno == EINTR) {}
-    masterPid_ = -1;
-    workerPid_ = 0;
+    if (pid_ > 0) {
+        kill(pid_, SIGKILL);
+        int st = 0;
+        while (waitpid(pid_, &st, 0) < 0 && errno == EINTR) {}
+    }
+    pid_ = -1;
     alive_ = false;
 }
 
-bool ServerFixture::reap_master()
+bool ServerFixture::reap()
 {
-    if (masterPid_ <= 0) return true;
+    if (pid_ <= 0) return true;
     int st = 0;
-    pid_t w = waitpid(masterPid_, &st, WNOHANG);
-    if (w == masterPid_ || (w < 0 && errno == ECHILD)) {
+    pid_t w = waitpid(pid_, &st, WNOHANG);
+    if (w == pid_ || (w < 0 && errno == ECHILD)) {
         if (w > 0 && WIFEXITED(st)) lastExitCode_ = WEXITSTATUS(st);
-        masterPid_ = -1;
+        pid_ = -1;
         alive_ = false;
-        return true;
-    }
-    return false;
-}
-
-bool ServerFixture::reap_worker()
-{
-    if (workerPid_ <= 0) return true;
-    int st = 0;
-    pid_t w = waitpid(workerPid_, &st, WNOHANG);
-    if (w == workerPid_ || (w < 0 && errno == ECHILD && kill(workerPid_, 0) < 0 && errno == ESRCH)) {
-        workerPid_ = 0;
         return true;
     }
     return false;
@@ -419,17 +361,15 @@ bool ServerFixture::reap_worker()
 
 bool ServerFixture::running()
 {
-    reap_master();
-    return masterPid_ > 0 && alive_;
+    reap();
+    return pid_ > 0 && alive_;
 }
 
 bool ServerFixture::wait_stopped(int timeoutMs)
 {
     const uint64_t deadline = now_nanos() + static_cast<uint64_t>(timeoutMs) * 1000000;
     do {
-        reap_master();
-        reap_worker();
-        if (masterPid_ <= 0 && workerPid_ <= 0) return true;
+        if (reap()) return true;
         usleep(10000);
     } while (now_nanos() < deadline);
     return false;
@@ -439,17 +379,6 @@ bool ServerFixture::relaunch()
 {
     // 复用现有 sandbox/qbdfile/config（不重建夹具），仅重新拉起进程 —— 持久化/重启用例用。
     return launch();
-}
-
-pid_t ServerFixture::worker_pid()
-{
-    if (workerPid_ > 0) {
-        // 确认仍存活
-        if (kill(workerPid_, 0) == 0) return workerPid_;
-        workerPid_ = 0;
-    }
-    if (masterPid_ > 0) workerPid_ = find_child_of(masterPid_);
-    return workerPid_;
 }
 
 int ServerFixture::open_conn()

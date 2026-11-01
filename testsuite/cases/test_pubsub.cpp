@@ -10,7 +10,7 @@
 //   * waitpostdata 超时：返回 true、error==WAIT_TIMEOUT、tagname=="WAIT_TIMEOUT"（注意返回 true）。
 //   * 非法入参（tagnamesize<40 / buffersize<=0 / timeout<-1）：返回 false、INVALID_PARAMETER，且不关 socket。
 //
-// 跨连接前提：sandbox 配置 WorkerProcesses=1（单 worker 进程），m_subscriber 进程内共享。
+// 跨连接前提：gplat 是单进程，m_subscriber 进程内共享。
 // 共享 server 纪律：订阅随连接断开被 CancelSubscribe 清理（见 ngx_c_socket_request.cxx:44），
 //   故每个用例用全新 ScopedConn 订阅、退出即净；只 writeb 夹具 tag TAG_POST，不碰其它夹具。
 #include <unistd.h>
@@ -434,7 +434,7 @@ TEST("pubsub.listpost_capped_trend", TAG_PUBSUB | TAG_MEMORY)
     cfg.asan = ctx.expectAsan;
     ServerFixture srv(cfg);
     ASSERT(ctx, srv.start(), "private fixture start failed: %s", srv.startup_error().c_str());
-    pid_t wpid = srv.worker_pid();
+    pid_t wpid = srv.server_pid();
     ASSERT(ctx, wpid > 0, "cannot resolve worker pid for sampling");
 
     unsigned err = 0;

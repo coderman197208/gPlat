@@ -63,7 +63,7 @@ bool write_sentinel(TestContext& ctx, ServerFixture& srv)
 static void run_churn(TestContext& ctx, int count)
 {
     PRIVATE_SERVER_T(srv, 2, 2);
-    pid_t wpid = srv.worker_pid();
+    pid_t wpid = srv.server_pid();
     ASSERT(ctx, wpid > 0, "cannot resolve worker pid");
     if (!write_sentinel(ctx, srv)) return;
 
@@ -133,7 +133,7 @@ TEST("conn_churn.extreme_short_connections", TAG_CONN | TAG_STRESS) { run_churn(
 TEST("conn_churn.rst_abort", TAG_CONN)
 {
     PRIVATE_SERVER_T(srv, 2, 2);
-    pid_t wpid = srv.worker_pid();
+    pid_t wpid = srv.server_pid();
     ASSERT(ctx, wpid > 0, "cannot resolve worker pid");
     if (!write_sentinel(ctx, srv)) return;
 

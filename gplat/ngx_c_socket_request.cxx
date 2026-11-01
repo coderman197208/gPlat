@@ -263,7 +263,7 @@ ssize_t CSocekt::sendproc(lpngx_connection_t c, char* buff, ssize_t size)
 
 	for (;; )
 	{
-		//对端已重置时 send() 默认会产生 SIGPIPE 杀死整个 worker 进程，这里改为返回 EPIPE
+		//对端已重置时 send() 默认会产生 SIGPIPE 杀死整个进程，这里改为返回 EPIPE
 		n = send(c->fd, buff, size, MSG_NOSIGNAL);
 		if (n > 0) //成功发送了一些数据
 		{

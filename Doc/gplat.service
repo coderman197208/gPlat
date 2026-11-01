@@ -1,0 +1,24 @@
+# gPlat 的 systemd 单元示例。gPlat 是单进程多线程，进程守护（崩溃重启、开机自启）交给 systemd。
+# 部署：
+#   1. 把路径改成实际安装位置（配置、QBD、日志路径都相对 WorkingDirectory）
+#   2. config/gplat.conf 中设 Daemon = 0（由 systemd 托管，不要自己 fork 成守护进程）
+#   3. cp Doc/gplat.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now gplat
+[Unit]
+Description=gPlat real-time data middleware
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gplat/bin
+ExecStart=/opt/gplat/bin/gplat
+# 崩溃或被杀后自动重启。重启时会重新 LoadQ，Board 的锁随之重建，所以持锁时崩溃也能安全恢复
+Restart=always
+RestartSec=1
+# SIGTERM 触发优雅退出（停定时器 → 停线程池 → 释放连接），超时后 systemd 发 SIGKILL
+KillSignal=SIGTERM
+TimeoutStopSec=15
+# 客户端连接数受进程可打开文件数约束，见 gplat.conf 的 worker_connections
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

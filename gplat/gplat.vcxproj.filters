@@ -7,9 +7,6 @@
     <ClCompile Include="ngx_string.cxx">
       <Filter>nginx</Filter>
     </ClCompile>
-    <ClCompile Include="ngx_setproctitle.cxx">
-      <Filter>nginx</Filter>
-    </ClCompile>
     <ClCompile Include="ngx_log.cxx">
       <Filter>nginx</Filter>
     </ClCompile>

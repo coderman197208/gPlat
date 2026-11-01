@@ -223,7 +223,7 @@ void CSocekt::ngx_event_accept(lpngx_connection_t oldc)
 	return;
 }
 
-//worker 中 epoll 初始化之后调用（此时固定占用的 fd 都已打开）：打开预留 fd，确定客户端连接上限
+//epoll 初始化之后调用（此时固定占用的 fd 都已打开）：打开预留 fd，确定客户端连接上限
 //worker_connections 含监听 socket 占用的连接（与配置文件注释一致）。fd 不够时先把 RLIMIT_NOFILE 软上限抬到硬上限以内，
 //仍不够就降低连接上限，保证客户端连接用不光 fd：日志轮转、建队列文件、超限时临时 accept 再关闭都还有余量
 void CSocekt::ngx_init_accept_limits()

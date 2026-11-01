@@ -250,7 +250,7 @@ TEST("mem.connpool_hwm_trend", TAG_MEMORY | TAG_CONN)
     constexpr int RECY   = 1;    // 回收等待 1s → 积压窗口短但足以让整轮 churn 堆积
     PRIVATE_TREND_SERVER(srv, WCONNS, RECY);
 
-    pid_t wpid = srv.worker_pid();
+    pid_t wpid = srv.server_pid();
     ASSERT(ctx, wpid > 0, "cannot resolve worker pid for sampling");
 
     // 预写哨兵值：churn 中每次 readb 校验数据面始终正确（池增长不得损坏既有数据）。

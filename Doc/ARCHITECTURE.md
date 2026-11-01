@@ -2,7 +2,7 @@
 
 ## 概述
 
-gPlat 是一个高性能的实时数据平台，采用 Nginx 启发的主从进程架构，专为工业自动化和分布式系统的进程间通信（IPC）而设计。它提供队列（Queue）、公告板（Board）两种核心数据结构，支持低延迟、高并发的数据交换。
+gPlat 是一个高性能的实时数据平台，采用 Nginx 启发的事件驱动架构（单进程，主线程 epoll + 辅助线程），专为工业自动化和分布式系统的进程间通信（IPC）而设计。它提供队列（Queue）、公告板（Board）两种核心数据结构，支持低延迟、高并发的数据交换。
 
 ---
 
@@ -40,7 +40,7 @@ gPlat/
 |---------|---------|
 | **网络通信** | POSIX Sockets, Epoll (Linux I/O 多路复用) |
 | **线程模型** | POSIX Threads (pthread), C++11 atomics, mutex, condition_variable |
-| **进程间通信** | Unix Domain Sockets, socketpair |
+| **进程间通信** | TCP (8777)、mmap 共享内存（本地 API）、signalfd |
 | **内存管理** | Memory-mapped files (mmap), 自定义内存池 |
 | **数据序列化** | 二进制协议 + CRC32 校验 |
 | **定时器** | timerfd, eventfd, 自定义 TimerManager |
@@ -54,33 +54,31 @@ gPlat/
 
 ## 核心架构
 
-### 1. 主从进程模型（Master-Worker Architecture）
+### 1. 单进程多线程模型
 
-参考 Nginx 设计，实现高性能的多进程架构：
+订阅表、请求通道、连接池和 Board 的锁都在同一个进程里，所以 gPlat 是**单进程**：主线程跑 epoll 事件循环，其余是辅助线程。
+没有 master/worker：master 不能带来多核（多核由线程池利用）、也不重启崩溃的 worker，只增加了信号、日志、退出顺序上的复杂度。
+进程守护（崩溃重启、开机自启）交给 systemd，见 `Doc/gplat.service`。
 
 ```
-┌─────────────────────────────────────┐
-│      Master Process                 │
-│  - 读取配置                         │
-│  - 创建 Worker 进程                 │
-│  - 处理信号（reload, shutdown）     │
-│  - 监控 Worker 健康状态             │
-└──────────┬──────────────────────────┘
-           │
-           ├─────────────┬──────────────┬───────────
-           │             │              │
-      ┌────▼────┐   ┌────▼────┐   ┌────▼────┐
-      │ Worker 1│   │ Worker 2│   │ Worker N│
-      │ - Epoll │   │ - Epoll │   │ - Epoll │
-      │ - 连接池│   │ - 连接池│   │ - 连接池│
-      │ - 线程池│   │ - 线程池│   │ - 线程池│
-      └─────────┘   └─────────┘   └─────────┘
+┌──────────────────────────────────────────────┐
+│                gplat 进程                    │
+│  主线程：epoll 循环（accept / 收包 / signalfd）│
+│  线程池：处理消息（N 个，ProcMsgRecvWorkThreadCount）│
+│  发送线程：处理发送队列、EPOLLOUT 余量       │
+│  回收线程：连接延迟回收                      │
+│  定时器线程：timerfd + 最小堆                │
+└──────────────────────────────────────────────┘
 ```
+
+**启动顺序**（`nginx.cxx`）：配置 → 日志 → 加载 QBD → 监听端口 → 守护进程化（`Daemon=1`，此时还没有线程）→ 屏蔽信号并建 signalfd → 创建线程并进入事件循环。
+**退出顺序**（`ngx_process_cycle.cxx`）：收到 SIGINT/SIGTERM → 定时器线程 → 线程池 → 发送/回收线程并释放连接池。
+**信号**：没有信号处理函数；退出类信号屏蔽后经 signalfd 由 epoll 线程读取。`WorkerProcesses` 配置项已废弃，会被忽略。
 
 **关键文件:**
 - `nginx.cxx`: 主入口
-- `ngx_process_cycle.cxx`: 进程生命周期管理
-- `ngx_signal.cxx/h`: 信号处理
+- `ngx_process_cycle.cxx`: 创建线程、事件循环、有序退出
+- `ngx_signal.cxx`: 信号屏蔽与 signalfd
 
 ### 2. 网络层架构（Socket Layer）
 
@@ -316,7 +314,6 @@ class CSubscribe {
 - INI 格式配置文件（nginx.conf）
 - 支持的配置项:
   - `ListenPort`: 监听端口（默认 8777）
-  - `WorkerProcesses`: Worker 进程数
   - `Daemon`: 守护进程模式
   - `ProcMsgRecvWorkThreadCount`: 消息处理线程数
 
@@ -344,10 +341,6 @@ class TimerManager {
 - 基于 timerfd + epoll 集成
 - 支持周期和一次性定时器
 
-### 进程标题设置 (`ngx_setproctitle.cxx`)
-- 动态设置进程名称
-- 便于监控和管理（例如: `nginx: master process`, `nginx: worker process`）
-
 ---
 
 ## 部署架构
@@ -356,7 +349,6 @@ class TimerManager {
 ```ini
 [Socket]
 ListenPort = 8777
-WorkerProcesses = 1
 
 [Proc]
 Daemon = 1
@@ -377,11 +369,10 @@ ProcMsgRecvWorkThreadCount = 4
 ```
 
 ### 守护进程模式
-- 支持后台运行（Daemon=1）
+- 支持后台运行（Daemon=1）；由 systemd 托管时用 Daemon=0（`Doc/gplat.service`）
 - 信号处理:
-  - `SIGTERM`: 优雅关闭
-  - `SIGHUP`: 重新加载配置
-  - `SIGQUIT`: 快速关闭
+  - `SIGTERM` / `SIGINT`: 优雅关闭
+  - `SIGHUP` / `SIGQUIT`: 仅记日志，不退出（没有 reload 功能）
 
 ---
 
@@ -400,7 +391,7 @@ ProcMsgRecvWorkThreadCount = 4
 4. **对象池**: 减少内存分配/释放
 
 ### 并发优化
-1. **主从进程模型**: 利用多核 CPU
+1. **单进程多线程**: 线程池利用多核
 2. **线程池**: 避免线程创建开销
 3. **无锁队列**: 减少锁竞争（部分场景）
 
@@ -409,8 +400,8 @@ ProcMsgRecvWorkThreadCount = 4
 ## 可扩展性
 
 ### 水平扩展
-- 多 Worker 进程利用多核
-- 每个 Worker 可配置线程池大小
+- 线程池利用多核，线程数可配置（`ProcMsgRecvWorkThreadCount`）
+- 单进程，不做多进程水平扩展
 
 ### 容量限制
 - 每个 Board/Database: 最大 7177 个项
@@ -445,7 +436,7 @@ ProcMsgRecvWorkThreadCount = 4
 gPlat 是一个专为实时系统设计的高性能 IPC 平台，其架构特点包括:
 
 1. **高性能**: Epoll 事件驱动 + 内存映射文件 + 零拷贝
-2. **高可靠性**: 主从进程架构 + CRC32 校验 + 数据持久化
+2. **高可靠性**: systemd 自动重启 + CRC32 校验 + mmap 数据持久化
 3. **高并发**: 线程池 + 连接池 + 细粒度锁
 4. **易使用**: 简洁的 C API + 丰富的命令行工具
 5. **灵活性**: 三种数据结构满足不同场景 + 发布订阅模式

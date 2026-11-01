@@ -12,7 +12,7 @@
 //   超时：到点 OnRequestTimeout → 请求方收到 ERROR_RESPONSE_TIMEOUT。
 //
 // 关键尺寸约束：reqSize 必须 == REQ_TAG 的 itemsize(256)，rspSize 必须 == RSP_TAG 的 itemsize(256)。
-// 跨连接前提：sandbox WorkerProcesses=1（单 worker 进程），请求通道/订阅进程内共享。
+// 跨连接前提：gplat 是单进程，请求通道/订阅在进程内共享。
 #include <atomic>
 #include <cstring>
 #include <string>

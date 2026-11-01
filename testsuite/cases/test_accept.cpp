@@ -337,7 +337,7 @@ TEST("conn.emfile_rejects_pending", TAG_CONN)
     constexpr int kFree = 6;
     ServerConfig cfg = base_config(ctx);
     PRIVATE_ACCEPT_SERVER(srv, cfg);
-    const pid_t wpid = srv.worker_pid();
+    const pid_t wpid = srv.server_pid();
     ASSERT(ctx, wpid > 0, "cannot resolve worker pid");
     usleep(100 * 1000);
 
@@ -402,7 +402,7 @@ TEST("conn.emfile_total_exhaustion_pauses", TAG_CONN)
 {
     ServerConfig cfg = base_config(ctx);
     PRIVATE_ACCEPT_SERVER(srv, cfg);
-    const pid_t wpid = srv.worker_pid();
+    const pid_t wpid = srv.server_pid();
     ASSERT(ctx, wpid > 0, "cannot resolve worker pid");
     usleep(100 * 1000);
 

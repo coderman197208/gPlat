@@ -72,7 +72,7 @@ TEST("stress.concurrent_connections", TAG_STRESS | TAG_BOARD | TAG_ASAN)
             REQUIRE_OK(ctx, createtag(admin.fd(), names.back().c_str(), 256, &type, 1, &err), err);
         }
     }
-    ProcSampler sampler(srv.worker_pid());
+    ProcSampler sampler(srv.server_pid());
     ASSERT(ctx, sampler.tick(), "baseline sample failed");
     int baseline = sampler.fd_last();
     std::atomic<int> ready{0}, errors{0}, completed{0};

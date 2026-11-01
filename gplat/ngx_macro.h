@@ -33,10 +33,4 @@
 #define NGX_LOG_ROTATE_COUNT_DEFAULT   3                  //默认保留3个备份文件
 #define NGX_LOG_ROTATE_SIZE_DEFAULT    (5 * 1024 * 1024)  //默认单个日志文件最大5MB
 
-//进程相关----------------------
-//标记当前进程类型
-#define NGX_PROCESS_MASTER     0  //master进程，管理进程
-#define NGX_PROCESS_WORKER     1  //worker进程，工作进程
-//.......其他待扩展
-
 #endif

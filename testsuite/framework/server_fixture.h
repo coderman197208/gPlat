@@ -6,7 +6,7 @@
 //   * 启动前用“本地 API”在 forked 子进程里把标准 fixtures 建进 sandbox/qbdfile（不污染本进程全局态）。
 //   * fork+exec 真实 gplat（按 /proc/self/exe 同目录定位，自动匹配普通/ASan 构建；rpath 自解析 ../lib）。
 //   * 就绪探针（net_raw READBOARDINFO 往返，带超时，避免挂死）。
-//   * 停机：SIGTERM 发给 master（worker 信号处理器为空，必须发 master）；超时则按进程组强杀。
+//   * 停机：SIGTERM 发给 gplat（单进程多线程，经 signalfd 触发优雅退出）；超时则按进程组强杀。
 //   * 解析 sandbox 下 asan.<pid> 报告，区分内存错误与泄漏。
 //
 // 关键隔离前提（务必遵守）：绝不触碰 8777 上的生产实例或仓库 qbdfile/。端口默认从 18777 起自动探测空闲端口。
@@ -26,7 +26,7 @@ struct ServerConfig {
     int  port = 0;             // 0 = 从 preferredPort 起自动探测空闲端口
     int  preferredPort = 18777;
     int  threads = 3;          // ProcMsgRecvWorkThreadCount（发送路径/并发用例需 >=2）
-    int  workerConns = 1024;   // worker_connections
+    int  workerConns = 1024;   // worker_connections（epoll 连接数上限）
     int  recyWait = 20;        // Sock_RecyConnectionWaitTime（churn 用例可调小/调大）
     int  logLevel = 8;
     bool asan = false;         // 期望运行于 ASan 构建：注入 ASAN_OPTIONS 做泄漏检测
@@ -67,7 +67,7 @@ public:
 
     // 全流程启动：建 sandbox + fixtures + 起 server + 就绪探针。失败见 startup_error()。
     bool start();
-    // 优雅停机（SIGTERM→master，等待退出；超时升级为强杀）。
+    // 优雅停机（SIGTERM，等待退出；超时升级为强杀）。
     void stop();
     // 强杀整个进程组（SIGKILL），用于持久化崩溃用例。不等待优雅退出。
     void kill9();
@@ -78,11 +78,10 @@ public:
     bool wait_stopped(int timeoutMs = 3000);
     const char* ip() const { return "127.0.0.1"; }
     int   port() const { return cfg_.port; }
-    pid_t master_pid() const { return masterPid_; }
+    pid_t server_pid() const { return pid_; }   // gplat 进程（单进程多线程）；未运行为 -1
     // 最近一次 start()/relaunch() 中 gplat 若提前退出，其退出码（WEXITSTATUS）；
     // 被信号杀死或未发生提前退出时为 -1。用于启动失败的退出码断言（见持久化用例）。
     int   last_exit_code() const { return lastExitCode_; }
-    pid_t worker_pid();  // 惰性扫描 /proc 找 ppid==master 的子进程；找不到返回 0
 
     const std::string& sandbox() const { return sandbox_; }
     const std::string& qbd_path() const { return qbdPath_; }
@@ -101,11 +100,10 @@ private:
     bool setup_sandbox();        // mkdtemp + 子目录 + 写 config + 可选 fixtures
     bool populate_fixtures();    // 在 forked 子进程里用本地 API 建 fixtures
     bool write_config();
-    bool launch();               // fork/exec/就绪探针/找 worker
+    bool launch();               // fork/exec/就绪探针
     bool wait_ready(int timeoutMs);
-    void escalate_kill();        // kill(-pgid, SIGKILL) + 回收
-    bool reap_master();
-    bool reap_worker();
+    void escalate_kill();        // SIGKILL + 回收
+    bool reap();
 
     ServerConfig cfg_;
     std::string sandbox_;        // sandbox 根目录
@@ -114,8 +112,7 @@ private:
     std::string logDir_;         // <sandbox>/logs
     std::string cwdDir_;         // <sandbox>/bin（gplat 的工作目录）
     std::string gplatBin_;       // 解析后的 gplat 可执行路径
-    pid_t masterPid_ = -1;
-    pid_t workerPid_ = 0;
+    pid_t pid_ = -1;
     bool  alive_ = false;
     bool  forcedStop_ = false;
     int   lastExitCode_ = -1;    // gplat 提前退出时的 WEXITSTATUS（信号/未退出为 -1）

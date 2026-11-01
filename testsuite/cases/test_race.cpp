@@ -383,7 +383,7 @@ TEST("race.post_order_single_publisher", TAG_PUBSUB | TAG_DESTRUCTIVE)
     REQUIRE_OK(ctx, registertag(plc.fd(), kPlcTag, &err), err);
 
     // worker 的全部线程挤在一个 CPU 上，再加一个同 CPU 的忙等线程制造抢占
-    const pid_t wpid = srv.worker_pid();
+    const pid_t wpid = srv.server_pid();
     ASSERT(ctx, wpid > 0 && pin_all_threads(wpid, 0), "cannot pin worker threads");
     std::atomic<bool> burn{true};
     std::thread burner([&] {

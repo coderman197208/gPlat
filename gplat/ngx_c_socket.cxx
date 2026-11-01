@@ -26,8 +26,7 @@
 
 #include "../include/higplat.h"
 
-//控制子进程退出的信号量
-extern int sockpair[2]; //socketpair的文件描述符，父进程和子进程之间的通信管道
+//子线程/主线程共用的退出标志在 ngx_global.h 中声明
 
 //构造函数
 CSocekt::CSocekt()
@@ -57,7 +56,7 @@ CSocekt::CSocekt()
 	m_iSendMsgQueueCount = 0;     //发消息队列大小
 	m_totol_recyconnection_n = 0; //待释放连接队列大小
 
-	//连接数上限、fd 耗尽保护：上限在 worker 的 ngx_init_accept_limits() 中确定
+	//连接数上限、fd 耗尽保护：上限在 ngx_init_accept_limits() 中确定
 	m_onlineUserCount = 0;
 	m_maxClientConnections = 0;
 	m_idleFd = -1;
@@ -241,7 +240,7 @@ void CSocekt::ReadConf()
 }
 
 //监听端口【支持多个端口】，这里遵从nginx的函数命名
-//在创建worker进程之前就要执行这个函数；
+//在创建线程之前（守护进程化之前）就要执行这个函数；
 bool CSocekt::ngx_open_listening_sockets()
 {
 	int                isock;                //socket
@@ -435,7 +434,7 @@ void CSocekt::sendMsgLocked(lpngx_connection_t pConn, char* pMsgBuf)
 }
 
 //--------------------------------------------------------------------
-//(1)epoll功能初始化，子进程中进行 ，本函数被ngx_worker_process_init()所调用
+//(1)epoll功能初始化，本函数被ngx_threads_init()所调用
 int CSocekt::ngx_epoll_init()
 {
 	//(1)很多内核版本不处理epoll_create的参数，只要该参数>0即可
@@ -447,13 +446,13 @@ int CSocekt::ngx_epoll_init()
 		exit(2); //这是致命问题了，直接退，资源由系统释放吧，这里不刻意释放了，比较麻烦
 	}
 
-	// 将socketpair读端加入epoll。连接事件的 data 用的是 ptr（连接对象指针，非空），
+	// 将signalfd加入epoll。连接事件的 data 用的是 ptr（连接对象指针，非空），
 	// 这里用 ptr=nullptr 作标记；不能用 data.fd 判断，否则会拿连接指针的低 32 位去和 fd 号比较
 	struct epoll_event ev;
 	memset(&ev, 0, sizeof(ev));
 	ev.events = EPOLLIN;  // 监听可读事件
 	ev.data.ptr = nullptr;
-	if (epoll_ctl(m_epollhandle, EPOLL_CTL_ADD, sockpair[0], &ev) == -1) {
+	if (epoll_ctl(m_epollhandle, EPOLL_CTL_ADD, g_signal_fd, &ev) == -1) {
 		perror("epoll_ctl");
 		exit(EXIT_FAILURE);
 	}
@@ -690,7 +689,7 @@ int CSocekt::ngx_epoll_process_events(int timer)
 			   //例如：在socket服务器端，设置了信号捕获机制，有子进程，当在父进程阻塞于慢系统调用时由父进程捕获到了一个有效信号时，内核会致使accept返回一个EINTR错误(被中断的系统调用)。
 		if (errno == EINTR)
 		{
-			//信号所致，直接返回，一般认为这不是毛病，但还是打印下日志记录一下，因为一般也不会人为给worker进程发送消息
+			//信号都经 signalfd 收取，epoll_wait 一般不会被中断，但还是打印下日志记录一下
 			ngx_log_error_core(NGX_LOG_INFO, errno, "CSocekt::ngx_epoll_process_events()中epoll_wait()失败!");
 			return 1;  //正常返回
 		}
@@ -714,9 +713,6 @@ int CSocekt::ngx_epoll_process_events(int timer)
 		return 0; //非正常返回 
 	}
 
-	//会惊群，一个telnet上来，4个worker进程都会被惊动，都执行下边这个
-	//ngx_log_stderr(errno,"惊群测试1:%d",events); 
-
 	//走到这里，就是属于有事件收到了
 	lpngx_connection_t p_Conn;
 	//uintptr_t          instance;
@@ -724,15 +720,11 @@ int CSocekt::ngx_epoll_process_events(int timer)
 	for (int i = 0; i < events; ++i)    //遍历本次epoll_wait返回的所有事件，注意events才是返回的实际事件数量
 	{
 		if (m_events[i].data.ptr == nullptr) {
-			// 收到退出通知
-			ngx_log_stderr(0, "收到主进程退出通知");
-			char buf;
-			read(sockpair[0], &buf, 1);  // 读取通知
-			close(sockpair[0]);
-			g_stopEventChild = 1; // 设置退出标志，通知线程退出
-			return 1; // 退出
-			//close(epfd);
-			//exit(EXIT_SUCCESS);
+			// signalfd 可读：SIGINT/SIGTERM 会置退出标志，通知各线程退出
+			ngx_handle_signals();
+			if (g_stopEvent != 0)
+				return 1; // 退出
+			continue;
 		}
 		// 处理其他事件...
 
@@ -856,7 +848,7 @@ void* CSocekt::ServerSendQueueThread(void* threadData)
 
 	CMemory* p_memory = CMemory::GetInstance();
 
-	while (g_stopEventChild == 0) //不退出
+	while (g_stopEvent == 0) //不退出
 	{
 		//如果信号量值>0，则 -1(减1) 并走下去，否则卡这里卡着【为了让信号量值+1，可以在其他线程调用sem_post达到，实际上在CSocekt::msgSend()调用sem_post就达到了让这里sem_wait走下去的目的】
 		//******如果被某个信号中断，sem_wait也可能过早的返回，错误为EINTR；
@@ -869,7 +861,7 @@ void* CSocekt::ServerSendQueueThread(void* threadData)
 		}
 
 		//一般走到这里都表示需要处理数据收发了
-		if (g_stopEventChild != 0)  //要求整个进程退出
+		if (g_stopEvent != 0)  //要求整个进程退出
 			break;
 
 		if (pSocketObj->m_iSendMsgQueueCount <= 0)

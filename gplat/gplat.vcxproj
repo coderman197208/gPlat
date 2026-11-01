@@ -98,7 +98,6 @@
     <ClCompile Include="ngx_log.cxx" />
     <ClCompile Include="ngx_printf.cxx" />
     <ClCompile Include="ngx_process_cycle.cxx" />
-    <ClCompile Include="ngx_setproctitle.cxx" />
     <ClCompile Include="ngx_signal.cxx" />
     <ClCompile Include="ngx_string.cxx" />
   </ItemGroup>

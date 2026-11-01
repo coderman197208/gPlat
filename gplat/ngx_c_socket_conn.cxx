@@ -302,7 +302,7 @@ void* CSocekt::ServerRecyConnectionThread(void* threadData)
 			{
 				p_Conn = (*pos);
 				if (
-					((p_Conn->inRecyTime + pSocketObj->m_RecyConnectionWaitTime) > currtime) && (g_stopEventChild == 0) //如果不是要整个系统退出，你可以continue，否则就得要强制释放
+					((p_Conn->inRecyTime + pSocketObj->m_RecyConnectionWaitTime) > currtime) && (g_stopEvent == 0) //如果不是要整个系统退出，你可以continue，否则就得要强制释放
 					)
 				{
 					continue; //没到释放的时间
@@ -331,7 +331,7 @@ void* CSocekt::ServerRecyConnectionThread(void* threadData)
 			if (err != 0)  ngx_log_stderr(err, "CSocekt::ServerRecyConnectionThread()pthread_mutex_unlock()失败，返回的错误码为%d!", err);
 		}
 
-		if (g_stopEventChild == 1) //要退出整个程序，那么肯定要先退出这个循环
+		if (g_stopEvent == 1) //要退出整个程序，那么肯定要先退出这个循环
 		{
 			if (pSocketObj->m_totol_recyconnection_n > 0)
 			{
